@@ -69,6 +69,7 @@ Published packages are AI-friendly. Alongside the `README.md`, each package incl
 #### Networking
 
 - [`bluetoothapis`](./packages/bluetoothapis) - Bluetooth Classic radio/device discovery, BLE GATT, SDP, authentication
+- [`dnsapi`](./packages/dnsapi) - DNS resolution across every record type (A, AAAA, MX, NS, SOA, TXT, SRV, CAA, etc.), name validation, configured server discovery, DNS-SD, mDNS, async queries
 - [`iphlpapi`](./packages/iphlpapi) - network adapters, TCP/UDP tables, routing
 - [`mpr`](./packages/mpr) - network drive mapping, UNC connections, resource enumeration
 - [`netapi32`](./packages/netapi32) - users, groups, shares, domain joins
