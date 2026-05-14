@@ -33,6 +33,9 @@
  *   [9]    L1 (0), R1 (1), L2 btn (2), R2 btn (3), Create (4), Options (5),
  *          L3 (6), R3 (7)
  *   [10]   PS (0), Touchpad (1), Mute (2)
+ *   [53]   Battery status: low nibble = level (0..10 => 0..100%),
+ *          high nibble = charging state (0 discharging, 1 charging,
+ *          2 full, 0xA/0xB temp error, 0xF charging error)
  *
  * Run: bun run example/dualsense-radar.ts
  */
@@ -214,6 +217,24 @@ function triggerBar(value: number, label: string): string {
   return `${label} [${bar}] ${value.toString().padStart(3)}`;
 }
 
+function batteryLine(status: number): string {
+  const level = status & 0x0f;
+  const charge = (status >> 4) & 0x0f;
+  const percent = Math.min(level, 10) * 10;
+  const width = 10;
+  const filled = Math.round((percent / 100) * width);
+  const color = percent >= 50 ? ANSI.green : percent >= 20 ? ANSI.yellow : ANSI.red;
+  const bar = `${color}${'#'.repeat(filled)}${ANSI.reset}${ANSI.dim}${'.'.repeat(width - filled)}${ANSI.reset}`;
+  const state =
+    charge === 0x0 ? `${ANSI.dim}discharging${ANSI.reset}` :
+    charge === 0x1 ? `${ANSI.yellow}charging${ANSI.reset}` :
+    charge === 0x2 ? `${ANSI.green}full${ANSI.reset}` :
+    charge === 0xa || charge === 0xb ? `${ANSI.red}temp error${ANSI.reset}` :
+    charge === 0xf ? `${ANSI.red}charge error${ANSI.reset}` :
+    `${ANSI.dim}0x${charge.toString(16)}${ANSI.reset}`;
+  return `Battery [${bar}] ${percent.toString().padStart(3)}%  ${state}`;
+}
+
 console.log(`${ANSI.bold}${ANSI.cyan}DualSense Radar${ANSI.reset}`);
 console.log(`${ANSI.dim}Searching for PS5 DualSense controller...${ANSI.reset}`);
 
@@ -289,6 +310,7 @@ while (true) {
   const buttons1 = reportBuf.readUInt8(8 + off);
   const buttons2 = reportBuf.readUInt8(9 + off);
   const buttons3 = reportBuf.readUInt8(10 + off);
+  const batteryStatus = reportBuf.readUInt8(53 + off);
 
   const dpadIndex = buttons1 & 0x0f;
   const dpad = dpadIndex < DPAD_DIRECTIONS.length ? DPAD_DIRECTIONS[dpadIndex] : '--';
@@ -327,6 +349,7 @@ while (true) {
   const lVib = Math.round((l2 / 255) * 100);
   const rVib = Math.round((r2 / 255) * 100);
   output.push(`  Vibration: L ${lVib > 0 ? `${ANSI.yellow}${lVib}%${ANSI.reset}` : `${ANSI.dim}0%${ANSI.reset}`}  R ${rVib > 0 ? `${ANSI.yellow}${rVib}%${ANSI.reset}` : `${ANSI.dim}0%${ANSI.reset}`}`);
+  output.push(`  ${batteryLine(batteryStatus)}`);
 
   process.stdout.write(`\x1b[2J\x1b[H${output.join('\n')}\n`);
   frames++;
