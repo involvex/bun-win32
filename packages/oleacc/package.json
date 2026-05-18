@@ -6,7 +6,7 @@
   "dependencies": {
     "@bun-win32/core": "workspace:*"
   },
-  "description": "Zero-dependency, zero-overhead Win32 {NAME} bindings for Bun (FFI) on Windows.",
+  "description": "Zero-dependency, zero-overhead Win32 OLEACC (Microsoft Active Accessibility) bindings for Bun (FFI) on Windows.",
   "devDependencies": {
     "@types/bun": "latest"
   },
@@ -15,7 +15,7 @@
   },
   "license": "MIT",
   "module": "index.ts",
-  "name": "@bun-win32/{name}",
+  "name": "@bun-win32/oleacc",
   "peerDependencies": {
     "typescript": "^5"
   },
@@ -24,7 +24,7 @@
   "repository": {
     "type": "git",
     "url": "git://github.com/ObscuritySRL/bun-win32.git",
-    "directory": "packages/{name}"
+    "directory": "packages/oleacc"
   },
   "type": "module",
   "version": "1.0.0",
@@ -34,7 +34,11 @@
     "ffi",
     "win32",
     "windows",
-    "{name}",
+    "oleacc",
+    "msaa",
+    "accessibility",
+    "iaccessible",
+    "ui-automation",
     "bindings",
     "typescript",
     "dll"
@@ -51,6 +55,7 @@
     "bun": ">=1.1.0"
   },
   "scripts": {
-    "example": "bun ./example/{name}.ts"
+    "example:accessibility-radar": "bun ./example/accessibility-radar.ts",
+    "example:ui-tree-inspector": "bun ./example/ui-tree-inspector.ts"
   }
 }

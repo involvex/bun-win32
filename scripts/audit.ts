@@ -270,6 +270,8 @@ const C_TYPE_TO_FFI: Record<string, string> = {
   'GpStringFormat*': 'FFIType.u64',
   'GpTexture*': 'FFIType.u64',
   'IStream*': 'FFIType.u64',
+  // oleacc (MSAA) COM interface pointers — opaque tokens, treated as u64 handles by convention
+  'IAccessible*': 'FFIType.u64',
   // wldap32 opaque handle pointers — treated as u64 handles by convention
   'LDAP*': 'FFIType.u64',
   'LDAPMessage*': 'FFIType.u64',
