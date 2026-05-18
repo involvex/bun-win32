@@ -113,6 +113,7 @@ Published packages are AI-friendly. Alongside the `README.md`, each package incl
 - [`ncrypt`](./packages/ncrypt) - CNG Key Storage: persisted keys, RSA/ECDSA/ECDH signing & key agreement, key attestation claims, DPAPI-NG protection descriptors and streaming
 - [`secur32`](./packages/secur32) - SSPI authentication, credentials, LSA
 - [`sspicli`](./packages/sspicli) - SSPI client-side auth and SASL
+- [`tbs`](./packages/tbs) - TPM Base Services: open a TBS context, submit raw TPM 2.0 command buffers, read the TCG measured-boot log, query device ID / owner-auth (`Tbsi_Context_Create`, `Tbsip_Submit_Command`, `Tbsi_Get_TCG_Log`, `GetDeviceID`) — TPM2_GetRandom / GetCapability proven pure-FFI against real hardware
 - [`winscard`](./packages/winscard) - smart card resource manager, reader discovery, status changes, and APDU transport
 - [`wintrust`](./packages/wintrust) - Authenticode signature verification (WinVerifyTrust), catalog admin, SIP, and trust-provider helpers
 - [`wscapi`](./packages/wscapi) - Windows Security Center: aggregate provider health (firewall, antivirus, auto-update, UAC, WSC service) and change registration (`WscGetSecurityProviderHealth`, `WscRegisterForChanges`) — live security posture without parsing PowerShell
