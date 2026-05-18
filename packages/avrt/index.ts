@@ -1,4 +1,4 @@
-import WIN32_CLASS from './structs/WIN32_CLASS';
+import Avrt from './structs/Avrt';
 
-export * from './types/WIN32_CLASS';
-export default WIN32_CLASS;
+export * from './types/Avrt';
+export default Avrt;

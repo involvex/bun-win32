@@ -68,6 +68,7 @@ Published packages are AI-friendly. Alongside the `README.md`, each package incl
 #### Multimedia
 
 - [`avifil32`](./packages/avifil32) - Video for Windows AVIFile API: open/create `.avi` files, enumerate streams, read/write video, audio, MIDI, and text streams, decode frames to DIBs (`AVIStreamGetFrame`), mux files from streams, editable-stream cut/copy/paste
+- [`avrt`](./packages/avrt) - MMCSS multimedia thread scheduling: join system-profile tasks ("Pro Audio", "Games", …), raise AVRT priority, query the system-responsiveness reservation, and coordinate thread-ordering groups (`AvSetMmThreadCharacteristicsW`, `AvSetMmThreadPriority`, `AvQuerySystemResponsiveness`, `AvRtCreateThreadOrderingGroup`) — the low-latency audio/capture scheduling primitives
 - [`dinput8`](./packages/dinput8) - DirectInput 8: every non-Xbox controller — racing wheels, flight sticks / HOTAS, generic gamepads (`DirectInput8Create`, `GetdfDIJoystick`); device enumeration, capabilities, acquisition, and polling over the `IDirectInput8` COM vtable
 - [`dsound`](./packages/dsound) - DirectSound: playback / capture device creation & enumeration, full-duplex, and default-device GUID resolution (`DirectSoundCreate8`, `DirectSoundEnumerateW`, `GetDeviceID`, …) — synthesize and play PCM end-to-end over the `IDirectSound8` / `IDirectSoundBuffer` COM vtable
 - [`mf`](./packages/mf) - Media Foundation pipeline: source resolver, ASF authoring graph (profile / multiplexer / indexer / splitter / stream selector), container media sinks (MP3 / AC-3 / ADTS / MPEG-4 / fragmented-MP4 / 3GP), streaming sinks, video renderer, network credential / proxy, and the protected-environment / signed-library surface (`MFCreateSourceResolver`, `MFCreateASFProfile`, `MFCreateMPEG4MediaSink`, `MFGetSupportedSchemes`, …)
@@ -127,6 +128,7 @@ Published packages are AI-friendly. Alongside the `README.md`, each package incl
 - [`ntdll`](./packages/ntdll) - native NT API
 - [`normaliz`](./packages/normaliz) - internationalized domain names, Nameprep, and Unicode normalization
 - [`ole32`](./packages/ole32) - COM/OLE helpers, monikers, structured storage, clipboard, drag-drop
+- [`oleacc`](./packages/oleacc) - Microsoft Active Accessibility (MSAA): resolve `IAccessible` from a window or screen point, walk the accessibility tree, decode role/state text, marshal objects to/from `LRESULT`
 - [`oleaut32`](./packages/oleaut32) - OLE Automation: BSTR, VARIANT, SAFEARRAY, DECIMAL, CURRENCY, type libraries, IDispatch helpers, OLE pictures, full Var\*From\* conversion family
 - [`pdh`](./packages/pdh) - performance counter queries, logs, and enumeration
 - [`powrprof`](./packages/powrprof) - power schemes, policies, sleep states, battery management
