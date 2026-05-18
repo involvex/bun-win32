@@ -106,6 +106,7 @@ Published packages are AI-friendly. Alongside the `README.md`, each package incl
 #### Security & Crypto
 
 - [`advapi32`](./packages/advapi32) - registry, security descriptors, service control
+- [`amsi`](./packages/amsi) - Antimalware Scan Interface: submit scripts/buffers to the registered AV provider (Defender) for in-process scanning (`AmsiInitialize`, `AmsiScanBuffer`, `AmsiScanString`, `AmsiNotifyOperation`) — EICAR detection proven pure-FFI, no shelling out
 - [`bcrypt`](./packages/bcrypt) - Cryptography Next Gen (CNG): ciphers, hashes, HMAC, PBKDF2, signatures, random bytes, key agreement
 - [`credui`](./packages/credui) - credential prompts, username parsing, auth blobs, and SSPI prompt helpers
 - [`crypt32`](./packages/crypt32) - certificate stores, chains, encoding, DPAPI

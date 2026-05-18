@@ -2,10 +2,10 @@ import { type FFIFunction, FFIType } from 'bun:ffi';
 
 import { Win32 } from '@bun-win32/core';
 
-import type { BOOL, DWORD, HANDLE, LPCWSTR, LPVOID, LPWSTR } from '../types/WIN32_CLASS';
+import type { HAMSICONTEXT, HAMSISESSION, HRESULT, LPCWSTR, NULL, PAMSI_RESULT, PHAMSICONTEXT, PHAMSISESSION, PPVOID, PVOID, REFCLSID, REFIID, ULONG, VOID } from '../types/Amsi';
 
 /**
- * Thin, lazy-loaded FFI bindings for `WIN32_DLL.dll`.
+ * Thin, lazy-loaded FFI bindings for `amsi.dll`.
  *
  * Each static method corresponds one-to-one with a Win32 export declared in `Symbols`.
  * The first call to a method binds the underlying native symbol via `bun:ffi` and
@@ -17,20 +17,88 @@ import type { BOOL, DWORD, HANDLE, LPCWSTR, LPVOID, LPWSTR } from '../types/WIN3
  *
  * @example
  * ```ts
- * import WIN32_CLASS from './structs/WIN32_CLASS';
+ * import Amsi from './structs/Amsi';
  *
  * // Lazy: bind on first call
- * const result = WIN32_CLASS.SomeFunctionW(buffer.ptr);
+ * const ctx = Buffer.alloc(8);
+ * Amsi.AmsiInitialize(Buffer.from('MyApp\0', 'utf16le').ptr, ctx.ptr);
  *
  * // Or preload a subset to avoid per-symbol lazy binding cost
- * WIN32_CLASS.Preload(['SomeFunctionW', 'AnotherFunctionW']);
+ * Amsi.Preload(['AmsiInitialize', 'AmsiScanBuffer', 'AmsiUninitialize']);
  * ```
  */
-class WIN32_CLASS extends Win32 {
-  protected static override name = 'WIN32_DLL.dll';
+class Amsi extends Win32 {
+  protected static override name = 'amsi.dll';
 
   /** @inheritdoc */
-  protected static override readonly Symbols = {} as const satisfies Record<string, FFIFunction>;
+  protected static override readonly Symbols = {
+    AmsiCloseSession: { args: [FFIType.u64, FFIType.u64], returns: FFIType.void },
+    AmsiInitialize: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+    AmsiNotifyOperation: { args: [FFIType.u64, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+    AmsiOpenSession: { args: [FFIType.u64, FFIType.ptr], returns: FFIType.i32 },
+    AmsiScanBuffer: { args: [FFIType.u64, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.u64, FFIType.ptr], returns: FFIType.i32 },
+    AmsiScanString: { args: [FFIType.u64, FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.ptr], returns: FFIType.i32 },
+    AmsiUninitialize: { args: [FFIType.u64], returns: FFIType.void },
+    DllCanUnloadNow: { args: [], returns: FFIType.i32 },
+    DllGetClassObject: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+    DllRegisterServer: { args: [], returns: FFIType.i32 },
+    DllUnregisterServer: { args: [], returns: FFIType.i32 },
+  } as const satisfies Record<string, FFIFunction>;
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/amsi/nf-amsi-amsiclosesession
+  public static AmsiCloseSession(amsiContext: HAMSICONTEXT, amsiSession: HAMSISESSION): VOID {
+    return Amsi.Load('AmsiCloseSession')(amsiContext, amsiSession);
+  }
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/amsi/nf-amsi-amsiinitialize
+  public static AmsiInitialize(appName: LPCWSTR, amsiContext: PHAMSICONTEXT): HRESULT {
+    return Amsi.Load('AmsiInitialize')(appName, amsiContext);
+  }
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/amsi/nf-amsi-amsinotifyoperation
+  public static AmsiNotifyOperation(amsiContext: HAMSICONTEXT, buffer: PVOID, length: ULONG, contentName: LPCWSTR | NULL, result: PAMSI_RESULT): HRESULT {
+    return Amsi.Load('AmsiNotifyOperation')(amsiContext, buffer, length, contentName, result);
+  }
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/amsi/nf-amsi-amsiopensession
+  public static AmsiOpenSession(amsiContext: HAMSICONTEXT, amsiSession: PHAMSISESSION): HRESULT {
+    return Amsi.Load('AmsiOpenSession')(amsiContext, amsiSession);
+  }
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/amsi/nf-amsi-amsiscanbuffer
+  public static AmsiScanBuffer(amsiContext: HAMSICONTEXT, buffer: PVOID, length: ULONG, contentName: LPCWSTR | NULL, amsiSession: HAMSISESSION | 0n, result: PAMSI_RESULT): HRESULT {
+    return Amsi.Load('AmsiScanBuffer')(amsiContext, buffer, length, contentName, amsiSession, result);
+  }
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/amsi/nf-amsi-amsiscanstring
+  public static AmsiScanString(amsiContext: HAMSICONTEXT, string: LPCWSTR, contentName: LPCWSTR | NULL, amsiSession: HAMSISESSION | 0n, result: PAMSI_RESULT): HRESULT {
+    return Amsi.Load('AmsiScanString')(amsiContext, string, contentName, amsiSession, result);
+  }
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/amsi/nf-amsi-amsiuninitialize
+  public static AmsiUninitialize(amsiContext: HAMSICONTEXT): VOID {
+    return Amsi.Load('AmsiUninitialize')(amsiContext);
+  }
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-dllcanunloadnow
+  public static DllCanUnloadNow(): HRESULT {
+    return Amsi.Load('DllCanUnloadNow')();
+  }
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-dllgetclassobject
+  public static DllGetClassObject(rclsid: REFCLSID, riid: REFIID, ppv: PPVOID): HRESULT {
+    return Amsi.Load('DllGetClassObject')(rclsid, riid, ppv);
+  }
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/olectl/nf-olectl-dllregisterserver
+  public static DllRegisterServer(): HRESULT {
+    return Amsi.Load('DllRegisterServer')();
+  }
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/olectl/nf-olectl-dllunregisterserver
+  public static DllUnregisterServer(): HRESULT {
+    return Amsi.Load('DllUnregisterServer')();
+  }
 }
 
-export default WIN32_CLASS;
+export default Amsi;
