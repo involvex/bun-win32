@@ -1,0 +1,81 @@
+# @bun-win32/wldap32
+
+Zero-dependency, zero-overhead Win32 Wldap32 bindings for [Bun](https://bun.sh) on Windows.
+
+## Overview
+
+`@bun-win32/wldap32` exposes the `wldap32.dll` exports using [Bun](https://bun.sh)'s FFI. It provides a single class, `Wldap32`, which lazily binds native symbols on first use. You can optionally preload a subset or all symbols up-front via `Preload()`.
+
+The bindings are strongly typed for a smooth DX in TypeScript.
+
+## Features
+
+- [Bun](https://bun.sh)-first ergonomics on Windows 10/11.
+- Direct FFI to `wldap32.dll` (the Windows LDAP client: directory bind/auth, search, modify, add/delete, rename, compare, extended operations, server/client controls, paged / sorted / virtual-list-view results, StartTLS, and the BER encode/decode primitives).
+- All 245 documented `winldap.h` / `winber.h` exports bound, both ANSI (`A`) and Unicode (`W`) variants.
+- In-source docs in `structs/Wldap32.ts` with links to Microsoft Docs.
+- Lazy binding on first call; optional eager preload (`Wldap32.Preload()`).
+- No wrapper overhead; calls map 1:1 to native APIs.
+- Strongly-typed Win32 aliases (see `types/Wldap32.ts`).
+
+## Requirements
+
+- [Bun](https://bun.sh) runtime
+- Windows 10 or later
+
+## Installation
+
+```sh
+bun add @bun-win32/wldap32
+```
+
+## Quick Start
+
+```ts
+import { read } from 'bun:ffi';
+
+import Wldap32, { LdapOption, LdapRetcode, LdapVersion } from '@bun-win32/wldap32';
+
+// Open a session block. ldap_init is lazy — no socket is opened until the
+// first operation that needs the server. Pass null to find the default server.
+const host = Buffer.from('ldap.example.com\0', 'utf16le');
+const ld = Wldap32.ldap_initW(host.ptr, 389);
+if (ld === 0n) throw new Error('ldap_initW failed');
+
+// Request LDAP v3 for this connection.
+const version = Buffer.alloc(4);
+version.writeUInt32LE(LdapVersion.Three, 0);
+Wldap32.ldap_set_optionW(ld, LdapOption.Version, version.ptr);
+
+// ldap_err2stringW maps any result code to a human-readable string. It returns
+// a pointer to a wide string owned by wldap32 (do not free it).
+const messagePointer = Wldap32.ldap_err2stringW(LdapRetcode.InvalidCredentials);
+if (messagePointer !== null) {
+  let message = '';
+  for (let offset = 0; ; offset += 2) {
+    const unit = read.u16(messagePointer, offset);
+    if (unit === 0) break;
+    message += String.fromCharCode(unit);
+  }
+  console.log(message); // "Invalid Credentials"
+}
+
+Wldap32.ldap_unbind(ld);
+```
+
+> [!NOTE]
+> AI agents: see `AI.md` for the package binding contract and source-navigation guidance. It explains how to use the package without scanning the entire implementation.
+
+## Examples
+
+Run the included examples:
+
+```sh
+bun run example:directory-diagnostic   # exhaustive offline LDAP toolkit report
+bun run example:dn-tree                # animated directory tree drawn from ldap_explode_dnW
+```
+
+## Notes
+
+- Either rely on lazy binding or call `Wldap32.Preload()`.
+- Windows only. Bun runtime required.

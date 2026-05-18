@@ -189,6 +189,7 @@ const C_TYPE_TO_FFI: Record<string, string> = {
   HUSKEY: 'FFIType.u64',
   HGLRC: 'FFIType.u64',
   SC_HANDLE: 'FFIType.u64',
+  HRASCONN: 'FFIType.u64',
   HCERTSTORE: 'FFIType.u64',
   PCCERT_CONTEXT: 'FFIType.u64',
   WINUSB_INTERFACE_HANDLE: 'FFIType.u64',
@@ -269,6 +270,45 @@ const C_TYPE_TO_FFI: Record<string, string> = {
   'GpStringFormat*': 'FFIType.u64',
   'GpTexture*': 'FFIType.u64',
   'IStream*': 'FFIType.u64',
+  // wldap32 opaque handle pointers — treated as u64 handles by convention
+  'LDAP*': 'FFIType.u64',
+  'LDAPMessage*': 'FFIType.u64',
+  'BerElement*': 'FFIType.u64',
+  PLDAPSearch: 'FFIType.u64',
+  // windowscodecs (WIC) COM interface pointers — opaque tokens, treated as u64 handles by convention
+  'IWICImagingFactory*': 'FFIType.u64',
+  'IWICBitmap*': 'FFIType.u64',
+  'IWICBitmapClipper*': 'FFIType.u64',
+  'IWICBitmapCodecInfo*': 'FFIType.u64',
+  'IWICBitmapDecoder*': 'FFIType.u64',
+  'IWICBitmapEncoder*': 'FFIType.u64',
+  'IWICBitmapFlipRotator*': 'FFIType.u64',
+  'IWICBitmapFrameDecode*': 'FFIType.u64',
+  'IWICBitmapFrameEncode*': 'FFIType.u64',
+  'IWICBitmapLock*': 'FFIType.u64',
+  'IWICBitmapScaler*': 'FFIType.u64',
+  'IWICBitmapSource*': 'FFIType.u64',
+  'IWICColorContext*': 'FFIType.u64',
+  'IWICComponentFactory*': 'FFIType.u64',
+  'IWICComponentInfo*': 'FFIType.u64',
+  'IWICFastMetadataEncoder*': 'FFIType.u64',
+  'IWICFormatConverter*': 'FFIType.u64',
+  'IWICMetadataBlockReader*': 'FFIType.u64',
+  'IWICMetadataBlockWriter*': 'FFIType.u64',
+  'IWICMetadataQueryReader*': 'FFIType.u64',
+  'IWICMetadataQueryWriter*': 'FFIType.u64',
+  'IWICMetadataReader*': 'FFIType.u64',
+  'IWICMetadataWriter*': 'FFIType.u64',
+  'IWICPalette*': 'FFIType.u64',
+  'IWICPixelFormatInfo*': 'FFIType.u64',
+  'IWICStream*': 'FFIType.u64',
+  // combase WinRT opaque handle / cookie tokens — treated as u64 handles by convention
+  HSTRING: 'FFIType.u64',
+  HSTRING_BUFFER: 'FFIType.u64',
+  ROPARAMIIDHANDLE: 'FFIType.u64',
+  RO_REGISTRATION_COOKIE: 'FFIType.u64',
+  APARTMENT_SHUTDOWN_REGISTRATION_COOKIE: 'FFIType.u64',
+  UINT64: 'FFIType.u64',
   // void
   VOID: 'FFIType.void',
   void: 'FFIType.void',
@@ -277,12 +317,19 @@ const C_TYPE_TO_FFI: Record<string, string> = {
 // ── C type → suggested TS type name ────────────────────────────────────────
 
 const C_TYPE_TO_TS: Record<string, string> = {
+  HSTRING: 'HSTRING',
+  HSTRING_BUFFER: 'HSTRING_BUFFER',
+  ROPARAMIIDHANDLE: 'ROPARAMIIDHANDLE',
+  RO_REGISTRATION_COOKIE: 'RO_REGISTRATION_COOKIE',
+  APARTMENT_SHUTDOWN_REGISTRATION_COOKIE: 'APARTMENT_SHUTDOWN_REGISTRATION_COOKIE',
+  UINT64: 'UINT64',
   HANDLE: 'HANDLE',
   HGLOBAL: 'HGLOBAL',
   HLOCAL: 'HLOCAL',
   HMODULE: 'HMODULE',
   HINSTANCE: 'HINSTANCE',
   HWND: 'HWND',
+  HRASCONN: 'HRASCONN',
   HPCON: 'HPCON',
   HRSRC: 'HRSRC',
   SIZE_T: 'SIZE_T',
@@ -514,8 +561,12 @@ function buildSdkIndex(functionNames: string[]): Map<string, SdkProto> {
   if (existsSync(sharedDir)) searchDirs.push(sharedDir);
 
   try {
-    // Single grep across all headers with context
-    const grepResult = execSync(`"${RIPGREP_PATH}" -n -B 8 --no-heading -f "${patternFile}" ${searchDirs.map((d) => `"${d}"`).join(' ')} --glob "*.h"`, { encoding: 'utf-8', timeout: 60000, maxBuffer: 50 * 1024 * 1024 });
+    // Single grep across all headers with context. Exclude SDK `*helper.h`
+    // files: those are inline C++ convenience wrappers that *call* the flat
+    // exports (e.g. d2d1_2helper.h calls D2D1ComputeMaximumScaleFactor), never
+    // the authoritative `WINAPI` prototype — matching them mis-parses the
+    // surrounding call expression as the function's return type.
+    const grepResult = execSync(`"${RIPGREP_PATH}" -n -B 8 --no-heading -f "${patternFile}" ${searchDirs.map((d) => `"${d}"`).join(' ')} --glob "*.h" --glob "!*helper.h"`, { encoding: 'utf-8', timeout: 60000, maxBuffer: 50 * 1024 * 1024 });
 
     for (const line of grepResult.split('\n')) {
       const normalizedLine = line.replace(/\r$/, '');
@@ -560,6 +611,20 @@ function buildSdkIndex(functionNames: string[]): Map<string, SdkProto> {
           if (isCommentLikeLine(hLines[i])) continue;
 
           const proto = sdkIndex!.get(funcName)!;
+
+          if (!proto.returnType) {
+            // Case 1: return type sits on the same line as the function name
+            // (e.g. winber.h `WINBERAPI INT BERAPI ber_printf( ... )`).
+            const sameLineMatch = hLines[i].match(new RegExp(`^(.*?)\\b${funcName}\\s*\\(`));
+            if (sameLineMatch && sameLineMatch[1].trim()) {
+              const sameLineReturnType = sameLineMatch[1]
+                .replace(/\b(?:WINBERAPI|WINLDAPAPI|WINBASEAPI|WINUSERAPI|WINNORMALIZEAPI|WINADVAPI|NTSYSAPI|WINSOCK_API_LINKAGE|NET_API_FUNCTION|WSPAPI|IMAGEAPI|INTERNETAPI|BOOLAPI|DECLSPEC_IMPORT|WINAPI|LDAPAPI|BERAPI|APIENTRY|NTAPI|CALLBACK|STDAPI|STDAPICALLTYPE|extern|"C")\b/g, '')
+                .replace(/\s+/g, ' ')
+                .replace(/\s*\*/g, '*')
+                .trim();
+              if (sameLineReturnType) proto.returnType = sameLineReturnType;
+            }
+          }
 
           if (!proto.returnType) {
             for (let j = i - 1; j >= Math.max(0, i - 10); j--) {

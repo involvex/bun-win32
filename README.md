@@ -46,21 +46,27 @@ Published packages are AI-friendly. Alongside the `README.md`, each package incl
 
 - [`comctl32`](./packages/comctl32) - common controls, image lists, property sheets, DPA/DSA dynamic arrays, flat scroll bars, window subclassing
 - [`comdlg32`](./packages/comdlg32) - common dialogs: Open / Save File, Choose Color, Choose Font, Print, Page Setup, Find / Replace, and `CommDlgExtendedError`
+- [`d2d1`](./packages/d2d1) - Direct2D: GPU-accelerated 2D — `ID2D1Factory` / device-context creation plus Direct2D's native affine-matrix, color-space (sRGB / scRGB), gradient-mesh (Coons-patch), and trig / vector math (`D2D1CreateFactory`, `D2D1MakeRotateMatrix`, `D2D1ConvertColorSpace`, …)
 - [`d3d11`](./packages/d3d11) - Direct3D 11 device / swap-chain creation, D3D11-on-12 interop, WinRT `IDirect3DDevice` / `IDirect3DSurface` bridges
+- [`d3d12`](./packages/d3d12) - Direct3D 12 device creation, debug-layer / global-interface access, and root-signature serialize/deserialize (`D3D12CreateDevice`, `D3D12GetDebugInterface`, `D3D12GetInterface`, `D3D12SerializeVersionedRootSignature`, …) — modern GPU/compute/ML path
 - [`d3dcompiler_47`](./packages/d3dcompiler_47) - HLSL → DXBC shader compilation, preprocessing, disassembly, reflection, blob part extraction, shader stripping, function linking graph
 - [`dwmapi`](./packages/dwmapi) - DWM composition, blur, thumbnails
+- [`dwrite`](./packages/dwrite) - DirectWrite factory entry point (`DWriteCreateFactory`): system font enumeration, text layout, glyph metrics, and pure-FFI ClearType/grayscale glyph rasterization over the `IDWriteFactory` COM vtable
 - [`dxgi`](./packages/dxgi) - DXGI adapter enumeration, factory creation, debug interface (`CreateDXGIFactory*`, `DXGIGetDebugInterface1`)
 - [`dxva2`](./packages/dxva2) - DDC/CI monitor configuration (brightness, contrast, RGB drive/gain, colour temperature, VCP), physical monitor enumeration, DXVA2 / DXVA-HD video acceleration, OPM video output
 - [`gdi32`](./packages/gdi32) - graphics device interface
 - [`gdiplus`](./packages/gdiplus) - GDI+ flat C API: image load/save (PNG, JPEG, BMP, GIF, TIFF, ICO), antialiased 2D drawing, paths, regions, gradients, brushes, fonts, color matrix effects, metafile recording
 - [`glu32`](./packages/glu32) - OpenGL utility functions
+- [`magnification`](./packages/magnification) - Magnification API: recolor the entire desktop via a 5x5 color matrix (grayscale, photo-negative, sepia, color-blindness simulation), full-screen zoom/pan transforms, magnifier-control window filtering, and pen/touch input remapping
 - [`mscms`](./packages/mscms) - Image Color Management (ICM): ICC profiles, color transforms, sRGB / Adobe RGB / CMYK conversion via Win32 CMM, display calibration, and the Windows Color System (WCS) profile management API
 - [`opengl32`](./packages/opengl32) - OpenGL rendering context
 - [`user32`](./packages/user32) - windows, messages, input, UI
 - [`uxtheme`](./packages/uxtheme) - visual styles, themed controls, buffered painting
+- [`windowscodecs`](./packages/windowscodecs) - Windows Imaging Component (WIC): zero-build image decode/encode (JPEG, PNG, GIF, TIFF, BMP, HEIF), scaling, flip/rotate, pixel-format conversion, palettes, color contexts, and metadata — the full proxy-function surface
 
 #### Multimedia
 
+- [`avifil32`](./packages/avifil32) - Video for Windows AVIFile API: open/create `.avi` files, enumerate streams, read/write video, audio, MIDI, and text streams, decode frames to DIBs (`AVIStreamGetFrame`), mux files from streams, editable-stream cut/copy/paste
 - [`mfplat`](./packages/mfplat) - Media Foundation platform: lifecycle, work queues, MFT registry, media type / sample / byte stream factories (`MFStartup`, `MFTEnumEx`, `MFCreateAttributes`, `MFCreateSample`)
 - [`mfreadwrite`](./packages/mfreadwrite) - Media Foundation source reader / sink writer factories (`MFCreateSourceReader*`, `MFCreateSinkWriter*`)
 - [`mmdevapi`](./packages/mmdevapi) - MMDevice / Core Audio class factory, WASAPI async activation (`DllGetClassObject`, `ActivateAudioInterfaceAsync`)
@@ -80,6 +86,7 @@ Published packages are AI-friendly. Alongside the `README.md`, each package incl
 - [`winhttp`](./packages/winhttp) - HTTP/HTTPS client, WebSockets, proxy auto-detect (WPAD/PAC), TLS configuration, request tracing
 - [`wininet`](./packages/wininet) - WinINet/IE-legacy stack: HTTP/HTTPS, FTP, persistent URL cache, cookie jar (`InternetGetCookieEx2`, `InternetSetCookieEx2`), autodial, per-site cookie decisions
 - [`wlanapi`](./packages/wlanapi) - Native Wifi: interface enumeration, scans, profiles, Wi-Fi Direct
+- [`wldap32`](./packages/wldap32) - LDAP client: directory bind/auth, search, modify, add/delete/rename/compare, extended operations, server/client controls, paged / sorted / virtual-list-view results, StartTLS, and the BER (winber) encode/decode primitives
 - [`ws2_32`](./packages/ws2_32) - Winsock 2: BSD sockets, DNS, network I/O
 
 #### Printing
@@ -104,7 +111,9 @@ Published packages are AI-friendly. Alongside the `README.md`, each package incl
 
 #### System
 
+- [`cabinet`](./packages/cabinet) - Compression API (MSZIP / XPRESS / XPRESS-Huffman / LZMS) plus Cabinet (.cab) archive creation and extraction via the FCI / FDI callback interfaces
 - [`cfgmgr32`](./packages/cfgmgr32) - device tree traversal, configuration management, device properties, interfaces, resources
+- [`combase`](./packages/combase) - Windows Runtime activation core: `RoInitialize`/`RoActivateInstance`/`RoGetActivationFactory`, the full `HSTRING` string API, fast-pass/preallocated buffers, and the WinRT error-info surface — the pure-FFI path to toast notifications and the rest of the WinRT projection
 - [`dbghelp`](./packages/dbghelp) - symbol engine, stack walking, minidumps, image helpers, source-level debugging
 - [`hid`](./packages/hid) - HID device access, feature reports, preparsed data parsing
 - [`kernel32`](./packages/kernel32) - processes, memory, files, console, threads
@@ -116,7 +125,9 @@ Published packages are AI-friendly. Alongside the `README.md`, each package incl
 - [`oleaut32`](./packages/oleaut32) - OLE Automation: BSTR, VARIANT, SAFEARRAY, DECIMAL, CURRENCY, type libraries, IDispatch helpers, OLE pictures, full Var\*From\* conversion family
 - [`pdh`](./packages/pdh) - performance counter queries, logs, and enumeration
 - [`powrprof`](./packages/powrprof) - power schemes, policies, sleep states, battery management
+- [`propsys`](./packages/propsys) - Windows Property System: full PROPVARIANT/VARIANT conversion families, vector/array helpers, property keys (`PSGetPropertyKeyFromName`), property descriptions, property stores/bags, and `PropVariantCompareEx` (Explorer's value comparator)
 - [`psapi`](./packages/psapi) - process status and module enumeration
+- [`rasapi32`](./packages/rasapi32) - Remote Access Service: dial-up/VPN dialing and hang-up, connection enumeration and status, phone-book entry/sub-entry/credentials/dial-params management, autodial, projection info, link/connection statistics, EAP user data
 - [`rpcrt4`](./packages/rpcrt4) - RPC runtime: UUID generation (random + sequential), client/server bindings, endpoint mapper enumeration, authentication levels, extended error info, protocol sequences, MES pickling, string-binding compose/parse, `DceErrorInqText`
 - [`rstrtmgr`](./packages/rstrtmgr) - Restart Manager sessions, lock discovery, shutdown, and restart orchestration
 - [`setupapi`](./packages/setupapi) - device installation, INF parsing, class and interface enumeration
@@ -124,6 +135,7 @@ Published packages are AI-friendly. Alongside the `README.md`, each package incl
 - [`shell32`](./packages/shell32) - shell operations and file management
 - [`shlwapi`](./packages/shlwapi) - shell lightweight utility functions
 - [`taskschd`](./packages/taskschd) - Task Scheduler COM server entry points, class factory activation, task enumeration
+- [`tdh`](./packages/tdh) - Trace Data Helper: ETW event decoding (`TdhGetEventInformation`, `TdhFormatProperty`), provider / field / event-schema enumeration, value & bitmap maps, manifest loading, and payload filters
 - [`uiautomationcore`](./packages/uiautomationcore) - UI Automation nodes, pattern objects, provider bridging, and event plumbing
 - [`userenv`](./packages/userenv) - user profiles, environment blocks, and Group Policy
 - [`version`](./packages/version) - file version resources, string tables, installer version helpers
