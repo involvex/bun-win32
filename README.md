@@ -115,6 +115,7 @@ Published packages are AI-friendly. Alongside the `README.md`, each package incl
 - [`sspicli`](./packages/sspicli) - SSPI client-side auth and SASL
 - [`winscard`](./packages/winscard) - smart card resource manager, reader discovery, status changes, and APDU transport
 - [`wintrust`](./packages/wintrust) - Authenticode signature verification (WinVerifyTrust), catalog admin, SIP, and trust-provider helpers
+- [`wscapi`](./packages/wscapi) - Windows Security Center: aggregate provider health (firewall, antivirus, auto-update, UAC, WSC service) and change registration (`WscGetSecurityProviderHealth`, `WscRegisterForChanges`) — live security posture without parsing PowerShell
 
 #### System
 

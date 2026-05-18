@@ -1,21 +1,23 @@
-# @bun-win32/WIN32_CLASS
+# @bun-win32/wscapi
 
-Zero-dependency, zero-overhead Win32 WIN32_CLASS bindings for [Bun](https://bun.sh) on Windows.
+Zero-dependency, zero-overhead Win32 WSCAPI bindings for [Bun](https://bun.sh) on Windows.
 
 ## Overview
 
-`@bun-win32/WIN32_CLASS` exposes the `WIN32_CLASS.dll` exports using [Bun](https://bun.sh)'s FFI. It provides a single class, `WIN32_CLASS`, which lazily binds native symbols on first use. You can optionally preload a subset or all symbols up-front via `Preload()`.
+`@bun-win32/wscapi` exposes the `wscapi.dll` exports using [Bun](https://bun.sh)'s FFI. It provides a single class, `Wscapi`, which lazily binds native symbols on first use. You can optionally preload a subset or all symbols up-front via `Preload()`.
+
+The Windows Security Center (WSC) API reports the aggregate health of the system's security provider categories — firewall, antivirus, automatic updates, UAC, internet settings, and the WSC service — and lets an app register for change notifications. It is the supported way to read security posture without parsing `Get-MpComputerStatus` output.
 
 The bindings are strongly typed for a smooth DX in TypeScript.
 
 ## Features
 
 - [Bun](https://bun.sh)-first ergonomics on Windows 10/11.
-- Direct FFI to `WIN32_CLASS.dll` ({description}).
-- In-source docs in `structs/WIN32_CLASS.ts` with links to Microsoft Docs.
-- Lazy binding on first call; optional eager preload (`WIN32_CLASS.Preload()`).
+- Direct FFI to `wscapi.dll` (Windows Security Center provider health, change notifications, antimalware URI).
+- In-source docs in `structs/Wscapi.ts` with links to Microsoft Docs.
+- Lazy binding on first call; optional eager preload (`Wscapi.Preload()`).
 - No wrapper overhead; calls map 1:1 to native APIs.
-- Strongly-typed Win32 aliases (see `types/WIN32_CLASS.ts`).
+- Strongly-typed Win32 aliases (see `types/Wscapi.ts`).
 
 ## Requirements
 
@@ -25,15 +27,20 @@ The bindings are strongly typed for a smooth DX in TypeScript.
 ## Installation
 
 ```sh
-bun add @bun-win32/WIN32_CLASS
+bun add @bun-win32/wscapi
 ```
 
 ## Quick Start
 
 ```ts
-{
-  quickstart;
-}
+import Wscapi, { WSC_SECURITY_PROVIDER, WSC_SECURITY_PROVIDER_HEALTH } from '@bun-win32/wscapi';
+
+const health = Buffer.alloc(4);
+const hr = Wscapi.WscGetSecurityProviderHealth(WSC_SECURITY_PROVIDER.WSC_SECURITY_PROVIDER_ANTIVIRUS, health.ptr);
+
+const code = health.readInt32LE(0);
+console.log('Antivirus:', WSC_SECURITY_PROVIDER_HEALTH[code], `(hr=${hr})`);
+// hr === 1 (S_FALSE) means the WSC service is not running.
 ```
 
 > [!NOTE]
@@ -44,10 +51,14 @@ bun add @bun-win32/WIN32_CLASS
 Run the included examples:
 
 ```sh
-{examples}
+bun run example/security-dashboard.ts
+bun run example/wsc-health-report.ts
 ```
 
 ## Notes
 
-- Either rely on lazy binding or call `WIN32_CLASS.Preload()`.
+- Either rely on lazy binding or call `Wscapi.Preload()`.
+- `WscGetSecurityProviderHealth` returns `S_FALSE` (`1`) and forces `pHealth` to `POOR` if the WSC service is stopped.
+- As of Windows 10 1607, WSC tracks antivirus but not standalone antispyware.
+- Pair `WscRegisterForChanges` with `WscUnRegisterChanges`.
 - Windows only. Bun runtime required.
