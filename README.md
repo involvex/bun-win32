@@ -126,6 +126,7 @@ Published packages are AI-friendly. Alongside the `README.md`, each package incl
 - [`combase`](./packages/combase) - Windows Runtime activation core: `RoInitialize`/`RoActivateInstance`/`RoGetActivationFactory`, the full `HSTRING` string API, fast-pass/preallocated buffers, and the WinRT error-info surface — the pure-FFI path to toast notifications and the rest of the WinRT projection
 - [`dbghelp`](./packages/dbghelp) - symbol engine, stack walking, minidumps, image helpers, source-level debugging
 - [`dismapi`](./packages/dismapi) - DISM image servicing: online/offline sessions, optional features, packages, drivers, capabilities, image health (`DismInitialize`, `DismOpenSession`, `DismGetFeatures`, `DismCheckImageHealth`) — the `DISM.exe` engine in-process, no spawn
+- [`fltlib`](./packages/fltlib) - Filter Manager (`fltuser.h`): minifilter / instance / volume enumeration, info queries, load/unload, attach/detach, and the minifilter communication-port channel (`FilterFindFirst`, `FilterInstanceFindFirst`, `FilterVolumeFindFirst`, `FilterConnectCommunicationPort`) — the file-system filter stack `fltmc` shows, pure-FFI
 - [`hid`](./packages/hid) - HID device access, feature reports, preparsed data parsing
 - [`kernel32`](./packages/kernel32) - processes, memory, files, console, threads
 - [`mi`](./packages/mi) - Windows Management Infrastructure client bootstrap and function-table discovery
