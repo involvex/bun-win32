@@ -75,6 +75,7 @@ Published packages are AI-friendly. Alongside the `README.md`, each package incl
 - [`mfreadwrite`](./packages/mfreadwrite) - Media Foundation source reader / sink writer factories (`MFCreateSourceReader*`, `MFCreateSinkWriter*`)
 - [`mmdevapi`](./packages/mmdevapi) - MMDevice / Core Audio class factory, WASAPI async activation (`DllGetClassObject`, `ActivateAudioInterfaceAsync`)
 - [`winmm`](./packages/winmm) - multimedia audio, MIDI, mixers, timers, joysticks, MCI
+- [`xaudio2_9`](./packages/xaudio2_9) - XAudio2 2.9: low-latency audio engine + voice graph, X3DAudio positional math (matrix / Doppler / LPF solve), and every built-in XAPO — volume meter, reverb, FXEQ / FXMasteringLimiter / FXReverb / FXEcho (`XAudio2Create`, `X3DAudioInitialize`, `X3DAudioCalculate`, `CreateAudioVolumeMeter`, `CreateFX`); synthesize and play PCM end-to-end over the `IXAudio2` / `IXAudio2SourceVoice` COM vtable
 - [`xinput1_4`](./packages/xinput1_4) - XInput 1.4: Xbox controller state, vibration, battery, audio, keystroke
 - [`xinput9_1_0`](./packages/xinput9_1_0) - XInput 9.1.0: legacy Xbox controller state, vibration, DirectSound GUIDs
 
