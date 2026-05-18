@@ -25,7 +25,16 @@
 
 import { CFunction, FFIType, type Pointer, read } from 'bun:ffi';
 
-import Dxcore, { DXCORE_ADAPTER_ATTRIBUTE_D3D11_GRAPHICS, DXCORE_ADAPTER_ATTRIBUTE_D3D12_CORE_COMPUTE, DXCORE_ADAPTER_ATTRIBUTE_D3D12_GRAPHICS, DXCoreAdapterPreference, DXCoreAdapterProperty, IID_IDXCoreAdapter, IID_IDXCoreAdapterFactory, IID_IDXCoreAdapterList } from '../index';
+import Dxcore, {
+  DXCORE_ADAPTER_ATTRIBUTE_D3D11_GRAPHICS,
+  DXCORE_ADAPTER_ATTRIBUTE_D3D12_CORE_COMPUTE,
+  DXCORE_ADAPTER_ATTRIBUTE_D3D12_GRAPHICS,
+  DXCoreAdapterPreference,
+  DXCoreAdapterProperty,
+  IID_IDXCoreAdapter,
+  IID_IDXCoreAdapterFactory,
+  IID_IDXCoreAdapterList,
+} from '../index';
 
 const RESET = '\x1b[0m';
 const BOLD = '\x1b[1m';
@@ -155,10 +164,11 @@ function humanBytes(value: bigint): string {
   return `${scaled.toFixed(unit === 0 ? 0 : 2)} ${units[unit]} (${value.toLocaleString()} bytes)`;
 }
 
-// Documented on Microsoft Learn (DXCoreGraphicsPreemptionGranularity); not in
-// the SDK header, so decoded locally with the raw value always shown.
-const GRAPHICS_PREEMPTION = ['DMA buffer boundary', 'primitive boundary', 'triangle boundary', 'pixel boundary', 'instruction boundary'];
-const COMPUTE_PREEMPTION = ['DMA buffer boundary', 'dispatch boundary', 'thread-group boundary', 'thread boundary', 'instruction boundary'];
+// KmdModelVersion / *PreemptionGranularity expose the kernel D3DKMDT enums
+// (d3dkmdt.h / d3dkmthk.h), keyed by their literal decimal values; the raw
+// number is always shown alongside the decoded label.
+const GRAPHICS_PREEMPTION: Record<number, string> = { 0: 'none', 100: 'DMA buffer boundary', 200: 'primitive boundary', 300: 'triangle boundary', 400: 'pixel boundary', 500: 'shader boundary' };
+const COMPUTE_PREEMPTION: Record<number, string> = { 0: 'none', 100: 'DMA buffer boundary', 200: 'dispatch boundary', 300: 'thread-group boundary', 400: 'thread boundary', 500: 'shader boundary' };
 
 const ATTRIBUTES: Array<{ guid: string; label: string }> = [
   { guid: DXCORE_ADAPTER_ATTRIBUTE_D3D12_GRAPHICS, label: 'D3D12_GRAPHICS' },
@@ -276,8 +286,9 @@ for (let index = 0; index < adapterCount; index += 1) {
 
   const kmd = readProperty(adapter, DXCoreAdapterProperty.KmdModelVersion);
   if (kmd && kmd.length >= 4) {
+    // KMT_DRIVERVERSION_WDDM_* are literal decimals: 1000 = 1.0, 3200 = 3.2.
     const value = kmd.readUInt32LE(0);
-    console.log(field('Driver model', `WDDM ${value >> 12}.${(value >> 8) & 0xf} ${DIM}(0x${value.toString(16).padStart(4, '0')})${RESET}`));
+    console.log(field('Driver model', `WDDM ${Math.floor(value / 1000)}.${Math.floor((value % 1000) / 100)} ${DIM}(${value})${RESET}`));
   }
 
   const graphicsPreemption = readProperty(adapter, DXCoreAdapterProperty.GraphicsPreemptionGranularity);

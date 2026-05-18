@@ -291,15 +291,19 @@ for (const card of cards) {
   // Animate the VRAM bar charging up.
   for (let step = 0; step <= filled; step += Math.max(1, Math.ceil(BAR_WIDTH / 14))) {
     const bar = `${card.vendor.color}${'█'.repeat(step)}${RESET}${GREY}${'░'.repeat(BAR_WIDTH - step)}${RESET}`;
-    process.stdout.write(`\r  ${die[3]}  [${bar}] ${WHITE}${Math.round((step / BAR_WIDTH) * 100)
-      .toString()
-      .padStart(3)}%${RESET}\x1b[K`);
+    process.stdout.write(
+      `\r  ${die[3]}  [${bar}] ${WHITE}${Math.round((step / BAR_WIDTH) * 100)
+        .toString()
+        .padStart(3)}%${RESET}\x1b[K`,
+    );
     Bun.sleepSync(16);
   }
   const bar = `${card.vendor.color}${'█'.repeat(filled)}${RESET}${GREY}${'░'.repeat(BAR_WIDTH - filled)}${RESET}`;
-  process.stdout.write(`\r  ${die[3]}  [${bar}] ${WHITE}${Math.round(fraction * 100)
-    .toString()
-    .padStart(3)}%${RESET}\x1b[K\n`);
+  process.stdout.write(
+    `\r  ${die[3]}  [${bar}] ${WHITE}${Math.round(fraction * 100)
+      .toString()
+      .padStart(3)}%${RESET}\x1b[K\n`,
+  );
 
   console.log(`  ${die[4]}  ${DIM}shared system memory${RESET} ${humanBytes(card.sharedMemory)}`);
   console.log(`  ${die[5]}`);
