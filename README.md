@@ -85,6 +85,7 @@ Published packages are AI-friendly. Alongside the `README.md`, each package incl
 
 - [`bluetoothapis`](./packages/bluetoothapis) - Bluetooth Classic radio/device discovery, BLE GATT, SDP, authentication
 - [`dnsapi`](./packages/dnsapi) - DNS resolution across every record type (A, AAAA, MX, NS, SOA, TXT, SRV, CAA, etc.), name validation, configured server discovery, DNS-SD, mDNS, async queries
+- [`fwpuclnt`](./packages/fwpuclnt) - Windows Filtering Platform: Base Filtering Engine sessions/transactions, provider/sub-layer/layer/callout/filter CRUD + enumeration + change subscriptions, IPsec SA/tunnel/key-manager, IKE/AuthIP SAs, net-event diagnostics, ALE endpoints, Winsock secure-socket extensions — all 199 documented exports
 - [`httpapi`](./packages/httpapi) - HTTP Server API (HTTP.sys): kernel-mode listener powering IIS, request queues, URL groups, server sessions, SSL/TLS config, response caching, HTTP/2 push, request shaping
 - [`iphlpapi`](./packages/iphlpapi) - network adapters, TCP/UDP tables, routing
 - [`mpr`](./packages/mpr) - network drive mapping, UNC connections, resource enumeration

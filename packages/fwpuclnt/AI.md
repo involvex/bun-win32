@@ -1,42 +1,42 @@
-# AI Guide for @bun-win32/WIN32_CLASS
+# AI Guide for @bun-win32/fwpuclnt
 
 How to use this package, not what the Win32 API does.
 
 ## Usage
 
 ```ts
-import {Class}, { SomeFlag } from '@bun-win32/WIN32_CLASS';
+import Fwpuclnt, { SomeFlag } from '@bun-win32/fwpuclnt';
 
 // Methods bind lazily on first call
-const result = {Class}.SomeFunctionW(arg1, arg2);
+const result = Fwpuclnt.SomeFunctionW(arg1, arg2);
 
 // Preload: array, single string, or no args (all symbols)
-{Class}.Preload(['SomeFunctionW', 'AnotherFunction']);
-{Class}.Preload('SomeFunctionW');
-{Class}.Preload();
+Fwpuclnt.Preload(['SomeFunctionW', 'AnotherFunction']);
+Fwpuclnt.Preload('SomeFunctionW');
+Fwpuclnt.Preload();
 ```
 
 ## Where To Look
 
-| Need                              | Read                 |
-| --------------------------------- | -------------------- |
-| Find a method or its MS Docs link | `structs/{Class}.ts` |
-| Find types, enums, constants      | `types/{Class}.ts`   |
-| Quick examples                    | `README.md`          |
+| Need                              | Read                  |
+| --------------------------------- | --------------------- |
+| Find a method or its MS Docs link | `structs/Fwpuclnt.ts` |
+| Find types, enums, constants      | `types/Fwpuclnt.ts`   |
+| Quick examples                    | `README.md`           |
 
-`index.ts` re-exports the class and all types — import from `@bun-win32/WIN32_CLASS` directly.
+`index.ts` re-exports the class and all types — import from `@bun-win32/fwpuclnt` directly.
 
 ## Calling Convention
 
-All documented `WIN32_CLASS.dll` exports are bound. Each method maps 1:1 to its DLL export. Names, parameter names, and order match Microsoft Docs.
+All documented `fwpuclnt.dll` exports are bound. Each method maps 1:1 to its DLL export. Names, parameter names, and order match Microsoft Docs.
 
 ### Strings
 
 `W` methods take UTF-16LE NUL-terminated buffers. `A` methods take ANSI strings.
 
 ```ts
-const wide = Buffer.from('Hello\0', 'utf16le');  // LPCWSTR
-{Class}.SomeFunctionW(wide.ptr);
+const wide = Buffer.from('Hello\0', 'utf16le'); // LPCWSTR
+Fwpuclnt.SomeFunctionW(wide.ptr);
 
 // Reading a wide string back from a buffer:
 const text = new TextDecoder('utf-16').decode(buf).replace(/\0.*$/, '');
@@ -57,7 +57,7 @@ const text = new TextDecoder('utf-16').decode(buf).replace(/\0.*$/, '');
 
 ```ts
 const out = Buffer.alloc(4);
-{Class}.SomeFunction(out.ptr);
+Fwpuclnt.SomeFunction(out.ptr);
 const value = out.readUInt32LE(0);
 ```
 

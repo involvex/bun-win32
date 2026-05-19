@@ -51,6 +51,7 @@
     "bun": ">=1.1.0"
   },
   "scripts": {
-    "example": "bun ./example/fwpuclnt.ts"
+    "example:bfe-inventory": "bun ./example/bfe-inventory.ts",
+    "example:filter-radar": "bun ./example/filter-radar.ts"
   }
 }
