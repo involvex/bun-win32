@@ -1,1 +1,40 @@
-export type { BOOL, DWORD, HANDLE, LPCWSTR, LPVOID, LPWSTR, NULL } from '@bun-win32/core';
+import type { Pointer } from 'bun:ffi';
+
+export type { BOOL, DWORD } from '@bun-win32/core';
+
+export const MAX_DESC = 64;
+export const MAX_DESC_W = 256;
+
+export enum RestorePointEventType {
+  BEGIN_NESTED_SYSTEM_CHANGE = 102,
+  BEGIN_NESTED_SYSTEM_CHANGE_NORP = 104,
+  BEGIN_SYSTEM_CHANGE = 100,
+  END_NESTED_SYSTEM_CHANGE = 103,
+  END_SYSTEM_CHANGE = 101,
+}
+
+export enum RestorePointType {
+  ACCESSIBILITY_SETTING = 3,
+  APPLICATION_INSTALL = 0,
+  APPLICATION_RUN = 5,
+  APPLICATION_UNINSTALL = 1,
+  BACKUP = 15,
+  BACKUP_RECOVERY = 14,
+  CANCELLED_OPERATION = 13,
+  CHECKPOINT = 7,
+  CRITICAL_UPDATE = 18,
+  DESKTOP_SETTING = 2,
+  DEVICE_DRIVER_INSTALL = 10,
+  FIRSTRUN = 11,
+  MANUAL_CHECKPOINT = 16,
+  MODIFY_SETTINGS = 12,
+  OE_SETTING = 4,
+  RESTORE = 6,
+  WINDOWS_BOOT = 9,
+  WINDOWS_SHUTDOWN = 8,
+  WINDOWS_UPDATE = 17,
+}
+
+export type PRESTOREPOINTINFOA = Pointer;
+export type PRESTOREPOINTINFOW = Pointer;
+export type PSTATEMGRSTATUS = Pointer;
