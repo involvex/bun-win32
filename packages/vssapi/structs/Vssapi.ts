@@ -2,6 +2,8 @@ import { type FFIFunction, FFIType } from 'bun:ffi';
 
 import { Win32 } from '@bun-win32/core';
 
+import type { BSTR, HRESULT, LPCWSTR, PBOOL, PLONG, PPIVSSBACKUPCOMPONENTS, PPIVSSEXAMINEWRITERMETADATA, PPVOID, PVSS_SNAPSHOT_PROP, REFCLSID, REFIID, VSS_PWSZ } from '../types/Vssapi';
+
 /**
  * Thin, lazy-loaded FFI bindings for `vssapi.dll`.
  *
@@ -28,7 +30,68 @@ class Vssapi extends Win32 {
   protected static override name = 'vssapi.dll';
 
   /** @inheritdoc */
-  protected static override readonly Symbols = {} as const satisfies Record<string, FFIFunction>;
+  protected static override readonly Symbols = {
+    CreateVssBackupComponentsInternal: { args: [FFIType.ptr], returns: FFIType.i32 },
+    CreateVssExamineWriterMetadataInternal: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+    DllCanUnloadNow: { args: [], returns: FFIType.i32 },
+    DllGetClassObject: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+    IsVolumeSnapshotted: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+    IsVolumeSnapshottedInternal: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+    ShouldBlockRevert: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+    ShouldBlockRevertInternal: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+    VssFreeSnapshotProperties: { args: [FFIType.ptr], returns: FFIType.void },
+    VssFreeSnapshotPropertiesInternal: { args: [FFIType.ptr], returns: FFIType.void },
+  } as const satisfies Record<string, FFIFunction>;
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/vsbackup/nf-vsbackup-createvssbackupcomponents
+  public static CreateVssBackupComponentsInternal(ppBackup: PPIVSSBACKUPCOMPONENTS): HRESULT {
+    return Vssapi.Load('CreateVssBackupComponentsInternal')(ppBackup);
+  }
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/vsbackup/nf-vsbackup-createvssexaminewritermetadata
+  public static CreateVssExamineWriterMetadataInternal(bstrXML: BSTR, ppMetadata: PPIVSSEXAMINEWRITERMETADATA): HRESULT {
+    return Vssapi.Load('CreateVssExamineWriterMetadataInternal')(bstrXML, ppMetadata);
+  }
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-dllcanunloadnow
+  public static DllCanUnloadNow(): HRESULT {
+    return Vssapi.Load('DllCanUnloadNow')();
+  }
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-dllgetclassobject
+  public static DllGetClassObject(rclsid: REFCLSID, riid: REFIID, ppv: PPVOID): HRESULT {
+    return Vssapi.Load('DllGetClassObject')(rclsid, riid, ppv);
+  }
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/vsbackup/nf-vsbackup-isvolumesnapshotted
+  public static IsVolumeSnapshotted(pwszVolumeName: VSS_PWSZ, pbSnapshotsPresent: PBOOL, plSnapshotCapability: PLONG): HRESULT {
+    return Vssapi.Load('IsVolumeSnapshotted')(pwszVolumeName, pbSnapshotsPresent, plSnapshotCapability);
+  }
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/vsbackup/nf-vsbackup-isvolumesnapshotted
+  public static IsVolumeSnapshottedInternal(pwszVolumeName: VSS_PWSZ, pbSnapshotsPresent: PBOOL, plSnapshotCapability: PLONG): HRESULT {
+    return Vssapi.Load('IsVolumeSnapshottedInternal')(pwszVolumeName, pbSnapshotsPresent, plSnapshotCapability);
+  }
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/vsbackup/nf-vsbackup-shouldblockrevert
+  public static ShouldBlockRevert(wszVolumeName: LPCWSTR, pbBlock: PBOOL): HRESULT {
+    return Vssapi.Load('ShouldBlockRevert')(wszVolumeName, pbBlock);
+  }
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/vsbackup/nf-vsbackup-shouldblockrevert
+  public static ShouldBlockRevertInternal(wszVolumeName: LPCWSTR, pbBlock: PBOOL): HRESULT {
+    return Vssapi.Load('ShouldBlockRevertInternal')(wszVolumeName, pbBlock);
+  }
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/vsbackup/nf-vsbackup-vssfreesnapshotproperties
+  public static VssFreeSnapshotProperties(pProp: PVSS_SNAPSHOT_PROP): void {
+    return Vssapi.Load('VssFreeSnapshotProperties')(pProp);
+  }
+
+  // https://learn.microsoft.com/en-us/windows/win32/api/vsbackup/nf-vsbackup-vssfreesnapshotproperties
+  public static VssFreeSnapshotPropertiesInternal(pProp: PVSS_SNAPSHOT_PROP): void {
+    return Vssapi.Load('VssFreeSnapshotPropertiesInternal')(pProp);
+  }
 }
 
 export default Vssapi;
