@@ -304,6 +304,8 @@ const C_TYPE_TO_FFI: Record<string, string> = {
   'IWICPalette*': 'FFIType.u64',
   'IWICPixelFormatInfo*': 'FFIType.u64',
   'IWICStream*': 'FFIType.u64',
+  // directml / d3d12 COM interface pointers — opaque tokens, treated as u64 handles by convention
+  'ID3D12Device*': 'FFIType.u64',
   // webauthn struct pointers the DLL allocates and the caller only round-trips
   // (free / read via ReadProcessMemory) — opaque tokens, treated as u64 by convention
   PWEBAUTHN_ASSERTION: 'FFIType.u64',
