@@ -6,8 +6,9 @@
   "dependencies": {
     "@bun-win32/core": "workspace:*"
   },
-  "description": "Zero-dependency, zero-overhead Win32 Clusapi bindings for Bun (FFI) on Windows.",
+  "description": "Zero-dependency, zero-overhead Win32 Failover Cluster (clusapi) bindings for Bun (FFI) on Windows.",
   "devDependencies": {
+    "@bun-win32/kernel32": "workspace:*",
     "@types/bun": "latest"
   },
   "exports": {
@@ -51,6 +52,8 @@
     "bun": ">=1.1.0"
   },
   "scripts": {
-    "example": "bun ./example/clusapi.ts"
+    "example:cluster-radar": "bun ./example/cluster-radar.ts",
+    "example:cluster-diagnostic": "bun ./example/cluster-diagnostic.ts",
+    "test": "bun test ./example/clusapi.integration.test.ts"
   }
 }
