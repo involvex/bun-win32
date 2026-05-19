@@ -39,6 +39,7 @@ import Webauthn, {
   WEBAUTHN_API_CURRENT_VERSION,
   WEBAUTHN_ATTESTATION_CONVEYANCE_PREFERENCE_NONE,
   WEBAUTHN_AUTHENTICATOR_ATTACHMENT_PLATFORM,
+  WEBAUTHN_AUTHENTICATOR_GET_ASSERTION_OPTIONS_VERSION_1,
   WEBAUTHN_AUTHENTICATOR_MAKE_CREDENTIAL_OPTIONS_VERSION_1,
   WEBAUTHN_CLIENT_DATA_CURRENT_VERSION,
   WEBAUTHN_COSE_ALGORITHM_ECDSA_P256_WITH_SHA256,
@@ -188,6 +189,12 @@ async function main(): Promise<void> {
   if (hWnd === 0n) hWnd = User32.GetForegroundWindow();
   console.log(`\n  ${DIM}parent HWND${RESET} : ${GRAY}0x${hWnd.toString(16)}${RESET}   ${DIM}WebAuthn API v${WEBAUTHN_API_CURRENT_VERSION}${RESET}`);
 
+  // Animate the transport constellation up front. Every WebAuthn struct is
+  // assembled *after* this — there are no awaits between struct assembly and
+  // the synchronous blocking FFI call, so the addresses baked into the parent
+  // structs cannot be invalidated by a GC cycle mid-animation.
+  await constellation(18);
+
   const RP_ID = 'bun-win32.dev';
   const RP_NAME = '@bun-win32/webauthn demo';
   const userId = randomBytes(16);
@@ -250,8 +257,6 @@ async function main(): Promise<void> {
   console.log(`  ${BOLD}Challenge${RESET}     : ${GRAY}${b64url(challenge).slice(0, 43)}${RESET}`);
   console.log(`  ${BOLD}Algorithms${RESET}    : ${GREEN}ES256${RESET}${DIM}, ${RESET}${GREEN}RS256${RESET}\n`);
 
-  await constellation(18);
-
   console.log(`  ${BOLD}${YELLOW}▶ Approve the Windows Hello prompt to mint the passkey…${RESET}\n`);
 
   const attOut = Buffer.alloc(8);
@@ -301,13 +306,18 @@ async function main(): Promise<void> {
   authClientData.writeBigUInt64LE(BigInt(wHash.ptr!), 16);
 
   const wRpIdAuth = wide(RP_ID);
+
+  // WEBAUTHN_AUTHENTICATOR_GET_ASSERTION_OPTIONS V1 (56 bytes, zeroed):
+  // dwVersion@0 dwTimeout@4 CredentialList@8 Extensions@24 attachment@40 uv@44 flags@48.
+  // An empty credential list performs a discoverable lookup by RP id.
+  const getOpts = Buffer.alloc(56);
+  getOpts.writeUInt32LE(WEBAUTHN_AUTHENTICATOR_GET_ASSERTION_OPTIONS_VERSION_1, 0);
+  getOpts.writeUInt32LE(60_000, 4);
+  getOpts.writeUInt32LE(WEBAUTHN_USER_VERIFICATION_REQUIREMENT_REQUIRED, 44);
   const asnOut = Buffer.alloc(8);
 
   console.log(`  ${BOLD}${YELLOW}▶ Approve Windows Hello again to sign a fresh challenge…${RESET}\n`);
-  const getHr = await spinner('Awaiting Windows Hello (GetAssertion)…', () =>
-    // pWebAuthNGetAssertionOptions is optional — a NULL discoverable lookup by RP id.
-    Webauthn.WebAuthNAuthenticatorGetAssertion(hWnd, wRpIdAuth.ptr!, authClientData.ptr!, null, asnOut.ptr!),
-  );
+  const getHr = await spinner('Awaiting Windows Hello (GetAssertion)…', () => Webauthn.WebAuthNAuthenticatorGetAssertion(hWnd, wRpIdAuth.ptr!, authClientData.ptr!, getOpts.ptr!, asnOut.ptr!));
 
   if (getHr !== 0) {
     console.log(`  ${RED}✗ GetAssertion failed${RESET} : 0x${(getHr >>> 0).toString(16).toUpperCase()} ${DIM}(${errName(getHr)})${RESET}\n`);
