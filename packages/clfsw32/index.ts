@@ -1,4 +1,4 @@
-import WIN32_CLASS from './structs/WIN32_CLASS';
+import Clfsw32 from './structs/Clfsw32';
 
-export * from './types/WIN32_CLASS';
-export default WIN32_CLASS;
+export * from './types/Clfsw32';
+export default Clfsw32;
