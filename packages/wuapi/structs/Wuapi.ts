@@ -15,6 +15,13 @@ import type { HRESULT, PPVOID, REFCLSID, REFIID } from '../types/Wuapi';
  * You normally do not access `Symbols` directly; call the static methods or preload
  * a subset for hot paths.
  *
+ * `wuapi.dll` is the Windows Update Agent COM server. Its only flat exports are the
+ * standard COM in-process server entry points (`Dll*`). The Windows Update object
+ * model (`IUpdateSession`, `IUpdateSearcher`, `ISearchResult`, ...) is reached by
+ * `CoCreateInstance` of `CLSID_UpdateSession` (ProgID `Microsoft.Update.Session`)
+ * and driven over the COM vtable; the relevant CLSIDs/IIDs are exported from
+ * `types/Wuapi.ts`.
+ *
  * @example
  * ```ts
  * import Wuapi from './structs/Wuapi';

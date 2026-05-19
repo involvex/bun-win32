@@ -6,6 +6,8 @@ Zero-dependency, zero-overhead Win32 Wuapi bindings for [Bun](https://bun.sh) on
 
 `@bun-win32/wuapi` exposes the `wuapi.dll` exports using [Bun](https://bun.sh)'s FFI. It provides a single class, `Wuapi`, which lazily binds native symbols on first use. You can optionally preload a subset or all symbols up-front via `Preload()`.
 
+`wuapi.dll` is the **Windows Update Agent COM server**. Its only flat exports are the four standard in-process COM server entry points (`DllCanUnloadNow`, `DllGetClassObject`, `DllRegisterServer`, `DllUnregisterServer`). The Windows Update object model — `IUpdateSession`, `IUpdateSearcher`, `ISearchResult`, `IUpdateHistoryEntryCollection`, ... — is reached via `CoCreateInstance(CLSID_UpdateSession)` (ProgID `Microsoft.Update.Session`) and driven over the COM vtable. This package binds the flat exports and re-exports every relevant CLSID, IID, and result/operation enum from `types/Wuapi.ts` so consumers can drive the object model over FFI (see the examples).
+
 The bindings are strongly typed for a smooth DX in TypeScript.
 
 ## Features
@@ -31,9 +33,17 @@ bun add @bun-win32/wuapi
 ## Quick Start
 
 ```ts
-import Wuapi from '@bun-win32/wuapi';
+import Wuapi, { CLSID_UpdateSession, IID_IUpdateSession } from '@bun-win32/wuapi';
 
-const hr = Wuapi.DllCanUnloadNow();
+// Flat export: ask the in-process server whether it can unload.
+const hr = Wuapi.DllCanUnloadNow(); // 0 = S_OK, 1 = S_FALSE
+
+// The Windows Update object model is reached via COM (CoCreateInstance of
+// CLSID_UpdateSession), then driven over the interface vtable. The exported
+// CLSID_*/IID_* GUID strings and the OperationResultCode / UpdateOperation /
+// ServerSelection enums are all you need to walk it — see the examples for a
+// complete, cast-free vtable invoker.
+console.log(CLSID_UpdateSession, IID_IUpdateSession);
 ```
 
 > [!NOTE]
@@ -44,7 +54,8 @@ const hr = Wuapi.DllCanUnloadNow();
 Run the included examples:
 
 ```sh
-bun run example
+bun run example:update-history-forensics   # exhaustive read-only servicing-history audit
+bun run example:patch-constellation        # live animated star map of update history
 ```
 
 ## Notes
