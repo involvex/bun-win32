@@ -10,8 +10,10 @@
  * (gamepad / keyboard / mouse / controller / flight stick / arcade stick /
  * racing wheel / sensors) for a current reading, and — when a device is
  * present — decode and tabulate the live gamepad / mouse / keyboard reading
- * straight from the returned struct memory. Every COM object is released and
- * the singleton ref-count is verified to drain (`DllCanUnloadNow`).
+ * straight from the returned struct memory. Every transient reading object is
+ * released; the per-process `IGameInput` singleton is intentionally retained
+ * (the OS input service co-owns it for the process lifetime) — which
+ * `DllCanUnloadNow` confirms by reporting the server cannot yet unload.
  *
  * APIs demonstrated:
  *   - GameInput.GameInputCreate                 (Nano-COM IGameInput singleton)
@@ -274,11 +276,15 @@ if (liveKeyboard !== 0n) {
   }
 }
 
-// ── Section E: release the singleton & verify ref-count drains ───────────────
-comRelease(gameInputAddr);
+// ── Section E: retain the singleton & probe the unload verdict ───────────────
+// The per-process IGameInput singleton is deliberately NOT released: the OS
+// input service co-owns it for the lifetime of the process, so force-releasing
+// it from a short-lived diagnostic only races that still-running dispatcher
+// thread. DllCanUnloadNow reports the in-proc server cannot unload precisely
+// because those OS-held references persist — which is the verdict to show.
 const canUnload = GameInput.DllCanUnloadNow();
-record('Teardown', 'IGameInput Release', 'ok', 'singleton reference released');
-record('Teardown', 'DllCanUnloadNow', canUnload >>> 0 === S_OK ? 'ok' : 'info', canUnload >>> 0 === S_OK ? `${hex32(canUnload)} (S_OK — no live refs)` : `${hex32(canUnload)} (S_FALSE — refs still held by the OS input service)`);
+record('Teardown', 'IGameInput singleton', 'ok', 'retained — OS input service co-owns it for the process lifetime');
+record('Teardown', 'DllCanUnloadNow', canUnload >>> 0 === S_OK ? 'ok' : 'info', canUnload >>> 0 === S_OK ? `${hex32(canUnload)} (S_OK — server unloadable)` : `${hex32(canUnload)} (S_FALSE — refs still held by the OS input service)`);
 
 kernel32.close();
 
@@ -313,3 +319,9 @@ console.log(
   `  ${ANSI.bold}${okCount}${ANSI.reset} ${ANSI.green}ok${ANSI.reset}  ${ANSI.dim}•${ANSI.reset}  ${ANSI.bold}${absentCount}${ANSI.reset} ${ANSI.yellow}absent${ANSI.reset}  ${ANSI.dim}•${ANSI.reset}  ${ANSI.dim}plug in a controller and re-run to see live readings decoded${ANSI.reset}`,
 );
 console.log();
+
+// The IGameInput singleton is retained (the OS input service co-owns it), so
+// the in-proc server and its dispatcher thread are still live at this point.
+// Exit deterministically here (mirroring the oscilloscope's shutdown) rather
+// than leaving teardown ordering to chance once the report has been printed.
+process.exit(0);

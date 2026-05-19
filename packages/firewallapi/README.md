@@ -6,7 +6,7 @@ Zero-dependency, zero-overhead Win32 FirewallAPI bindings for [Bun](https://bun.
 
 `@bun-win32/firewallapi` exposes the `FirewallAPI.dll` exports using [Bun](https://bun.sh)'s FFI. It provides a single class, `FirewallApi`, which lazily binds native symbols on first use. You can optionally preload a subset or all symbols up-front via `Preload()`.
 
-`FirewallAPI.dll` has a small documented flat-export surface: the 10 `NetworkIsolation*` AppContainer / network-isolation functions plus the four `Dll*` COM-server entry points. The Windows Firewall policy surface (`INetFwPolicy2`, `INetFwRules`, `INetFwRule`) is COM: `FirewallAPI.dll` is the registered in-process server for `CLSID_NetFwPolicy2`, so it is reached through `DllGetClassObject` + the `IClassFactory` / `INetFwPolicy2` vtables (see the example).
+`FirewallAPI.dll` has a small documented flat-export surface: the 9 `NetworkIsolation*` AppContainer / network-isolation functions plus the four `Dll*` COM-server entry points. The Windows Firewall policy surface (`INetFwPolicy2`, `INetFwRules`, `INetFwRule`) is COM: `FirewallAPI.dll` is the registered in-process server for `CLSID_NetFwPolicy2`, so it is reached through `DllGetClassObject` + the `IClassFactory` / `INetFwPolicy2` vtables (see the example).
 
 The bindings are strongly typed for a smooth DX in TypeScript.
 
