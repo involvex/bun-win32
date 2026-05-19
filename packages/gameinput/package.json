@@ -51,6 +51,7 @@
     "bun": ">=1.1.0"
   },
   "scripts": {
-    "example": "bun ./example/gameinput.ts"
+    "example:gameinput-diagnostic": "bun ./example/gameinput-diagnostic.ts",
+    "example:gameinput-oscilloscope": "bun ./example/gameinput-oscilloscope.ts"
   }
 }
