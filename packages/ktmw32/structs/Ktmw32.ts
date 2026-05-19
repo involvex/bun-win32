@@ -2,25 +2,7 @@ import { type FFIFunction, FFIType } from 'bun:ffi';
 
 import { Win32 } from '@bun-win32/core';
 
-import type {
-  ACCESS_MASK,
-  BOOL,
-  DWORD,
-  HANDLE,
-  LPGUID,
-  LPOVERLAPPED,
-  LPSECURITY_ATTRIBUTES,
-  LPWSTR,
-  NOTIFICATION_MASK,
-  NULL,
-  PDWORD,
-  PLARGE_INTEGER,
-  PTRANSACTION_NOTIFICATION,
-  PULONG,
-  PVOID,
-  ULONG,
-  ULONG_PTR,
-} from '../types/Ktmw32';
+import type { ACCESS_MASK, BOOL, DWORD, HANDLE, LPGUID, LPOVERLAPPED, LPSECURITY_ATTRIBUTES, LPWSTR, NOTIFICATION_MASK, NULL, PDWORD, PLARGE_INTEGER, PTRANSACTION_NOTIFICATION, PULONG, PVOID, ULONG, ULONG_PTR } from '../types/Ktmw32';
 
 /**
  * Thin, lazy-loaded FFI bindings for `ktmw32.dll`.
@@ -123,36 +105,17 @@ class Ktmw32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/ktmw32/nf-ktmw32-createresourcemanager
-  public static CreateResourceManager(
-    lpResourceManagerAttributes: LPSECURITY_ATTRIBUTES | NULL,
-    ResourceManagerId: LPGUID,
-    CreateOptions: DWORD,
-    TmHandle: HANDLE,
-    Description: LPWSTR | NULL,
-  ): HANDLE {
+  public static CreateResourceManager(lpResourceManagerAttributes: LPSECURITY_ATTRIBUTES | NULL, ResourceManagerId: LPGUID, CreateOptions: DWORD, TmHandle: HANDLE, Description: LPWSTR | NULL): HANDLE {
     return Ktmw32.Load('CreateResourceManager')(lpResourceManagerAttributes, ResourceManagerId, CreateOptions, TmHandle, Description);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/ktmw32/nf-ktmw32-createtransaction
-  public static CreateTransaction(
-    lpTransactionAttributes: LPSECURITY_ATTRIBUTES | NULL,
-    UOW: LPGUID | NULL,
-    CreateOptions: DWORD,
-    IsolationLevel: DWORD,
-    IsolationFlags: DWORD,
-    Timeout: DWORD,
-    Description: LPWSTR | NULL,
-  ): HANDLE {
+  public static CreateTransaction(lpTransactionAttributes: LPSECURITY_ATTRIBUTES | NULL, UOW: LPGUID | NULL, CreateOptions: DWORD, IsolationLevel: DWORD, IsolationFlags: DWORD, Timeout: DWORD, Description: LPWSTR | NULL): HANDLE {
     return Ktmw32.Load('CreateTransaction')(lpTransactionAttributes, UOW, CreateOptions, IsolationLevel, IsolationFlags, Timeout, Description);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/ktmw32/nf-ktmw32-createtransactionmanager
-  public static CreateTransactionManager(
-    lpTransactionAttributes: LPSECURITY_ATTRIBUTES | NULL,
-    LogFileName: LPWSTR | NULL,
-    CreateOptions: ULONG,
-    CommitStrength: ULONG,
-  ): HANDLE {
+  public static CreateTransactionManager(lpTransactionAttributes: LPSECURITY_ATTRIBUTES | NULL, LogFileName: LPWSTR | NULL, CreateOptions: ULONG, CommitStrength: ULONG): HANDLE {
     return Ktmw32.Load('CreateTransactionManager')(lpTransactionAttributes, LogFileName, CreateOptions, CommitStrength);
   }
 
@@ -172,24 +135,12 @@ class Ktmw32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/ktmw32/nf-ktmw32-getnotificationresourcemanager
-  public static GetNotificationResourceManager(
-    ResourceManagerHandle: HANDLE,
-    TransactionNotification: PTRANSACTION_NOTIFICATION,
-    NotificationLength: ULONG,
-    dwMilliseconds: DWORD,
-    ReturnLength: PULONG | NULL,
-  ): BOOL {
+  public static GetNotificationResourceManager(ResourceManagerHandle: HANDLE, TransactionNotification: PTRANSACTION_NOTIFICATION, NotificationLength: ULONG, dwMilliseconds: DWORD, ReturnLength: PULONG | NULL): BOOL {
     return Ktmw32.Load('GetNotificationResourceManager')(ResourceManagerHandle, TransactionNotification, NotificationLength, dwMilliseconds, ReturnLength);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/ktmw32/nf-ktmw32-getnotificationresourcemanagerasync
-  public static GetNotificationResourceManagerAsync(
-    ResourceManagerHandle: HANDLE,
-    TransactionNotification: PTRANSACTION_NOTIFICATION,
-    TransactionNotificationLength: ULONG,
-    ReturnLength: PULONG,
-    lpOverlapped: LPOVERLAPPED,
-  ): BOOL {
+  public static GetNotificationResourceManagerAsync(ResourceManagerHandle: HANDLE, TransactionNotification: PTRANSACTION_NOTIFICATION, TransactionNotificationLength: ULONG, ReturnLength: PULONG, lpOverlapped: LPOVERLAPPED): BOOL {
     return Ktmw32.Load('GetNotificationResourceManagerAsync')(ResourceManagerHandle, TransactionNotification, TransactionNotificationLength, ReturnLength, lpOverlapped);
   }
 
@@ -199,15 +150,7 @@ class Ktmw32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/ktmw32/nf-ktmw32-gettransactioninformation
-  public static GetTransactionInformation(
-    TransactionHandle: HANDLE,
-    Outcome: PDWORD | NULL,
-    IsolationLevel: PDWORD | NULL,
-    IsolationFlags: PDWORD | NULL,
-    Timeout: PDWORD | NULL,
-    BufferLength: DWORD,
-    Description: LPWSTR | NULL,
-  ): BOOL {
+  public static GetTransactionInformation(TransactionHandle: HANDLE, Outcome: PDWORD | NULL, IsolationLevel: PDWORD | NULL, IsolationFlags: PDWORD | NULL, Timeout: PDWORD | NULL, BufferLength: DWORD, Description: LPWSTR | NULL): BOOL {
     return Ktmw32.Load('GetTransactionInformation')(TransactionHandle, Outcome, IsolationLevel, IsolationFlags, Timeout, BufferLength, Description);
   }
 
@@ -322,13 +265,7 @@ class Ktmw32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/ktmw32/nf-ktmw32-settransactioninformation
-  public static SetTransactionInformation(
-    TransactionHandle: HANDLE,
-    IsolationLevel: DWORD,
-    IsolationFlags: DWORD,
-    Timeout: DWORD,
-    Description: LPWSTR | NULL,
-  ): BOOL {
+  public static SetTransactionInformation(TransactionHandle: HANDLE, IsolationLevel: DWORD, IsolationFlags: DWORD, Timeout: DWORD, Description: LPWSTR | NULL): BOOL {
     return Ktmw32.Load('SetTransactionInformation')(TransactionHandle, IsolationLevel, IsolationFlags, Timeout, Description);
   }
 

@@ -130,6 +130,7 @@ Published packages are AI-friendly. Alongside the `README.md`, each package incl
 - [`fltlib`](./packages/fltlib) - Filter Manager (`fltuser.h`): minifilter / instance / volume enumeration, info queries, load/unload, attach/detach, and the minifilter communication-port channel (`FilterFindFirst`, `FilterInstanceFindFirst`, `FilterVolumeFindFirst`, `FilterConnectCommunicationPort`) — the file-system filter stack `fltmc` shows, pure-FFI
 - [`hid`](./packages/hid) - HID device access, feature reports, preparsed data parsing
 - [`kernel32`](./packages/kernel32) - processes, memory, files, console, threads
+- [`ktmw32`](./packages/ktmw32) - Kernel Transaction Manager (KTM): create/open transactions, transaction managers, resource managers, and enlistments; two-phase commit/rollback (`CreateTransaction`, `CommitTransaction`, `RollbackTransaction`, `CreateResourceManager`, `CreateEnlistment`) — atomic transacted-NTFS / transacted-registry work, pure-FFI
 - [`mi`](./packages/mi) - Windows Management Infrastructure client bootstrap and function-table discovery
 - [`msi`](./packages/msi) - Windows Installer: product enumeration, install state, database, patching
 - [`ntdll`](./packages/ntdll) - native NT API
@@ -156,6 +157,7 @@ Published packages are AI-friendly. Alongside the `README.md`, each package incl
 - [`virtdisk`](./packages/virtdisk) - VHD, VHDX, and ISO virtual disk creation, attachment, inspection, and management
 - [`wer`](./packages/wer) - Windows Error Reporting report authoring/stores (`WerReportCreate`, `WerReportSubmit`, `WerStoreOpen`, `WerStoreQueryReportMetadataV2`) plus the Wait Chain Traversal deadlock-detection API (`OpenThreadWaitChainSession`, `GetThreadWaitChain`) — live kernel thread-wait X-ray proven pure-FFI
 - [`wevtapi`](./packages/wevtapi) - Windows Event Log queries, rendering, subscriptions, channel configuration, publisher metadata
+- [`wimgapi`](./packages/wimgapi) - Windows Imaging (WIM): create/open `.wim` archives, capture/apply/enumerate images, mount/unmount/split/export, references, and live progress via a `WIMRegisterMessageCallback` JSCallback — the `DISM.exe`/`ImageX` engine in-process
 - [`winusb`](./packages/winusb) - WinUSB device I/O, descriptors, pipes, policies, and isochronous transfers
 
 ## Project Structure
