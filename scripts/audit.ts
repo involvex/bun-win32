@@ -304,6 +304,11 @@ const C_TYPE_TO_FFI: Record<string, string> = {
   'IWICPalette*': 'FFIType.u64',
   'IWICPixelFormatInfo*': 'FFIType.u64',
   'IWICStream*': 'FFIType.u64',
+  // webauthn struct pointers the DLL allocates and the caller only round-trips
+  // (free / read via ReadProcessMemory) — opaque tokens, treated as u64 by convention
+  PWEBAUTHN_ASSERTION: 'FFIType.u64',
+  PWEBAUTHN_CREDENTIAL_ATTESTATION: 'FFIType.u64',
+  PWEBAUTHN_CREDENTIAL_DETAILS_LIST: 'FFIType.u64',
   // combase WinRT opaque handle / cookie tokens — treated as u64 handles by convention
   HSTRING: 'FFIType.u64',
   HSTRING_BUFFER: 'FFIType.u64',
