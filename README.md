@@ -99,6 +99,7 @@ Published packages are AI-friendly. Alongside the `README.md`, each package incl
 
 #### Printing
 
+- [`prntvpt`](./packages/prntvpt) - Print Ticket / Print Schema: PrintCapabilities, DEVMODE ⇄ Print Ticket conversion, merge & validate
 - [`winspool`](./packages/winspool) - printer management, print jobs, spooler control, drivers
 
 #### Remote Desktop & Terminal Services

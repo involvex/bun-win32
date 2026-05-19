@@ -2,7 +2,28 @@ import { type FFIFunction, FFIType } from 'bun:ffi';
 
 import { Win32 } from '@bun-win32/core';
 
-import type { DWORD, EDefaultDevmodeType, EPrintTicketScope, HPTPROVIDER, HRESULT, IStream, LPCWSTR, NULL, PBSTR, PCWSTR, PDEVMODE, PDWORD, PHPTPROVIDER, PPDEVMODE, PPVOID, PTBUFFER, PULONG, REFCLSID, REFIID, ULONG } from '../types/Prntvpt';
+import type {
+  DWORD,
+  EDefaultDevmodeType,
+  EPrintTicketScope,
+  HPTPROVIDER,
+  HRESULT,
+  IStream,
+  LPCWSTR,
+  NULL,
+  PBSTR,
+  PCWSTR,
+  PDEVMODE,
+  PDWORD,
+  PHPTPROVIDER,
+  PPDEVMODE,
+  PPVOID,
+  PTBUFFER,
+  PULONG,
+  REFCLSID,
+  REFIID,
+  ULONG,
+} from '../types/Prntvpt';
 
 /**
  * Thin, lazy-loaded FFI bindings for `prntvpt.dll`.
@@ -79,7 +100,15 @@ class Prntvpt extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/prntvpt/nf-prntvpt-ptconvertprinttickettodevmode
-  public static PTConvertPrintTicketToDevMode(hProvider: HPTPROVIDER, pPrintTicket: IStream, baseDevmodeType: EDefaultDevmodeType, scope: EPrintTicketScope, pcbDevmode: PULONG, ppDevmode: PPDEVMODE, pbstrErrorMessage: PBSTR | NULL): HRESULT {
+  public static PTConvertPrintTicketToDevMode(
+    hProvider: HPTPROVIDER,
+    pPrintTicket: IStream,
+    baseDevmodeType: EDefaultDevmodeType,
+    scope: EPrintTicketScope,
+    pcbDevmode: PULONG,
+    ppDevmode: PPDEVMODE,
+    pbstrErrorMessage: PBSTR | NULL,
+  ): HRESULT {
     return Prntvpt.Load('PTConvertPrintTicketToDevMode')(hProvider, pPrintTicket, baseDevmodeType, scope, pcbDevmode, ppDevmode, pbstrErrorMessage);
   }
 
