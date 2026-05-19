@@ -51,6 +51,8 @@
     "bun": ">=1.1.0"
   },
   "scripts": {
-    "example": "bun ./example/quartz.ts"
+    "example:capture-radar": "bun ./example/capture-radar.ts",
+    "example:directshow-device-census": "bun ./example/directshow-device-census.ts",
+    "test": "bun test ./example/quartz.integration.test.ts"
   }
 }
