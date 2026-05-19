@@ -115,6 +115,7 @@ Published packages are AI-friendly. Alongside the `README.md`, each package incl
 - [`secur32`](./packages/secur32) - SSPI authentication, credentials, LSA
 - [`sspicli`](./packages/sspicli) - SSPI client-side auth and SASL
 - [`tbs`](./packages/tbs) - TPM Base Services: open a TBS context, submit raw TPM 2.0 command buffers, read the TCG measured-boot log, query device ID / owner-auth (`Tbsi_Context_Create`, `Tbsip_Submit_Command`, `Tbsi_Get_TCG_Log`, `GetDeviceID`) — TPM2_GetRandom / GetCapability proven pure-FFI against real hardware
+- [`webauthn`](./packages/webauthn) - WebAuthn / FIDO2: drive the Windows platform authenticator (Windows Hello biometrics + TPM-backed passkeys) — passkey registration & assertion, platform-credential enumeration/deletion, cancellation, and W3C `DOMException` error mapping (`WebAuthNAuthenticatorMakeCredential`, `WebAuthNAuthenticatorGetAssertion`, `WebAuthNGetPlatformCredentialList`) — a real Windows Hello passkey ceremony proven pure-FFI
 - [`winscard`](./packages/winscard) - smart card resource manager, reader discovery, status changes, and APDU transport
 - [`wintrust`](./packages/wintrust) - Authenticode signature verification (WinVerifyTrust), catalog admin, SIP, and trust-provider helpers
 - [`wscapi`](./packages/wscapi) - Windows Security Center: aggregate provider health (firewall, antivirus, auto-update, UAC, WSC service) and change registration (`WscGetSecurityProviderHealth`, `WscRegisterForChanges`) — live security posture without parsing PowerShell
