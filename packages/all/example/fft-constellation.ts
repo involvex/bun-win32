@@ -12,12 +12,12 @@
  * perspective projection — no GPU, no shaders, no native addons.
  *
  * Pipeline:
- *   Microphone ─ Winmm.waveInOpen  (44.1 kHz mono 16-bit, CALLBACK_FUNCTION)
+ *   Microphone ─ Winmm.waveInOpen  (44.1 kHz mono 16-bit, CALLBACK_NULL polled)
  *      │
- *      ├─ Two cycling 4096-sample WAVEHDRs (waveInPrepareHeader/waveInAddBuffer)
- *      ├─ JSCallback fires on MM_WIM_DATA (0x3C0); dwParam1 points at the
- *      │   filled WAVEHDR. We copy lpData into a shared Float32Array,
- *      │   then re-queue the buffer with waveInAddBuffer.
+ *      ├─ Ring of four 4096-sample WAVEHDRs (waveInPrepareHeader/waveInAddBuffer)
+ *      ├─ Bun's JSCallback can't be invoked from the Winmm driver thread
+ *      │   (it panics with "This thread lacks a Bun VM"), so we open the
+ *      │   device with CALLBACK_NULL and poll WHDR_DONE bits from the timer.
  *      └─ The latest 4096 samples form the FFT input window for the next paint.
  *
  *   FFT ─ Hann window + Cooley-Tukey radix-2 (pure JS, in-place)
@@ -90,8 +90,9 @@ const FFT_LOG2 = 12;
 const FFT_BINS = FFT_SIZE / 2; // 2048 useful magnitude bins
 const STAR_COUNT = 512; // downsampled from FFT_BINS by groups of 4
 
-const CAPTURE_BUFFER_COUNT = 2; // double-buffered WAVEHDR ring
+const CAPTURE_BUFFER_COUNT = 4; // ring of WAVEHDRs polled each timer tick
 const WAVEHDR_BYTES = 48; // sizeof(WAVEHDR) on x64
+const WHDR_DONE = 0x0000_0001;
 
 const WINDOW_WIDTH = 1_280;
 const WINDOW_HEIGHT = 800;
@@ -103,7 +104,6 @@ const WM_PAINT = 0x000f;
 const WM_CLOSE = 0x0010;
 const WM_KEYDOWN = 0x0100;
 const WM_TIMER = 0x0113;
-const MM_WIM_DATA = 0x03c0;
 const VK_ESCAPE = 0x1b;
 const TIMER_ID = 1n;
 
@@ -219,17 +219,22 @@ function runFftInPlace(): void {
   }
 }
 
-// ── Microphone capture (Winmm waveIn, CALLBACK_FUNCTION) ──────────────────────
+// ── Microphone capture (Winmm waveIn, CALLBACK_NULL polled from timer) ────────
+//
+// Bun's JSCallback can't safely run on the Winmm driver's worker thread — the
+// VM panics with "This thread lacks a Bun VM" the first time the driver calls
+// it. The workaround is the same one live-piano.ts uses: open with
+// CALLBACK_NULL and poll WHDR_DONE on each WAVEHDR from the main-thread timer.
+// A four-deep ring covers ~370 ms of audio so we never lose samples between
+// frames even under a 50–100 ms render hiccup.
 
-// Shared 4096-sample rolling input window — overwritten on each MM_WIM_DATA.
-// The paint loop reads from this; the callback writes to it. JS is single-
-// threaded for the callback because Bun marshals JSCallback invocations through
-// the main thread's event loop, so no atomicity work needed here.
+// Shared 4096-sample rolling input window. The poll loop overwrites this with
+// the most recent completed buffer's contents; the FFT reads it next frame.
 const latestSamples = new Float32Array(FFT_SIZE);
 let totalSampleFramesReceived = 0;
 
 // One Buffer-backed PCM slot per WAVEHDR. The driver writes straight into the
-// owned memory; we recycle the headers between the JSCallback and the queue.
+// owned memory; we recycle the headers between the timer and the queue.
 const capturePcmBuffers: Buffer[] = [];
 const captureHeaderBuffers: Buffer[] = [];
 for (let i = 0; i < CAPTURE_BUFFER_COUNT; i += 1) {
@@ -239,7 +244,6 @@ for (let i = 0; i < CAPTURE_BUFFER_COUNT; i += 1) {
 
 let captureDeviceHandle: bigint = 0n;
 let capturePreparedHeaderCount = 0;
-let captureShuttingDown = false;
 
 /** Build a WAVEFORMATEX describing our 44.1 kHz mono 16-bit PCM capture. */
 function buildCaptureFormatBuffer(): Buffer {
@@ -269,70 +273,52 @@ function initializeCaptureHeader(index: number): void {
 }
 
 /**
- * The waveInProc that the audio driver invokes for every captured WAVEHDR.
- * Windows enforces strict timing — we must NOT call back into waveIn* from
- * inside this callback. We do the absolute minimum: copy samples out, re-queue
- * the header via waveInAddBuffer (allowed, despite the warning in MSDN, because
- * waveInAddBuffer is explicitly listed as the one safe re-entry point).
- *
- * Signature: void CALLBACK waveInProc(
- *   HWAVEIN hwi, UINT uMsg, DWORD_PTR dwInstance,
- *   DWORD_PTR dwParam1, DWORD_PTR dwParam2)
+ * Drain any WAVEHDR the driver has marked WHDR_DONE since we last looked.
+ * Copies the freshest completed buffer's samples into `latestSamples` and
+ * re-queues every drained slot back into the input ring. Called from the
+ * SetTimer tick on the main thread (the only thread that owns Bun's VM).
  */
-const waveInCallback = new JSCallback(
-  (_hWaveIn: bigint, uMsg: number, _dwInstance: bigint, dwParam1: bigint, _dwParam2: bigint): void => {
-    // waveInStop/Reset/Close can synchronously fire a final WIM_DATA with the
-    // partial buffer. By the time that fires the Buffer-backed PCM slot may
-    // already be in teardown — bail before touching it.
-    if (captureShuttingDown) return;
-    if (uMsg !== MM_WIM_DATA) return;
-    if (dwParam1 === 0n) return;
-
-    // Figure out which of our two headers fired by matching the pointer.
-    let matchedSlot = -1;
-    for (let i = 0; i < CAPTURE_BUFFER_COUNT; i += 1) {
-      if (BigInt(captureHeaderBuffers[i]!.ptr!) === dwParam1) {
-        matchedSlot = i;
-        break;
-      }
+function pollMicrophoneCapture(): void {
+  if (captureDeviceHandle === 0n) return;
+  let freshestSlot = -1;
+  let freshestSampleCount = 0;
+  for (let i = 0; i < CAPTURE_BUFFER_COUNT; i += 1) {
+    const header = captureHeaderBuffers[i]!;
+    const flags = header.readUInt32LE(24);
+    if ((flags & WHDR_DONE) === 0) continue;
+    const bytesRecorded = header.readUInt32LE(12);
+    const sampleCount = Math.floor(bytesRecorded / BLOCK_ALIGN_BYTES);
+    if (sampleCount > 0) {
+      freshestSlot = i;
+      freshestSampleCount = sampleCount;
     }
-    if (matchedSlot < 0) return;
-
-    try {
-      const header = captureHeaderBuffers[matchedSlot]!;
-      const pcm = capturePcmBuffers[matchedSlot]!;
-      const bytesRecorded = header.readUInt32LE(12);
-      const sampleCount = Math.min(FFT_SIZE, Math.floor(bytesRecorded / BLOCK_ALIGN_BYTES));
-
-      // Decode i16 → f32 [-1,1] straight into the rolling input window. We
-      // overwrite all FFT_SIZE slots: if the driver gave us fewer samples than
-      // expected (it shouldn't — bufferLength == FFT_SIZE * 2), zero-pad the tail.
-      for (let i = 0; i < sampleCount; i += 1) {
-        latestSamples[i] = pcm.readInt16LE(i * 2) / 32_768;
-      }
-      for (let i = sampleCount; i < FFT_SIZE; i += 1) latestSamples[i] = 0;
-      totalSampleFramesReceived += sampleCount;
-
-      // Clear dwBytesRecorded + dwFlags for the next capture cycle and re-queue.
-      header.writeUInt32LE(0, 12);
-      header.writeUInt32LE(0, 24);
-      if (captureDeviceHandle !== 0n && !captureShuttingDown) {
-        Winmm.waveInAddBuffer(captureDeviceHandle, header.ptr!, header.byteLength);
-      }
-    } catch {
-      // Swallow — JSCallback exceptions are sent back through the FFI boundary
-      // and can crash the host. Capture failures will surface as visualization
-      // going quiet, which is the right thing.
+    // Re-arm: clear WHDR_DONE but PRESERVE WHDR_PREPARED (0x00000002).
+    // waveInAddBuffer returns WAVERR_UNPREPARED (34) if the prepared bit
+    // is gone, so we must mask out only the bits we actually own.
+    header.writeUInt32LE(0, 12);
+    header.writeUInt32LE(flags & ~WHDR_DONE, 24);
+    Winmm.waveInAddBuffer(captureDeviceHandle, header.ptr!, header.byteLength);
+  }
+  // Decode the *most recent* completed buffer into the FFT window. Older
+  // completed slots are discarded for visualization purposes (we already
+  // re-queued them above, so we never block the driver).
+  if (freshestSlot >= 0) {
+    const pcm = capturePcmBuffers[freshestSlot]!;
+    const sampleCount = Math.min(FFT_SIZE, freshestSampleCount);
+    for (let i = 0; i < sampleCount; i += 1) {
+      latestSamples[i] = pcm.readInt16LE(i * 2) / 32_768;
     }
-  },
-  { args: ['u64', 'u32', 'u64', 'u64', 'u64'], returns: 'void' },
-);
+    for (let i = sampleCount; i < FFT_SIZE; i += 1) latestSamples[i] = 0;
+    totalSampleFramesReceived += sampleCount;
+  }
+}
 
-/** Open the default mic, prepare + enqueue both WAVEHDRs, start recording. */
+/** Open the default mic, prepare + enqueue every WAVEHDR, start recording. */
 function startMicrophoneCapture(): boolean {
   const handleOut = Buffer.alloc(8);
   const formatBuffer = buildCaptureFormatBuffer();
-  const openStatus = Winmm.waveInOpen(handleOut.ptr!, WAVE_MAPPER, formatBuffer.ptr!, BigInt(waveInCallback.ptr!), 0n, CallbackFlag.CALLBACK_FUNCTION);
+  // CALLBACK_NULL: the driver only flips WHDR_DONE; we poll from the timer.
+  const openStatus = Winmm.waveInOpen(handleOut.ptr!, WAVE_MAPPER, formatBuffer.ptr!, 0n, 0n, CallbackFlag.CALLBACK_NULL);
   if (openStatus !== 0) {
     console.error(`waveInOpen failed (status ${openStatus}). Microphone capture unavailable.`);
     return false;
@@ -366,9 +352,6 @@ function startMicrophoneCapture(): boolean {
 /** Stop, reset, unprepare every WAVEHDR, and close the input device. */
 function stopMicrophoneCapture(): void {
   if (captureDeviceHandle === 0n) return;
-  // Flag first — waveInStop/Reset can fire one final WIM_DATA synchronously,
-  // and the callback would otherwise try to read from a half-stopped device.
-  captureShuttingDown = true;
   Winmm.waveInStop(captureDeviceHandle);
   Winmm.waveInReset(captureDeviceHandle);
   for (let i = 0; i < capturePreparedHeaderCount; i += 1) {
@@ -747,6 +730,7 @@ let windowHandle: bigint = 0n;
 const wndProc = new JSCallback(
   (hWnd: bigint, msg: number, wParam: bigint, lParam: bigint): bigint => {
     if (msg === WM_TIMER) {
+      pollMicrophoneCapture();
       renderFrame(performance.now());
       User32.InvalidateRect(hWnd, null, 0);
       return 0n;
@@ -840,7 +824,7 @@ function createWindow(): boolean {
 // ── Boot, run, tear down ──────────────────────────────────────────────────────
 
 console.log('FFT Constellation — your microphone becomes a 3D star field.');
-console.log('  • capture: Winmm.waveInOpen  (44.1 kHz mono 16-bit, CALLBACK_FUNCTION)');
+console.log('  • capture: Winmm.waveInOpen  (44.1 kHz mono 16-bit, polled from timer)');
 console.log('  • FFT    : Hann-windowed Cooley-Tukey radix-2, N=4096 → 2048 bins');
 console.log(`  • stars  : ${STAR_COUNT}, spherical-shell layout, perspective-projected`);
 console.log('  • paint  : Gdiplus offscreen ARGB bitmap @ ~60 fps');
@@ -876,7 +860,6 @@ try {
   }
   stopMicrophoneCapture();
   stopGdiplus();
-  waveInCallback.close();
   wndProc.close();
   process.exit(exitCode);
 }

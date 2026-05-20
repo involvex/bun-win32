@@ -422,8 +422,7 @@ Dwmapi.DwmSetWindowAttribute(windowHandle, WindowAttribute.DWMWA_USE_IMMERSIVE_D
 User32.ShowWindow(windowHandle, ShowWindowCommand.SW_SHOW);
 User32.UpdateWindow(windowHandle);
 
-// ── GDI+ setup ────────────────────────────────────────────────────────────────
-
+// ── GDI+ setup: startup token, offscreen ARGB bitmap, Graphics context, fonts. ──
 Gdiplus.Preload();
 const gdiplusTokenBuffer = Buffer.alloc(8);
 const gdiplusStartupInput = Buffer.alloc(16);
@@ -431,161 +430,118 @@ gdiplusStartupInput.writeUInt32LE(1, 0); // GdiplusVersion = 1
 check(Gdiplus.GdiplusStartup(gdiplusTokenBuffer.ptr, gdiplusStartupInput.ptr, null), 'GdiplusStartup');
 const gdiplusToken = gdiplusTokenBuffer.readBigUInt64LE(0);
 
-const offscreenBitmapBuffer = Buffer.alloc(8);
-check(
-  Gdiplus.GdipCreateBitmapFromScan0(WINDOW_WIDTH, WINDOW_HEIGHT, 0, PixelFormat32bppARGB, null, offscreenBitmapBuffer.ptr),
-  'GdipCreateBitmapFromScan0',
-);
-const offscreenBitmap = offscreenBitmapBuffer.readBigUInt64LE(0);
-
-const offscreenGraphicsBuffer = Buffer.alloc(8);
-check(Gdiplus.GdipGetImageGraphicsContext(offscreenBitmap, offscreenGraphicsBuffer.ptr), 'GdipGetImageGraphicsContext');
-const offscreenGraphics = offscreenGraphicsBuffer.readBigUInt64LE(0);
-
-check(Gdiplus.GdipSetSmoothingMode(offscreenGraphics, SmoothingMode.SmoothingModeAntiAlias), 'GdipSetSmoothingMode');
-check(
-  Gdiplus.GdipSetTextRenderingHint(offscreenGraphics, TextRenderingHint.TextRenderingHintAntiAliasGridFit),
-  'GdipSetTextRenderingHint',
-);
-
-const fontFamilyBuffer = Buffer.alloc(8);
-const fontFamilyName = encodeWide('Segoe UI');
-check(Gdiplus.GdipCreateFontFamilyFromName(fontFamilyName.ptr, 0n, fontFamilyBuffer.ptr), 'GdipCreateFontFamilyFromName');
-const fontFamily = fontFamilyBuffer.readBigUInt64LE(0);
-
-function makeFont(sizePx: number, style: FontStyle): bigint {
+function gdipNew(call: (ptr: Pointer) => number, where: string): bigint {
   const buffer = Buffer.alloc(8);
-  check(Gdiplus.GdipCreateFont(fontFamily, sizePx, style, Unit.UnitPixel, buffer.ptr), `GdipCreateFont(${sizePx})`);
+  check(call(buffer.ptr), where);
   return buffer.readBigUInt64LE(0);
 }
 
+const offscreenBitmap = gdipNew(
+  (p) => Gdiplus.GdipCreateBitmapFromScan0(WINDOW_WIDTH, WINDOW_HEIGHT, 0, PixelFormat32bppARGB, null, p),
+  'GdipCreateBitmapFromScan0',
+);
+const offscreenGraphics = gdipNew((p) => Gdiplus.GdipGetImageGraphicsContext(offscreenBitmap, p), 'GdipGetImageGraphicsContext');
+check(Gdiplus.GdipSetSmoothingMode(offscreenGraphics, SmoothingMode.SmoothingModeAntiAlias), 'GdipSetSmoothingMode');
+check(Gdiplus.GdipSetTextRenderingHint(offscreenGraphics, TextRenderingHint.TextRenderingHintAntiAliasGridFit), 'GdipSetTextRenderingHint');
+
+const fontFamilyName = encodeWide('Segoe UI');
+const fontFamily = gdipNew((p) => Gdiplus.GdipCreateFontFamilyFromName(fontFamilyName.ptr, 0n, p), 'GdipCreateFontFamilyFromName');
+const makeFont = (sizePx: number, style: FontStyle): bigint =>
+  gdipNew((p) => Gdiplus.GdipCreateFont(fontFamily, sizePx, style, Unit.UnitPixel, p), `GdipCreateFont(${sizePx})`);
 const fontTitle = makeFont(22, FontStyle.FontStyleBold);
 const fontSubtitle = makeFont(13, FontStyle.FontStyleRegular);
 const fontCardName = makeFont(13, FontStyle.FontStyleBold);
 const fontCardMeta = makeFont(11, FontStyle.FontStyleRegular);
 const fontLegend = makeFont(12, FontStyle.FontStyleRegular);
 
-const stringFormatLeftBuffer = Buffer.alloc(8);
-check(Gdiplus.GdipCreateStringFormat(0, 0, stringFormatLeftBuffer.ptr), 'GdipCreateStringFormat (left)');
-const stringFormatLeft = stringFormatLeftBuffer.readBigUInt64LE(0);
+const stringFormatLeft = gdipNew((p) => Gdiplus.GdipCreateStringFormat(0, 0, p), 'GdipCreateStringFormat (left)');
 Gdiplus.GdipSetStringFormatAlign(stringFormatLeft, StringAlignment.StringAlignmentNear);
 Gdiplus.GdipSetStringFormatLineAlign(stringFormatLeft, StringAlignment.StringAlignmentNear);
-
-const stringFormatRightBuffer = Buffer.alloc(8);
-check(Gdiplus.GdipCreateStringFormat(0, 0, stringFormatRightBuffer.ptr), 'GdipCreateStringFormat (right)');
-const stringFormatRight = stringFormatRightBuffer.readBigUInt64LE(0);
+const stringFormatRight = gdipNew((p) => Gdiplus.GdipCreateStringFormat(0, 0, p), 'GdipCreateStringFormat (right)');
 Gdiplus.GdipSetStringFormatAlign(stringFormatRight, StringAlignment.StringAlignmentFar);
 Gdiplus.GdipSetStringFormatLineAlign(stringFormatRight, StringAlignment.StringAlignmentNear);
 
 // Reusable layout rect — passed by-pointer to GDI+ every draw call.
 const reusableRect = Buffer.alloc(16);
 function writeRect(x: number, y: number, w: number, h: number): Pointer {
-  reusableRect.writeFloatLE(x, 0);
-  reusableRect.writeFloatLE(y, 4);
-  reusableRect.writeFloatLE(w, 8);
-  reusableRect.writeFloatLE(h, 12);
+  reusableRect.writeFloatLE(x, 0); reusableRect.writeFloatLE(y, 4);
+  reusableRect.writeFloatLE(w, 8); reusableRect.writeFloatLE(h, 12);
   return reusableRect.ptr;
 }
 
-// ── GDI+ draw helpers ────────────────────────────────────────────────────────
-
+// ── GDI+ draw helpers (each owns its brush/pen for the call). ──
 function fillRect(x: number, y: number, w: number, h: number, color: number): void {
-  const brushBuffer = Buffer.alloc(8);
-  Gdiplus.GdipCreateSolidFill(color, brushBuffer.ptr);
-  const brush = brushBuffer.readBigUInt64LE(0);
+  const brush = gdipNew((p) => Gdiplus.GdipCreateSolidFill(color, p), 'GdipCreateSolidFill');
   Gdiplus.GdipFillRectangle(offscreenGraphics, brush, x, y, w, h);
   Gdiplus.GdipDeleteBrush(brush);
 }
-
 function drawRect(x: number, y: number, w: number, h: number, color: number, thickness: number): void {
-  const penBuffer = Buffer.alloc(8);
-  Gdiplus.GdipCreatePen1(color, thickness, Unit.UnitPixel, penBuffer.ptr);
-  const pen = penBuffer.readBigUInt64LE(0);
+  const pen = gdipNew((p) => Gdiplus.GdipCreatePen1(color, thickness, Unit.UnitPixel, p), 'GdipCreatePen1');
   Gdiplus.GdipDrawRectangleI(offscreenGraphics, pen, x, y, w, h);
   Gdiplus.GdipDeletePen(pen);
 }
-
 function fillEllipse(x: number, y: number, w: number, h: number, color: number): void {
-  const brushBuffer = Buffer.alloc(8);
-  Gdiplus.GdipCreateSolidFill(color, brushBuffer.ptr);
-  const brush = brushBuffer.readBigUInt64LE(0);
+  const brush = gdipNew((p) => Gdiplus.GdipCreateSolidFill(color, p), 'GdipCreateSolidFill');
   Gdiplus.GdipFillEllipseI(offscreenGraphics, brush, x, y, w, h);
   Gdiplus.GdipDeleteBrush(brush);
 }
 
 function drawText(text: string, font: bigint, x: number, y: number, w: number, h: number, color: number, alignRight = false): void {
-  const brushBuffer = Buffer.alloc(8);
-  Gdiplus.GdipCreateSolidFill(color, brushBuffer.ptr);
-  const brush = brushBuffer.readBigUInt64LE(0);
+  const brush = gdipNew((p) => Gdiplus.GdipCreateSolidFill(color, p), 'GdipCreateSolidFill');
   const wideText = encodeWide(text);
-  const rectPtr = writeRect(x, y, w, h);
   const format = alignRight ? stringFormatRight : stringFormatLeft;
-  Gdiplus.GdipDrawString(offscreenGraphics, wideText.ptr, -1, font, rectPtr, format, brush);
+  Gdiplus.GdipDrawString(offscreenGraphics, wideText.ptr, -1, font, writeRect(x, y, w, h), format, brush);
   Gdiplus.GdipDeleteBrush(brush);
 }
 
-function truncate(text: string, maxLength: number): string {
-  return text.length <= maxLength ? text : text.slice(0, Math.max(1, maxLength - 1)) + '…';
-}
+const truncate = (text: string, n: number): string =>
+  text.length <= n ? text : text.slice(0, Math.max(1, n - 1)) + '…';
 
-// ── Card-border colour derived from a process's thread mix ────────────────────
-
+// Card-border colour = the process's overall thread posture.
 function cardBorderColour(proc: ProcessSample): number {
   const total = proc.threads.length;
   if (total === 0) return COLOUR_CARD_BORDER_DEFAULT;
-  const blockedFraction = proc.blockedCount / total;
-  const runningFraction = proc.runningCount / total;
-  const ownershipFraction = proc.ownershipCount / total;
-  const noAccessFraction = proc.noAccessCount / total;
-
-  if (noAccessFraction > 0.6) return argb(220, 0x44, 0x4a, 0x60);
-  if (blockedFraction > 0.4) return STATUS_COLOURS[WCT_OBJECT_STATUS.WctStatusBlocked]!;
-  if (ownershipFraction > 0.35) return STATUS_COLOURS[WCT_OBJECT_STATUS.WctStatusNotOwned]!;
-  if (runningFraction > 0.25) return STATUS_COLOURS[WCT_OBJECT_STATUS.WctStatusRunning]!;
+  if (proc.noAccessCount / total > 0.6) return argb(220, 0x44, 0x4a, 0x60);
+  if (proc.blockedCount / total > 0.4) return STATUS_COLOURS[WCT_OBJECT_STATUS.WctStatusBlocked]!;
+  if (proc.ownershipCount / total > 0.35) return STATUS_COLOURS[WCT_OBJECT_STATUS.WctStatusNotOwned]!;
+  if (proc.runningCount / total > 0.25) return STATUS_COLOURS[WCT_OBJECT_STATUS.WctStatusRunning]!;
   return STATUS_COLOURS[WCT_OBJECT_STATUS.WctStatusPidOnly]!;
 }
 
-// ── Renderer ──────────────────────────────────────────────────────────────────
-
+// ── Renderer ──
 let latestSnapshot: Snapshot | null = null;
 let snapshotCount = 0;
 
 function renderFrame(): void {
   Gdiplus.GdipGraphicsClear(offscreenGraphics, COLOUR_BACKDROP);
 
-  // ── Title row ──
+  // Title + subtitle + HUD strip + refresh tag (right-aligned).
   drawText('OS Tomography', fontTitle, 24, 16, 600, 36, COLOUR_HEADING);
   drawText('live wait-chain x-ray of every accessible process · powered by @bun-win32/wer',
     fontSubtitle, 24, 50, 900, 22, COLOUR_SUBTLE);
-
-  // ── HUD strip ──
   const hud = latestSnapshot
     ? `${latestSnapshot.processes.length} cards · ${latestSnapshot.accessibleProcesses}/${latestSnapshot.totalPids} accessible · ${latestSnapshot.totalThreads} threads · ${latestSnapshot.totalRunning} running · ${latestSnapshot.totalBlocked} blocked · sampled in ${latestSnapshot.sampleDurationMs}ms`
     : 'collecting first sample…';
   drawText(hud, fontSubtitle, 24, 70, WINDOW_WIDTH - 48, 18, COLOUR_DIM);
-
   const refreshTag = `#${snapshotCount.toString().padStart(4, '0')}  ESC = quit`;
-  drawText(refreshTag, fontSubtitle, 0, 16, WINDOW_WIDTH - 24, 22, COLOUR_ACCENT, /* alignRight */ true);
+  drawText(refreshTag, fontSubtitle, 0, 16, WINDOW_WIDTH - 24, 22, COLOUR_ACCENT, true);
 
-  // ── Process cards ──
+  // Process cards.
   if (latestSnapshot && latestSnapshot.processes.length > 0) {
     const procs = latestSnapshot.processes;
     const maxWorkingSet = procs.reduce((m, p) => (p.workingSetBytes > m ? p.workingSetBytes : m), 1);
-
     for (let i = 0; i < procs.length; i++) {
-      const proc = procs[i]!;
       const col = i % GRID_COLUMNS;
       const row = Math.floor(i / GRID_COLUMNS);
       if (row >= GRID_ROWS) break;
-      const x = GRID_OUTER_LEFT + col * (CARD_WIDTH + CARD_GAP);
-      const y = GRID_OUTER_TOP + row * (CARD_HEIGHT + CARD_GAP);
-      renderCard(proc, x, y, maxWorkingSet);
+      renderCard(procs[i]!,
+        GRID_OUTER_LEFT + col * (CARD_WIDTH + CARD_GAP),
+        GRID_OUTER_TOP + row * (CARD_HEIGHT + CARD_GAP),
+        maxWorkingSet);
     }
   }
 
-  // ── Legend strip across the bottom ──
   renderLegend(GRID_OUTER_LEFT, WINDOW_HEIGHT - GRID_OUTER_BOTTOM + 16);
-
   blitToWindow();
 }
 

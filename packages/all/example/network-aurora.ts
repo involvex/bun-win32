@@ -1,57 +1,32 @@
 /**
  * Network Aurora — every TCP/UDP connection on the machine flowing as light
  *
- * A live, glanceable visualization of the OS networking stack: each active
- * connection (TCP v4/v6, UDP v4/v6) becomes a band of particles arcing from a
- * glowing "this machine" anchor at the center of a borderless 1280x900 window
- * to a position on the outer ring whose angle is determined by a stable hash
- * of the remote IP and port. ~60 fps GDI+ render loop; the network state is
- * resampled once per second via the IP Helper API. The hook: watch every byte
- * of traffic that leaves your machine arc across the sky.
+ * Live visualization of the OS networking stack: each active TCP (v4/v6) and
+ * UDP (v4/v6) connection becomes a band of particles arcing from a glowing
+ * "this machine" anchor at the center of a borderless 1280x900 window to a
+ * position on the outer ring whose angle is set by a stable hash of the remote
+ * endpoint. ~60 fps GDI+ render loop; network state is resampled once per
+ * second via the IP Helper API. Watch every byte of traffic arc across the sky.
  *
  * Pipeline:
- *
- *   1. Gdiplus.GdiplusStartup + GdipCreateBitmapFromScan0  — 32bpp ARGB bitmap
- *   2. User32.RegisterClassExW + CreateWindowExW           — borderless popup
- *   3. Dwmapi.DwmSetWindowAttribute                        — Mica + dark mode
- *   4. Each ~1 s: Iphlpapi.GetExtendedTcpTable(AF_INET/AF_INET6, TCP_TABLE_OWNER_PID_ALL)
- *                 Iphlpapi.GetExtendedUdpTable(AF_INET/AF_INET6, UDP_TABLE_OWNER_PID)
- *   5. Hash remote endpoint → angle θ on the outer ring; spawn a Bezier-flowing
- *      particle stream from the center to that endpoint. Listeners are static
- *      dots; UDP draws on the ring with no remote endpoint.
- *   6. Kernel32.OpenProcess + Psapi.GetModuleBaseNameW     — owner exe lookup
+ *   1. Gdiplus.GdiplusStartup + GdipCreateBitmapFromScan0 — 32bpp ARGB bitmap
+ *   2. User32 RegisterClassExW + CreateWindowExW          — borderless popup
+ *   3. Dwmapi.DwmSetWindowAttribute                       — Mica + dark mode
+ *   4. Each ~1 s: Iphlpapi.GetExtendedTcpTable / GetExtendedUdpTable
+ *      (AF_INET + AF_INET6, TCP_TABLE_OWNER_PID_ALL / UDP_TABLE_OWNER_PID)
+ *   5. Hash remote endpoint → angle on the outer ring; spawn a Bezier-flowing
+ *      particle stream from center to endpoint. Listeners are static dots.
+ *   6. Kernel32.OpenProcess + Psapi.GetModuleBaseNameW    — owner exe lookup
  *   7. Each frame: clear → bands → anchor → legend → HUD → blit to window HDC.
- *   8. ESC / Q / window close exits cleanly.
  *
- * Connection-state palette:
- *   ESTABLISHED                cyan
- *   LISTEN                     yellow (static dot, no remote)
- *   TIME_WAIT / CLOSE_WAIT     orange
- *   UDP                        violet
- *
- * APIs demonstrated:
- *   - Iphlpapi.GetExtendedTcpTable, Iphlpapi.GetExtendedUdpTable
- *   - Kernel32.OpenProcess / CloseHandle / GetModuleHandleW
- *   - Psapi.GetModuleBaseNameW
- *   - User32.RegisterClassExW / CreateWindowExW / DestroyWindow
- *   - User32.SetWindowLongPtrW, User32.PeekMessageW / Translate / Dispatch
- *   - User32.GetDC / ReleaseDC / GetSystemMetrics / ShowWindow / UpdateWindow
- *   - Dwmapi.DwmSetWindowAttribute (DWMWA_SYSTEMBACKDROP_TYPE + DARK_MODE)
- *   - Gdiplus.GdiplusStartup / Shutdown, GdipCreateBitmapFromScan0
- *   - Gdiplus.GdipGetImageGraphicsContext, GdipSetSmoothingMode, GdipGraphicsClear
- *   - Gdiplus.GdipCreateSolidFill / GdipFillEllipse / GdipFillRectangle
- *   - Gdiplus.GdipCreatePen1 / GdipDrawBezier, GdipCreateFromHDC / GdipDrawImageRectI
- *   - Gdiplus.GdipCreateFontFamilyFromName / GdipCreateFont / GdipDrawString
+ * Palette: ESTABLISHED=cyan, LISTEN=yellow, TIME_WAIT/CLOSE_WAIT=orange, UDP=violet.
  *
  * MIB row layouts (x64):
- *   MIB_TCPROW_OWNER_PID  (24): dwState, dwLocalAddr, dwLocalPort,
- *                               dwRemoteAddr, dwRemotePort, dwOwningPid
- *   MIB_UDPROW_OWNER_PID  (12): dwLocalAddr, dwLocalPort, dwOwningPid
- *   MIB_TCP6ROW_OWNER_PID (56): ucLocalAddr[16], dwLocalScopeId, dwLocalPort,
- *                               ucRemoteAddr[16], dwRemoteScopeId, dwRemotePort,
- *                               dwState, dwOwningPid
- *   MIB_UDP6ROW_OWNER_PID (28): ucLocalAddr[16], dwLocalScopeId, dwLocalPort,
- *                               dwOwningPid
+ *   MIB_TCPROW_OWNER_PID  (24): state, lAddr, lPort, rAddr, rPort, owningPid
+ *   MIB_UDPROW_OWNER_PID  (12): lAddr, lPort, owningPid
+ *   MIB_TCP6ROW_OWNER_PID (56): lAddr[16], lScopeId, lPort, rAddr[16],
+ *                               rScopeId, rPort, state, owningPid
+ *   MIB_UDP6ROW_OWNER_PID (28): lAddr[16], lScopeId, lPort, owningPid
  *
  * Run: bun run example/network-aurora.ts
  */
@@ -224,14 +199,6 @@ function writeRect(x: number, y: number, w: number, h: number): Pointer {
   return reusableRect.ptr;
 }
 
-function fillRect(g: bigint, x: number, y: number, w: number, h: number, color: number): void {
-  const b = Buffer.alloc(8);
-  Gdiplus.GdipCreateSolidFill(color, b.ptr);
-  const brush = b.readBigUInt64LE(0);
-  Gdiplus.GdipFillRectangle(g, brush, x, y, w, h);
-  Gdiplus.GdipDeleteBrush(brush);
-}
-
 function fillEllipse(g: bigint, x: number, y: number, w: number, h: number, color: number): void {
   const b = Buffer.alloc(8);
   Gdiplus.GdipCreateSolidFill(color, b.ptr);
@@ -254,28 +221,17 @@ function drawText(g: bigint, text: string, font: bigint, x: number, y: number, w
 type ConnectionKind = 'tcp4' | 'tcp6' | 'udp4' | 'udp6';
 
 interface Connection {
-  key: string;
-  kind: ConnectionKind;
-  state: number;
-  localDisplay: string;
-  remoteDisplay: string;
-  hashSeed: string;
-  pid: number;
-  isListener: boolean;
+  key: string; kind: ConnectionKind; state: number; pid: number; isListener: boolean;
+  localDisplay: string; remoteDisplay: string; hashSeed: string;
 }
 
 interface AuroraBand {
   connection: Connection;
-  endpointX: number;
-  endpointY: number;
-  controlAX: number;
-  controlAY: number;
-  controlBX: number;
-  controlBY: number;
-  baseRed: number;
-  baseGreen: number;
-  baseBlue: number;
-  // particle progress array (PARTICLES_PER_BAND × 3 floats: progress, jitter, brightness)
+  endpointX: number; endpointY: number;
+  controlAX: number; controlAY: number;
+  controlBX: number; controlBY: number;
+  baseRed: number; baseGreen: number; baseBlue: number;
+  // particles array: PARTICLES_PER_BAND × 3 floats (progress, jitter, brightness)
   particles: Float32Array;
   spawnAccumulator: number;
 }
@@ -347,88 +303,60 @@ function loadTable(family: number, kind: 'tcp' | 'udp'): Buffer | null {
   return result === 0 ? tableBuffer : null;
 }
 
-function parseTcp4(buf: Buffer, sink: Connection[]): void {
+function parseTable(buf: Buffer, kind: ConnectionKind, sink: Connection[]): void {
+  // Row sizes: tcp4=24, tcp6=56, udp4=12, udp6=28.
+  const rowSize = kind === 'tcp4' ? 24 : kind === 'tcp6' ? 56 : kind === 'udp4' ? 12 : 28;
   const entries = buf.readUInt32LE(0);
   for (let i = 0; i < entries; i++) {
-    const off = 4 + i * 24;
-    const state = buf.readUInt32LE(off);
-    const localIp = formatIpv4(buf.readUInt32LE(off + 4));
-    const localPort = portFromDword(buf.readUInt32LE(off + 8));
-    const remoteIp = formatIpv4(buf.readUInt32LE(off + 12));
-    const remotePort = portFromDword(buf.readUInt32LE(off + 16));
-    const pid = buf.readUInt32LE(off + 20);
+    const off = 4 + i * rowSize;
+    let localIp: string, localPort: number, remoteIp = '', remotePort = 0, state = 0, pid: number;
+    if (kind === 'tcp4') {
+      state = buf.readUInt32LE(off);
+      localIp = formatIpv4(buf.readUInt32LE(off + 4));
+      localPort = portFromDword(buf.readUInt32LE(off + 8));
+      remoteIp = formatIpv4(buf.readUInt32LE(off + 12));
+      remotePort = portFromDword(buf.readUInt32LE(off + 16));
+      pid = buf.readUInt32LE(off + 20);
+    } else if (kind === 'tcp6') {
+      localIp = formatIpv6(buf, off);
+      localPort = portFromDword(buf.readUInt32LE(off + 20));
+      remoteIp = formatIpv6(buf, off + 24);
+      remotePort = portFromDword(buf.readUInt32LE(off + 44));
+      state = buf.readUInt32LE(off + 48);
+      pid = buf.readUInt32LE(off + 52);
+    } else if (kind === 'udp4') {
+      localIp = formatIpv4(buf.readUInt32LE(off));
+      localPort = portFromDword(buf.readUInt32LE(off + 4));
+      pid = buf.readUInt32LE(off + 8);
+    } else {
+      localIp = formatIpv6(buf, off);
+      localPort = portFromDword(buf.readUInt32LE(off + 20));
+      pid = buf.readUInt32LE(off + 24);
+    }
+
+    const isV6 = kind === 'tcp6' || kind === 'udp6';
+    const isUdp = kind === 'udp4' || kind === 'udp6';
     const isListener = state === TCP_LISTEN;
-    sink.push({
-      key: `tcp4|${localIp}:${localPort}|${remoteIp}:${remotePort}|${pid}|${state}`,
-      kind: 'tcp4', state, pid, isListener,
-      localDisplay: `${localIp}:${localPort}`,
-      remoteDisplay: isListener ? '*:*' : `${remoteIp}:${remotePort}`,
-      hashSeed: isListener ? `LISTEN:${localIp}:${localPort}:${pid}` : `${remoteIp}:${remotePort}`,
-    });
-  }
-}
-
-function parseTcp6(buf: Buffer, sink: Connection[]): void {
-  const entries = buf.readUInt32LE(0);
-  for (let i = 0; i < entries; i++) {
-    const off = 4 + i * 56;
-    const localIp = formatIpv6(buf, off + 0);
-    const localPort = portFromDword(buf.readUInt32LE(off + 20));
-    const remoteIp = formatIpv6(buf, off + 24);
-    const remotePort = portFromDword(buf.readUInt32LE(off + 44));
-    const state = buf.readUInt32LE(off + 48);
-    const pid = buf.readUInt32LE(off + 52);
-    const isListener = state === TCP_LISTEN;
-    sink.push({
-      key: `tcp6|${localIp}:${localPort}|${remoteIp}:${remotePort}|${pid}|${state}`,
-      kind: 'tcp6', state, pid, isListener,
-      localDisplay: `[${localIp}]:${localPort}`,
-      remoteDisplay: isListener ? '*:*' : `[${remoteIp}]:${remotePort}`,
-      hashSeed: isListener ? `LISTEN6:${localIp}:${localPort}:${pid}` : `${remoteIp}:${remotePort}`,
-    });
-  }
-}
-
-function parseUdp4(buf: Buffer, sink: Connection[]): void {
-  const entries = buf.readUInt32LE(0);
-  for (let i = 0; i < entries; i++) {
-    const off = 4 + i * 12;
-    const localIp = formatIpv4(buf.readUInt32LE(off));
-    const localPort = portFromDword(buf.readUInt32LE(off + 4));
-    const pid = buf.readUInt32LE(off + 8);
-    sink.push({
-      key: `udp4|${localIp}:${localPort}|${pid}`,
-      kind: 'udp4', state: 0, pid, isListener: false,
-      localDisplay: `${localIp}:${localPort}`,
-      remoteDisplay: '(datagram)',
-      hashSeed: `UDP4:${localIp}:${localPort}:${pid}`,
-    });
-  }
-}
-
-function parseUdp6(buf: Buffer, sink: Connection[]): void {
-  const entries = buf.readUInt32LE(0);
-  for (let i = 0; i < entries; i++) {
-    const off = 4 + i * 28;
-    const localIp = formatIpv6(buf, off + 0);
-    const localPort = portFromDword(buf.readUInt32LE(off + 20));
-    const pid = buf.readUInt32LE(off + 24);
-    sink.push({
-      key: `udp6|${localIp}:${localPort}|${pid}`,
-      kind: 'udp6', state: 0, pid, isListener: false,
-      localDisplay: `[${localIp}]:${localPort}`,
-      remoteDisplay: '(datagram)',
-      hashSeed: `UDP6:${localIp}:${localPort}:${pid}`,
-    });
+    const localDisplay = isV6 ? `[${localIp}]:${localPort}` : `${localIp}:${localPort}`;
+    const remoteDisplay = isUdp ? '(datagram)' : isListener ? '*:*' : isV6 ? `[${remoteIp}]:${remotePort}` : `${remoteIp}:${remotePort}`;
+    const hashSeed = isUdp
+      ? `${kind.toUpperCase()}:${localIp}:${localPort}:${pid}`
+      : isListener
+        ? `LISTEN${isV6 ? '6' : ''}:${localIp}:${localPort}:${pid}`
+        : `${remoteIp}:${remotePort}`;
+    const key = isUdp
+      ? `${kind}|${localDisplay}|${pid}`
+      : `${kind}|${localDisplay}|${remoteDisplay}|${pid}|${state}`;
+    sink.push({ key, kind, state, pid, isListener, localDisplay, remoteDisplay, hashSeed });
   }
 }
 
 function pollNetwork(): Connection[] {
   const connections: Connection[] = [];
-  const tcp4 = loadTable(AddressFamily.AF_INET, 'tcp'); if (tcp4) parseTcp4(tcp4, connections);
-  const tcp6 = loadTable(AddressFamily.AF_INET6, 'tcp'); if (tcp6) parseTcp6(tcp6, connections);
-  const udp4 = loadTable(AddressFamily.AF_INET, 'udp'); if (udp4) parseUdp4(udp4, connections);
-  const udp6 = loadTable(AddressFamily.AF_INET6, 'udp'); if (udp6) parseUdp6(udp6, connections);
+  const tcp4 = loadTable(AddressFamily.AF_INET, 'tcp'); if (tcp4) parseTable(tcp4, 'tcp4', connections);
+  const tcp6 = loadTable(AddressFamily.AF_INET6, 'tcp'); if (tcp6) parseTable(tcp6, 'tcp6', connections);
+  const udp4 = loadTable(AddressFamily.AF_INET, 'udp'); if (udp4) parseTable(udp4, 'udp4', connections);
+  const udp6 = loadTable(AddressFamily.AF_INET6, 'udp'); if (udp6) parseTable(udp6, 'udp6', connections);
   return connections;
 }
 
@@ -657,8 +585,6 @@ console.log('Network Aurora running. ESC closes the window.');
 refreshNetwork();
 let lastPollMs = Date.now();
 console.log(`  initial poll: ${lastSummary.total} connections (TCPv4=${lastSummary.tcp4}, TCPv6=${lastSummary.tcp6}, UDPv4=${lastSummary.udp4}, UDPv6=${lastSummary.udp6})`);
-fillRect(offscreenGraphics, 0, 0, 0, 0, 0); // touch fillRect so the helper isn't dead-stripped by future bundlers
-
 const messageBuffer = Buffer.alloc(48);
 const messageView = new DataView(messageBuffer.buffer);
 let frameCount = 0;

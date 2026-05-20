@@ -42,4 +42,10 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # Finder (MacOS) folder config
 .DS_Store
 DISCORD_POST.md
+DISCORD_POST2.md
 TODO.md
+
+# Showcase capture output (local-only)
+packages/all/screenshots/
+packages/all/replay-*.gif
+packages/all/bun-win32-wallpaper.png

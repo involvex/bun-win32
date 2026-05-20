@@ -1,52 +1,44 @@
 /**
- * HID Rainforest - Every Human Interface Device on your machine becomes a living
- * plant swaying in a TypeScript rainforest.
+ * HID Rainforest - Every Human Interface Device on your machine becomes a
+ * living plant swaying in a TypeScript rainforest.
  *
- * Enumerates every present HID device through the SetupAPI device-interface
- * surface (the HID interface class GUID is `{4D1E55B2-F16F-11CF-88CB-001111000030}`,
- * obtained at runtime through `HidD_GetHidGuid` so we never hard-code the GUID
- * bytes). For each discovered interface, the device path is read with
- * `SetupDiGetDeviceInterfaceDetailW` (which has the famously awkward two-call
- * sizing protocol, and the variable-length `SP_DEVICE_INTERFACE_DETAIL_DATA_W`
- * struct whose `cbSize` field must be set to 8 on x64 even though the buffer is
- * larger). The path is then opened with `Kernel32.CreateFileW` using no access
- * rights at all (which is enough to query `HidD_GetAttributes`,
- * `HidD_GetProductString`, `HidD_GetManufacturerString`) so we never need admin
- * and never compete with the device's real owner.
+ * Enumerates every present HID device through SetupAPI (the HID interface
+ * class GUID is `{4D1E55B2-F16F-11CF-88CB-001111000030}`, obtained at runtime
+ * through `HidD_GetHidGuid` so we never hard-code the bytes). The device path
+ * is read with the famously awkward two-call `SetupDiGetDeviceInterfaceDetailW`
+ * sizing protocol; the variable-length `SP_DEVICE_INTERFACE_DETAIL_DATA_W`
+ * struct's `cbSize` field must be set to 8 on x64 even though the buffer is
+ * larger. The path is then opened with `Kernel32.CreateFileW` using no access
+ * rights at all - enough for `HidD_GetAttributes`, `HidD_GetProductString`,
+ * `HidD_GetManufacturerString`, but never blocked by exclusive owners.
  *
  * Each device becomes a "plant":
- *   - A vertical Bezier stem grows from the bottom edge of the window. Two
- *     control points are perturbed every frame by an additive Perlin-style
- *     sine wave (per-plant phase + amplitude) so the stems sway like grass in
- *     a soft wind. The same low-frequency wave drives the curvature.
- *   - 4 - 8 leaves are attached at randomized heights along the stem. Each leaf
- *     is rendered as a rotated ellipse pointing perpendicular to the stem
- *     tangent at its attachment point.
- *   - Color is derived from a hash of the device's Vendor ID, so every vendor
- *     gets a distinct hue (Razer green, Logitech blue, Apple grey, etc.).
- *   - A small flower (filled disc + halo) caps the top of every stem, and the
- *     product name (truncated to ~16 characters) sits at the base.
+ *   - A vertical cubic Bezier stem grows from the bottom of the window. Two
+ *     control points are perturbed every frame by an additive sine wave
+ *     (per-plant phase + amplitude) so the stems sway like grass in soft wind.
+ *   - 4 - 8 lance-shaped leaves are attached at randomized heights along the
+ *     stem. The leaf direction is the analytical perpendicular to the Bezier
+ *     tangent at its attachment ratio.
+ *   - Color is derived from a hash of the device's Vendor ID + Product ID, so
+ *     every vendor gets a distinct hue.
+ *   - A small bud caps the tip of every stem; the product name sits at the base.
  *
- * Periodic pulse: opening a HID device for actual input reads requires
- * `GENERIC_READ` + `FILE_FLAG_OVERLAPPED` + an event-driven `ReadFile` loop and
- * frequently fails on devices the OS or another process has already claimed
- * (mice, fingerprint readers, secure-input devices, etc.) - so this demo
- * deliberately does NOT attempt live reads. Instead, every plant has a
- * deterministic pulse interval seeded from its VID*PID, and when the clock
- * crosses it the plant glows briefly. This produces a believable "the
- * rainforest is alive" feeling without any of the read-permission flakiness.
+ * Periodic pulse: live HID reads require `GENERIC_READ + FILE_FLAG_OVERLAPPED +
+ * ReadFile`, and frequently fail on devices the OS or another process has
+ * already claimed (secure-input mice, fingerprint readers, etc.). So instead
+ * each plant has a deterministic pulse interval seeded from its VID*PID; when
+ * the clock crosses it, the plant glows briefly. This produces an "alive"
+ * feeling without any permission flakiness.
  *
- * The window itself is a borderless ~1280x720 `WS_POPUP` with the Windows 11
- * Mica system backdrop, immersive dark mode, and rounded corners. Painting
- * happens at ~30 fps: a single 32-bit ARGB GDI+ bitmap is redrawn on every
- * `WM_TIMER` tick (the timer calls `InvalidateRect`, the resulting `WM_PAINT`
- * blits the bitmap to the window DC via `GdipCreateFromHDC` +
- * `GdipDrawImageRectI`). The background fills with pure black so the DWM
- * Mica backdrop bleeds through, then plants are painted on top.
+ * The window is a borderless 1280x720 `WS_POPUP` with the Windows 11 Mica
+ * system backdrop, immersive dark mode, and rounded corners. Painting happens
+ * at ~30 fps: one 32-bit ARGB GDI+ bitmap is redrawn on every `WM_TIMER` tick;
+ * `InvalidateRect` triggers `WM_PAINT`, which blits the bitmap to the window
+ * via `GdipCreateFromHDC` + `GdipDrawImageRectI`. The background fills with
+ * pure black so the DWM Mica backdrop bleeds through transparent pixels.
  *
- * Drag from any point on the window (WM_NCHITTEST returns HTCAPTION). Press
- * ESC or right-click to quit. SetupDiDestroyDeviceInfoList is called on
- * teardown.
+ * Drag from any point (WM_NCHITTEST returns HTCAPTION). Press ESC or
+ * right-click to quit. SetupDiDestroyDeviceInfoList is called on teardown.
  *
  * APIs demonstrated:
  *   - Setupapi: SetupDiGetClassDevsW, SetupDiEnumDeviceInterfaces,
@@ -54,26 +46,26 @@
  *   - Hid:      HidD_GetHidGuid, HidD_GetAttributes, HidD_GetProductString,
  *               HidD_GetManufacturerString
  *   - Kernel32: CreateFileW, CloseHandle, GetLastError
- *   - Dwmapi:   DwmSetWindowAttribute (DWMSBT_MAINWINDOW Mica backdrop, dark
- *               mode, rounded corners), DwmExtendFrameIntoClientArea
+ *   - Dwmapi:   DwmSetWindowAttribute (Mica backdrop, dark mode, rounded
+ *               corners), DwmExtendFrameIntoClientArea
  *   - User32:   RegisterClassExW, CreateWindowExW, ShowWindow, SetTimer,
  *               KillTimer, GetMessageW, DispatchMessageW, InvalidateRect,
  *               BeginPaint, EndPaint, GetDC, ReleaseDC, GetSystemMetrics,
  *               DestroyWindow, PostQuitMessage, DefWindowProcW
  *   - Gdiplus:  GdiplusStartup/Shutdown, GdipCreateBitmapFromScan0,
- *               GdipGetImageGraphicsContext, GdipSetSmoothingMode,
- *               GdipSetTextRenderingHint, GdipGraphicsClear, GdipCreatePen1,
- *               GdipCreateSolidFill, GdipCreatePath, GdipAddPathBezier,
- *               GdipFillPath, GdipDrawPath, GdipFillEllipse, GdipDrawString,
- *               GdipCreateFontFamilyFromName, GdipCreateFont,
- *               GdipCreateStringFormat, GdipCreateFromHDC, GdipDrawImageRectI
+ *               GdipGetImageGraphicsContext, GdipSetSmoothingMode/TextRender,
+ *               GdipGraphicsClear, GdipCreatePen1, GdipCreateSolidFill,
+ *               GdipCreatePath, GdipAddPathBezier, GdipFillPath, GdipDrawPath,
+ *               GdipFillEllipse, GdipDrawString, GdipCreateFontFamilyFromName,
+ *               GdipCreateFont, GdipCreateStringFormat, GdipCreateFromHDC,
+ *               GdipDrawImageRectI
  *
  * Run: bun run example/hid-rainforest.ts
  */
 
 import { JSCallback, type Pointer } from 'bun:ffi';
 
-import { Dwmapi, GDI32, Gdiplus, Hid, Kernel32, Setupapi, User32 } from '../index';
+import { Dwmapi, Gdiplus, Hid, Kernel32, Setupapi, User32 } from '../index';
 import { ExtendedWindowStyles, ShowWindowCommand, VirtualKey, WindowStyles } from '@bun-win32/user32';
 import { SystemBackdropType, WindowAttribute, WindowCornerPreference } from '@bun-win32/dwmapi';
 import { FillMode, FontStyle, LineCap, PixelFormat32bppARGB, SmoothingMode, Status, StringAlignment, TextRenderingHint, Unit } from '@bun-win32/gdiplus';
@@ -374,6 +366,23 @@ Gdiplus.GdipSetStringFormatLineAlign(leftStringFormat, StringAlignment.StringAli
 // Reusable RectF (4 floats = 16 bytes) buffer used by every GdipDrawString call.
 const stringLayoutRectBuffer = Buffer.alloc(16);
 
+// A few thin GDI+ wrappers so we are not re-allocating an 8-byte handle buffer
+// + readBigUInt64LE on every brush/pen/path. The returned handles must be
+// disposed by the caller via GdipDeleteBrush/Pen/Path.
+const handleScratch = Buffer.alloc(8);
+function makeSolidBrush(color: number): bigint {
+  Gdiplus.GdipCreateSolidFill(color, handleScratch.ptr!);
+  return handleScratch.readBigUInt64LE(0);
+}
+function makePen(color: number, widthPx: number): bigint {
+  Gdiplus.GdipCreatePen1(color, widthPx, Unit.UnitPixel, handleScratch.ptr!);
+  return handleScratch.readBigUInt64LE(0);
+}
+function makePath(): bigint {
+  Gdiplus.GdipCreatePath(FillMode.FillModeAlternate, handleScratch.ptr!);
+  return handleScratch.readBigUInt64LE(0);
+}
+
 function drawCenteredString(text: string, font: bigint, brush: bigint, cx: number, cy: number, halfWidth: number, halfHeight: number): void {
   stringLayoutRectBuffer.writeFloatLE(cx - halfWidth, 0);
   stringLayoutRectBuffer.writeFloatLE(cy - halfHeight, 4);
@@ -402,26 +411,22 @@ function paintFrame(): void {
   const elapsedSeconds = elapsedMs / 1000;
 
   if (plants.length === 0) {
-    // Empty-system fallback: there is at least always a keyboard normally, but
-    // some sandboxed environments (CI, hyper-locked-down boxes) may surface none.
-    const emptyBrushBuffer = Buffer.alloc(8);
-    Gdiplus.GdipCreateSolidFill(argb(220, 200, 220, 255), emptyBrushBuffer.ptr!);
-    const emptyBrush = emptyBrushBuffer.readBigUInt64LE(0);
+    // Empty-system fallback (CI / hyper-locked boxes may have zero HID devices).
+    const emptyBrush = makeSolidBrush(argb(220, 200, 220, 255));
     drawCenteredString('No HID devices found on this system. The rainforest is empty.', hudFont, emptyBrush, WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2, WINDOW_WIDTH / 2 - 40, 40);
     Gdiplus.GdipDeleteBrush(emptyBrush);
     return;
   }
 
-  // ── Sky-floor gradient suggestion: a thin band of muted glow at ground level.
+  // ── Soft ground gradient: a thin band of muted glow at ground level. ──
   const groundY = plants[0]!.baseY;
   const groundRect = Buffer.alloc(16);
   groundRect.writeFloatLE(0, 0);
   groundRect.writeFloatLE(groundY - 60, 4);
   groundRect.writeFloatLE(WINDOW_WIDTH, 8);
   groundRect.writeFloatLE(WINDOW_HEIGHT - (groundY - 60), 12);
-  const groundBrushBuffer = Buffer.alloc(8);
-  Gdiplus.GdipCreateLineBrushFromRectWithAngle(groundRect.ptr!, argb(20, 80, 120, 200), argb(110, 30, 50, 90), 90.0, 1, 0, groundBrushBuffer.ptr!);
-  const groundBrush = groundBrushBuffer.readBigUInt64LE(0);
+  Gdiplus.GdipCreateLineBrushFromRectWithAngle(groundRect.ptr!, argb(20, 80, 120, 200), argb(110, 30, 50, 90), 90.0, 1, 0, handleScratch.ptr!);
+  const groundBrush = handleScratch.readBigUInt64LE(0);
   Gdiplus.GdipFillRectangle(offscreenGraphics, groundBrush, 0, groundY - 60, WINDOW_WIDTH, WINDOW_HEIGHT - (groundY - 60));
   Gdiplus.GdipDeleteBrush(groundBrush);
 
@@ -447,20 +452,13 @@ function paintFrame(): void {
     const controlTwoX = plant.baseX + sway * 0.7;
     const controlTwoY = plant.baseY - plant.stemHeight * 0.72;
 
-    // Stem color: a deep saturated form of the vendor hue.
+    // Stem: a deep saturated form of the vendor hue, stroked as a cubic Bezier.
     const [stemR, stemG, stemB] = hsvToRgb(plant.hueDegrees, 0.55, 0.45);
     const stemAlpha = 220 + Math.round(pulseIntensity * 35);
-    const stemPenBuffer = Buffer.alloc(8);
-    Gdiplus.GdipCreatePen1(argb(stemAlpha, stemR, stemG, stemB), 3.5, Unit.UnitPixel, stemPenBuffer.ptr!);
-    const stemPen = stemPenBuffer.readBigUInt64LE(0);
+    const stemPen = makePen(argb(stemAlpha, stemR, stemG, stemB), 3.5);
     Gdiplus.GdipSetPenStartCap(stemPen, LineCap.LineCapRound);
     Gdiplus.GdipSetPenEndCap(stemPen, LineCap.LineCapRound);
-
-    // Build the Bezier path once so we can both stroke it (the stem itself) and
-    // sample it analytically (for leaf attachments + the flower at the tip).
-    const pathHandleBuffer = Buffer.alloc(8);
-    Gdiplus.GdipCreatePath(FillMode.FillModeAlternate, pathHandleBuffer.ptr!);
-    const stemPath = pathHandleBuffer.readBigUInt64LE(0);
+    const stemPath = makePath();
     Gdiplus.GdipAddPathBezier(stemPath, plant.baseX, plant.baseY, controlOneX, controlOneY, controlTwoX, controlTwoY, tipX, tipY);
     Gdiplus.GdipDrawPath(offscreenGraphics, stemPen, stemPath);
     Gdiplus.GdipDeletePath(stemPath);
@@ -505,10 +503,8 @@ function paintFrame(): void {
       const leafTipX = attachX + perpendicularX * leafLength * sideSign + (tangentX / tangentLength) * 8;
       const leafTipY = attachY + perpendicularY * leafLength * sideSign + (tangentY / tangentLength) * 8;
 
-      // Render as a thin closed curve (4 control points) so it looks lance-shaped.
-      const leafPathBuffer = Buffer.alloc(8);
-      Gdiplus.GdipCreatePath(FillMode.FillModeAlternate, leafPathBuffer.ptr!);
-      const leafPath = leafPathBuffer.readBigUInt64LE(0);
+      // Render as a thin closed curve (two Beziers + close) so it looks lance-shaped.
+      const leafPath = makePath();
       const c1x = (leafBaseX + leafTipX) / 2 + perpendicularY * leafWidth * sideSign * 0.6;
       const c1y = (leafBaseY + leafTipY) / 2 - perpendicularX * leafWidth * sideSign * 0.6;
       const c2x = (leafBaseX + leafTipX) / 2 - perpendicularY * leafWidth * sideSign * 0.6;
@@ -517,52 +513,37 @@ function paintFrame(): void {
       Gdiplus.GdipAddPathBezier(leafPath, leafTipX, leafTipY, c2x, c2y, leafBaseX, leafBaseY, leafBaseX, leafBaseY);
       Gdiplus.GdipClosePathFigure(leafPath);
 
-      const leafBrushBuffer = Buffer.alloc(8);
       const leafAlpha = 220 + Math.round(pulseIntensity * 30);
-      Gdiplus.GdipCreateSolidFill(argb(leafAlpha, leafR, leafG, leafB), leafBrushBuffer.ptr!);
-      const leafBrush = leafBrushBuffer.readBigUInt64LE(0);
+      const leafBrush = makeSolidBrush(argb(leafAlpha, leafR, leafG, leafB));
       Gdiplus.GdipFillPath(offscreenGraphics, leafBrush, leafPath);
       Gdiplus.GdipDeleteBrush(leafBrush);
       Gdiplus.GdipDeletePath(leafPath);
     }
 
-    // ── Flower / bud at the tip. A pulsing halo when the device is "active".
+    // ── Flower / bud at the tip + a pulsing halo when the device is "active".
     const [flowerR, flowerG, flowerB] = hsvToRgb(plant.hueDegrees + 180, 0.6, 1.0);
-    const haloRadius = 14 + pulseIntensity * 22;
     if (pulseIntensity > 0) {
-      const haloBuffer = Buffer.alloc(8);
-      Gdiplus.GdipCreateSolidFill(argb(Math.round(140 * pulseIntensity), flowerR, flowerG, flowerB), haloBuffer.ptr!);
-      const haloBrush = haloBuffer.readBigUInt64LE(0);
+      const haloRadius = 14 + pulseIntensity * 22;
+      const haloBrush = makeSolidBrush(argb(Math.round(140 * pulseIntensity), flowerR, flowerG, flowerB));
       Gdiplus.GdipFillEllipse(offscreenGraphics, haloBrush, tipX - haloRadius, tipY - haloRadius, haloRadius * 2, haloRadius * 2);
       Gdiplus.GdipDeleteBrush(haloBrush);
     }
-
-    const budBuffer = Buffer.alloc(8);
-    Gdiplus.GdipCreateSolidFill(argb(240, flowerR, flowerG, flowerB), budBuffer.ptr!);
-    const budBrush = budBuffer.readBigUInt64LE(0);
+    const budBrush = makeSolidBrush(argb(240, flowerR, flowerG, flowerB));
     Gdiplus.GdipFillEllipse(offscreenGraphics, budBrush, tipX - 6, tipY - 6, 12, 12);
     Gdiplus.GdipDeleteBrush(budBrush);
-
-    // Bright inner pip on the bud.
-    const pipBuffer = Buffer.alloc(8);
-    Gdiplus.GdipCreateSolidFill(argb(255, 255, 255, 255), pipBuffer.ptr!);
-    const pipBrush = pipBuffer.readBigUInt64LE(0);
+    const pipBrush = makeSolidBrush(argb(255, 255, 255, 255));
     Gdiplus.GdipFillEllipse(offscreenGraphics, pipBrush, tipX - 2.5, tipY - 2.5, 5, 5);
     Gdiplus.GdipDeleteBrush(pipBrush);
 
-    // ── Caption near the ground, truncated to fit the column.
+    // ── Caption near the ground, truncated to fit the column. ──
     const truncated = plant.product.length > 18 ? plant.product.slice(0, 16) + '..' : plant.product;
-    const captionBrushBuffer = Buffer.alloc(8);
-    Gdiplus.GdipCreateSolidFill(argb(190, 220, 230, 245), captionBrushBuffer.ptr!);
-    const captionBrush = captionBrushBuffer.readBigUInt64LE(0);
+    const captionBrush = makeSolidBrush(argb(190, 220, 230, 245));
     drawCenteredString(truncated, captionFont, captionBrush, plant.baseX, groundY + 28, 80, 18);
     Gdiplus.GdipDeleteBrush(captionBrush);
   }
 
   // ── HUD line at the top of the window. ──
-  const hudBrushBuffer = Buffer.alloc(8);
-  Gdiplus.GdipCreateSolidFill(argb(220, 210, 225, 250), hudBrushBuffer.ptr!);
-  const hudBrush = hudBrushBuffer.readBigUInt64LE(0);
+  const hudBrush = makeSolidBrush(argb(220, 210, 225, 250));
   const hudText = `HID Rainforest  -  ${plants.length} device${plants.length === 1 ? '' : 's'}  -  ESC or right-click to quit`;
   drawLeftString(hudText, hudFont, hudBrush, 24, 18, WINDOW_WIDTH - 48, 28);
   Gdiplus.GdipDeleteBrush(hudBrush);

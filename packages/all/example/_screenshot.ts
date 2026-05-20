@@ -14,7 +14,7 @@ import { spawn } from 'bun';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { GDI32, Gdiplus, Kernel32, User32 } from '../index';
+import { GDI32, Gdiplus, User32 } from '../index';
 import { Status } from '@bun-win32/gdiplus';
 import { SystemMetric } from '@bun-win32/user32';
 
@@ -49,6 +49,7 @@ console.log('[screenshot] capturing primary monitor…');
 
 const width = User32.GetSystemMetrics(SystemMetric.SM_CXSCREEN);
 const height = User32.GetSystemMetrics(SystemMetric.SM_CYSCREEN);
+console.log(`[screenshot] primary monitor is ${width}x${height}`);
 
 const hdcScreen = User32.GetDC(0n);
 if (!hdcScreen) {
@@ -93,50 +94,12 @@ if (fromHbitmapStatus !== Status.Ok) {
 }
 const gdiplusBitmap = bitmapBuffer.readBigUInt64LE(0);
 
-// Locate PNG encoder CLSID.
-const encoderCountBuffer = Buffer.alloc(4);
-const encoderSizeBuffer = Buffer.alloc(4);
-Gdiplus.GdipGetImageEncodersSize(encoderCountBuffer.ptr!, encoderSizeBuffer.ptr!);
-const encoderCount = encoderCountBuffer.readUInt32LE(0);
-const encoderTotalSize = encoderSizeBuffer.readUInt32LE(0);
-const encodersBuffer = Buffer.alloc(encoderTotalSize);
-Gdiplus.GdipGetImageEncoders(encoderCount, encoderTotalSize, encodersBuffer.ptr!);
-
-// Each ImageCodecInfo on x64 is 104 bytes. CLSID at offset 0 (16 bytes). MimeType pointer at offset 32.
-const codecStride = encoderTotalSize / encoderCount;
-let pngClsid: Buffer | null = null;
-for (let i = 0; i < encoderCount; i++) {
-  const offset = i * codecStride;
-  const mimeTypePtr = encodersBuffer.readBigUInt64LE(offset + 32);
-  let mimeType = '';
-  const memHandle = Kernel32.GetCurrentProcess();
-  const peek = Buffer.alloc(2);
-  for (let j = 0; j < 64; j++) {
-    const readBuffer = Buffer.alloc(2);
-    const bytesRead = Buffer.alloc(8);
-    Kernel32.ReadProcessMemory(memHandle, mimeTypePtr + BigInt(j * 2), readBuffer.ptr!, 2, bytesRead.ptr!);
-    const code = readBuffer.readUInt16LE(0);
-    if (code === 0) break;
-    mimeType += String.fromCharCode(code);
-    peek;
-  }
-  if (mimeType === 'image/png') {
-    pngClsid = encodersBuffer.subarray(offset, offset + 16);
-    break;
-  }
-}
-
-if (!pngClsid) {
-  console.error('[screenshot] PNG encoder not found');
-  Gdiplus.GdipDisposeImage(gdiplusBitmap);
-  Gdiplus.GdiplusShutdown(gdiplusToken);
-  GDI32.SelectObject(hdcMem, oldObject);
-  GDI32.DeleteObject(hBitmap);
-  GDI32.DeleteDC(hdcMem);
-  User32.ReleaseDC(0n, hdcScreen);
-  child.kill();
-  process.exit(5);
-}
+// Well-known PNG encoder CLSID: 557CF402-1A04-11D3-9A73-0000F81EF32E
+const pngClsid = Buffer.alloc(16);
+pngClsid.writeUInt32LE(0x557cf402, 0);
+pngClsid.writeUInt16LE(0x1a04, 4);
+pngClsid.writeUInt16LE(0x11d3, 6);
+pngClsid.set([0x9a, 0x73, 0x00, 0x00, 0xf8, 0x1e, 0xf3, 0x2e], 8);
 
 const outputBuffer = Buffer.from(outputPath + '\0', 'utf16le');
 const saveStatus = Gdiplus.GdipSaveImageToFile(gdiplusBitmap, outputBuffer.ptr!, pngClsid.ptr!, null);

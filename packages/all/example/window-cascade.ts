@@ -77,6 +77,9 @@
  *     (CreateMasteringVoice, CreateSourceVoice, SubmitSourceBuffer, Start,
  *      Stop, GetState, DestroyVoice, Release)
  *
+ * APIs demonstrated (Ole32):
+ *   - CoInitialize (XAudio2 needs a COM apartment on its calling thread)
+ *
  * APIs demonstrated (Kernel32):
  *   - SetConsoleCtrlHandler (via JSCallback) for graceful ^C teardown
  *
@@ -85,7 +88,7 @@
 
 import { CFunction, FFIType, JSCallback, type Pointer, read } from 'bun:ffi';
 
-import { Dwmapi, GDI32, Gdiplus, Kernel32, User32, Xaudio2_9 } from '../index';
+import { Dwmapi, GDI32, Gdiplus, Kernel32, Ole32, User32, Xaudio2_9 } from '../index';
 import { ExtendedWindowStyles, ShowWindowCommand, SystemMetric, VirtualKey, WindowStyles } from '@bun-win32/user32';
 import { SystemBackdropType, WindowAttribute } from '@bun-win32/dwmapi';
 import { FontStyle, SmoothingMode, Status, StringAlignment, TextRenderingHint, Unit } from '@bun-win32/gdiplus';
@@ -391,6 +394,10 @@ function synthesizeDrumLoop(): Buffer {
 }
 
 function bootAudio(): void {
+  // 0. XAudio2 needs a COM apartment. CoInitialize is idempotent and a no-op
+  //    on hosts that already have one; the HRESULT is ignored on purpose.
+  Ole32.CoInitialize(null);
+
   // 1. IXAudio2 engine via the flat export.
   const ppEngine = Buffer.alloc(8);
   const createHr = Xaudio2_9.XAudio2Create(ppEngine.ptr!, 0, XAUDIO2_USE_DEFAULT_PROCESSOR);
@@ -732,24 +739,39 @@ let lastBeatIndex = -1;
 
 // ── Window procedure (timer-driven cascade + overlay paint) ─────────────────
 
+// Pre-allocated XAUDIO2_VOICE_STATE buffer reused every frame:
+//   pCurrentBufferContext @0 (u64), BuffersQueued @8 (u32), SamplesPlayed @16 (u64).
+const voiceStateBuffer = Buffer.alloc(24);
+let audioMixerStalled = false;
+let mixerStallChecks = 0;
+
 function computeBeatPhaseAndIndex(): { phase: number; index: number; elapsedSeconds: number } {
-  if (!audioReady || xaudioSourceVoice === NULL) {
-    // Wall-clock fallback so the visuals still cascade if audio failed.
-    const elapsed = (Date.now() - audioStartedAt) / 1000;
-    const beatsElapsed = (elapsed * BEATS_PER_MINUTE) / 60;
-    const phase = beatsElapsed - Math.floor(beatsElapsed);
-    const index = Math.floor(beatsElapsed) % BEATS_PER_BAR;
-    return { phase, index, elapsedSeconds: elapsed };
+  // Sample-accurate path: ask the XAudio2 mixer for SamplesPlayed.
+  if (audioReady && xaudioSourceVoice !== NULL && !audioMixerStalled) {
+    vcall(xaudioSourceVoice, IXAUDIO2SOURCEVOICE_GETSTATE, [FFIType.ptr, FFIType.u32], [voiceStateBuffer.ptr!, 0], FFIType.void);
+    const samplesPlayed = Number(voiceStateBuffer.readBigUInt64LE(16));
+    if (samplesPlayed > 0) {
+      const beatPosition = samplesPlayed / SAMPLES_PER_BEAT;
+      return {
+        phase: beatPosition - Math.floor(beatPosition),
+        index: Math.floor(beatPosition) % BEATS_PER_BAR,
+        elapsedSeconds: samplesPlayed / SAMPLE_RATE,
+      };
+    }
+    // After ~500 ms with the mixer still reporting zero samples, we're on a
+    // host with no real audio endpoint — fall back to wall-clock timing so
+    // the visual cascade still dances at exactly 90 BPM.
+    mixerStallChecks += 1;
+    if (mixerStallChecks > 30) audioMixerStalled = true;
   }
-  // Read SamplesPlayed straight from the mixer for sample-accurate timing.
-  const voiceState = Buffer.alloc(24); // XAUDIO2_VOICE_STATE: ctx@0, BuffersQueued@8, SamplesPlayed@16
-  vcall(xaudioSourceVoice, IXAUDIO2SOURCEVOICE_GETSTATE, [FFIType.ptr, FFIType.u32], [voiceState.ptr!, 0], FFIType.void);
-  const samplesPlayed = Number(voiceState.readBigUInt64LE(16));
-  const beatPosition = samplesPlayed / SAMPLES_PER_BEAT;
-  const phase = beatPosition - Math.floor(beatPosition);
-  const index = Math.floor(beatPosition) % BEATS_PER_BAR;
-  const elapsedSeconds = samplesPlayed / SAMPLE_RATE;
-  return { phase, index, elapsedSeconds };
+  // Wall-clock fallback so the visuals still cascade if audio is unavailable.
+  const elapsed = (Date.now() - audioStartedAt) / 1000;
+  const beatsElapsed = (elapsed * BEATS_PER_MINUTE) / 60;
+  return {
+    phase: beatsElapsed - Math.floor(beatsElapsed),
+    index: Math.floor(beatsElapsed) % BEATS_PER_BAR,
+    elapsedSeconds: elapsed,
+  };
 }
 
 const wndProc = new JSCallback(
@@ -792,11 +814,12 @@ const wndProc = new JSCallback(
         }
       }
 
-      // Console feedback on each new beat.
+      // Console feedback on each new beat (one full line per beat so the
+      // output is line-buffered and visible even when stdout is piped).
       if (index !== lastBeatIndex) {
         lastBeatIndex = index;
-        const beatSymbol = index === 0 ? '*' : '.';
-        process.stdout.write(beatSymbol);
+        const beatLabel = index === 0 ? 'KICK' : 'beat';
+        console.log(`  ${beatLabel}  ${index + 1}/${BEATS_PER_BAR}   t=${elapsedSeconds.toFixed(2)}s`);
       }
       return 0n;
     }
@@ -1007,7 +1030,6 @@ User32.GetWindowThreadProcessId(overlayHwnd, ourPidBuffer.ptr!);
 
 console.log(`Overlay HWND 0x${overlayHwnd.toString(16)}  ·  ${audioReady ? 'audio ready' : 'audio offline (visual-only cascade)'}`);
 console.log('');
-console.log('Beat:');
 
 // ── Message pump ────────────────────────────────────────────────────────────
 

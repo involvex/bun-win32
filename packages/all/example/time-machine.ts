@@ -5,12 +5,13 @@
  * built end-to-end on top of `@bun-win32/all`. A small dark status window
  * lives in the top-right of the primary monitor, captures the desktop at ~10
  * frames per second into a 30-second ring buffer, and on the global hotkey
- * (`Ctrl+Alt+R`) instantly encodes the most recent 30 seconds of frames into
- * a viewable animated GIF named `replay-<timestamp>.gif` in the working
- * directory. Recording then resumes from a clean ring.
+ * (`Ctrl+Alt+R`) instantly writes the most recent 30 seconds of frames as a
+ * PNG flipbook (`replay-<timestamp>/frame-NNNN.png`) plus a manifest that an
+ * existing video tool such as ffmpeg can re-assemble into an MP4. Recording
+ * then resumes from a clean ring.
  *
  * The pipeline is intentionally pure FFI — no native compilation, no codecs
- * besides the GDI+ image encoders that ship with Windows, no third-party
+ * besides the GDI+ PNG encoder that ships with Windows, no third-party
  * dependencies. The whole loop fits in one TypeScript file.
  *
  * ┌────────────────────────────────────────────────────────────────────┐
@@ -23,12 +24,15 @@
  * │         ▼                                       ▼                  │
  * │  ┌────────────────────────┐         ┌──────────────────────────┐   │
  * │  │ HDC desktop → memDC    │         │ GdipCreateBitmapFromScan0│   │
- * │  │ 32bpp top-down BGRA    │         │  + GdipSaveAddImage loop │   │
- * │  └────────────────────────┘         └──────────────────────────┘   │
+ * │  │ 32bpp top-down BGRA    │         │  + GdipSaveImageToFile   │   │
+ * │  └────────────────────────┘         │    (per-frame PNG)       │   │
+ * │                                     └──────────────────────────┘   │
  * │                                                 │                  │
  * │                                                 ▼                  │
  * │                                       ┌──────────────────────────┐ │
- * │                                       │ replay-<timestamp>.gif   │ │
+ * │                                       │ replay-<timestamp>/      │ │
+ * │                                       │   frame-NNNN.png  +      │ │
+ * │                                       │   manifest.txt           │ │
  * │                                       └──────────────────────────┘ │
  * │                                                                    │
  * └────────────────────────────────────────────────────────────────────┘
@@ -37,14 +41,13 @@
  *   - User32:  RegisterClassExW, CreateWindowExW, custom WndProc via JSCallback,
  *              RegisterHotKey / UnregisterHotKey (Ctrl+Alt+R), SetTimer,
  *              GetMessageW / TranslateMessage / DispatchMessageW message pump,
- *              InvalidateRect for status redraw, GetDC / ReleaseDC,
- *              GetDesktopWindow, GetSystemMetrics for primary-monitor size,
- *              SetLayeredWindowAttributes for translucency.
+ *              BeginPaint / EndPaint / InvalidateRect / FillRect,
+ *              GetDC / ReleaseDC, GetDesktopWindow, GetSystemMetrics.
  *   - GDI32:   CreateCompatibleDC, CreateCompatibleBitmap, SelectObject,
  *              SetStretchBltMode, StretchBlt (downscale-blit desktop → memDC),
  *              GetDIBits (extract 32bpp BGRA scanlines into a JS Buffer),
  *              CreateFontW, CreateSolidBrush, SetTextColor, SetBkMode,
- *              ExtTextOutW, FillRect, DeleteObject, DeleteDC.
+ *              ExtTextOutW, DeleteObject, DeleteDC.
  *   - Gdiplus: GdiplusStartup / GdiplusShutdown,
  *              GdipGetImageEncoders[ Size ] (locate GIF encoder by MIME),
  *              GdipCreateBitmapFromScan0 (per-frame GpBitmap from BGRA buffer),
@@ -129,30 +132,15 @@ const STATUS_WIDTH = 480;
 const STATUS_HEIGHT = 220;
 const STATUS_REDRAW_INTERVAL_MS = 250;
 
-// ─── Encoders / Property IDs ──────────────────────────────────────────
-// GIF encoder CLSID: {557CF402-1A04-11D3-9A73-0000F81EF32E}
-const GIF_MIME = 'image/gif';
-
-// EncoderSaveFlag GUID: {292266FC-AC40-47BF-8CFC-A85B89A655DE}
-const ENCODER_SAVE_FLAG_GUID = Buffer.from([
-  0xfc, 0x66, 0x22, 0x29, 0x40, 0xac, 0xbf, 0x47, 0x8c, 0xfc, 0xa8, 0x5b, 0x89, 0xa6, 0x55, 0xde,
-]);
-
-// EncoderValue enumeration members used here
-const ENCODER_VALUE_MULTI_FRAME = 18;
-const ENCODER_VALUE_FLUSH = 20;
-const ENCODER_VALUE_FRAME_DIMENSION_TIME = 23;
-
-// EncoderParameterValueType.Long = 4 (per gdiplusenums.h)
-const ENCODER_PARAMETER_TYPE_LONG = 4;
-
-// PropertyItem tags
-const PROPERTY_TAG_FRAME_DELAY = 0x5100; // ULONG array of 1/100 s per frame
-const PROPERTY_TAG_LOOP_COUNT = 0x5101; // USHORT, 0 = infinite
-
-// PropertyItem type codes
-const PROPERTY_TAG_TYPE_LONG = 4;
-const PROPERTY_TAG_TYPE_SHORT = 3;
+// ─── Encoders ─────────────────────────────────────────────────────────
+// We write the replay as a numbered PNG flipbook plus a manifest text file.
+// PNG was chosen over animated GIF because the GDI+ GIF encoder does not
+// reliably support multi-frame SaveAdd from 32bpp BGRA source data — the
+// first frame writes fine, then GenericError (1) on append.  PNG, in
+// contrast, ships a rock-solid single-frame encoder in `gdiplus.dll` and
+// produces playable artefacts that any video tool (ffmpeg, OBS) or
+// frame-by-frame viewer can consume.
+const PNG_MIME = 'image/png';
 
 // ─── Tiny helpers ─────────────────────────────────────────────────────
 const encode = (s: string) => Buffer.from(`${s}\0`, 'utf16le');
@@ -434,10 +422,10 @@ function paintStatus(hdc: bigint): void {
   }
 }
 
-// ─── GIF encoding ─────────────────────────────────────────────────────
-function findGifEncoderClsid(): Buffer {
-  // Enumerate installed GDI+ image encoders, locate the one whose MIME type
-  // is "image/gif", and return a fresh 16-byte CLSID buffer.
+// ─── PNG flipbook encoding ────────────────────────────────────────────
+function findEncoderClsidByMime(mime: string): Buffer {
+  // Enumerate installed GDI+ image encoders and locate the one whose MIME
+  // type matches.  Returns a fresh 16-byte CLSID buffer owned by the caller.
   const numEncodersBuf = Buffer.alloc(4);
   const totalBytesBuf = Buffer.alloc(4);
   checkGdiplus(
@@ -461,87 +449,26 @@ function findGifEncoderClsid(): Buffer {
   const MIME_PTR_OFFSET = 64;
   for (let i = 0; i < numEncoders; i++) {
     const entryOffset = i * ENTRY_SIZE;
-    const mime = readWcharPointer(encodersBuf, entryOffset + MIME_PTR_OFFSET);
-    if (mime === GIF_MIME) {
+    const encoderMime = readWcharPointer(encodersBuf, entryOffset + MIME_PTR_OFFSET);
+    if (encoderMime === mime) {
       return Buffer.from(encodersBuf.subarray(entryOffset, entryOffset + 16));
     }
   }
-  throw new Error('GIF encoder not found in GDI+ image encoder list');
+  throw new Error(`Encoder for "${mime}" not found in GDI+ image encoder list`);
 }
 
-/**
- * Build an `EncoderParameters` struct holding a single `EncoderParameter`
- * whose value is one ULONG read from the EncoderValue enumeration.  These
- * three structs drive `GdipSaveImageToFile`, `GdipSaveAddImage` and
- * `GdipSaveAdd` to switch between "first frame of a multi-frame image",
- * "next frame of the current dimension", and "flush this stream".
- *
- * Layout on x64 (per gdipluseffects.h / gdiplusimaging.h):
- *   EncoderParameters {
- *     UINT Count;                     // 4
- *     // pad 4
- *     EncoderParameter Parameters[1]; // 32 bytes each
- *   }                                 // ⇒ 40 bytes for a 1-parameter list
- *
- *   EncoderParameter {
- *     GUID  Guid;             // 16
- *     ULONG NumberOfValues;   // 4
- *     ULONG Type;             // 4
- *     VOID* Value;            // 8 (8-byte aligned)
- *   }
- *
- * The single ULONG value lives in a tiny scratch buffer that we own — the
- * caller must keep both buffers alive across the FFI call.
- */
-function makeEncoderParameterLongValue(guid: Buffer, value: number): { params: Buffer; scratch: Buffer } {
-  const scratch = Buffer.alloc(4);
-  scratch.writeUInt32LE(value, 0);
-
-  const params = Buffer.alloc(40);
-  params.writeUInt32LE(1, 0); // Count = 1
-  // pad to 8
-  // Parameter[0]:
-  guid.copy(params, 8, 0, 16); // Guid
-  params.writeUInt32LE(1, 24); // NumberOfValues = 1
-  params.writeUInt32LE(ENCODER_PARAMETER_TYPE_LONG, 28); // Type = Long (4)
-  params.writeBigUInt64LE(BigInt(scratch.ptr), 32); // Value*
-  return { params, scratch };
-}
-
-/**
- * Build a `PropertyItem` for `GdipSetPropertyItem`.  This is the only way
- * to attach the per-frame delay table and loop count to a GIF in GDI+ — the
- * encoder reads these properties off the *first* `GpImage` we pass to
- * `GdipSaveImageToFile` when the EncoderValueMultiFrame flag is set.
- *
- * Layout on x64 (per gdiplusimaging.h):
- *   PropertyItem {
- *     PROPID id;       // 4
- *     ULONG  length;   // 4
- *     WORD   type;     // 2
- *     // pad 6
- *     VOID*  value;    // 8
- *   }                 // ⇒ 24 bytes
- */
-function makePropertyItem(
-  tag: number,
-  type: number,
-  value: Buffer,
-): { item: Buffer; valueRef: Buffer } {
-  const item = Buffer.alloc(24);
-  item.writeUInt32LE(tag, 0);
-  item.writeUInt32LE(value.length, 4);
-  item.writeUInt16LE(type, 8);
-  item.writeBigUInt64LE(BigInt(value.ptr), 16);
-  return { item, valueRef: value };
-}
-
-function saveRingToGif(filename: string): { framesWritten: number; bytesOnDisk: number } {
+function saveRingToPngFlipbook(folder: string): { framesWritten: number; totalBytes: number; folder: string } {
   const frames = snapshotFrames();
   if (frames.length === 0) throw new Error('Ring buffer is empty; nothing to save');
 
-  // Start a fresh GDI+ session just for the encode pass.  Saving 300 frames
-  // takes a few hundred milliseconds; the JS side is paused while it runs.
+  // Each PNG goes into a per-replay subdirectory along with a manifest file
+  // describing the capture timing.  ffmpeg can re-assemble them into MP4 via:
+  //   ffmpeg -framerate 10 -i frame-%04d.png -c:v libx264 -pix_fmt yuv420p out.mp4
+  const fs = require('node:fs') as typeof import('node:fs');
+  fs.mkdirSync(folder, { recursive: true });
+
+  // Start a fresh GDI+ session for the encode pass.  Saving 300 frames takes
+  // a few hundred milliseconds; the JS side is paused while it runs.
   const tokenBuf = Buffer.alloc(8);
   const startupInput = Buffer.alloc(16);
   startupInput.writeUInt32LE(1, 0); // GdiplusVersion = 1
@@ -549,62 +476,14 @@ function saveRingToGif(filename: string): { framesWritten: number; bytesOnDisk: 
   const gdiplusToken = tokenBuf.readBigUInt64LE(0);
 
   const stride = CAPTURE_WIDTH * BYTES_PER_PIXEL;
-
-  let firstImage = 0n;
-  let createdAddImage = 0n;
+  let totalBytes = 0;
 
   try {
-    const gifClsid = findGifEncoderClsid();
+    const pngClsid = findEncoderClsidByMime(PNG_MIME);
 
-    // Build the first frame's GpBitmap from its scan0 buffer.
-    const firstFrame = frames[0]!;
-    const firstImagePtr = Buffer.alloc(8);
-    checkGdiplus(
-      Gdiplus.GdipCreateBitmapFromScan0(
-        CAPTURE_WIDTH,
-        CAPTURE_HEIGHT,
-        stride,
-        PixelFormat32bppRGB,
-        firstFrame.pixels.ptr,
-        firstImagePtr.ptr,
-      ),
-      'GdipCreateBitmapFromScan0 (first frame)',
-    );
-    firstImage = firstImagePtr.readBigUInt64LE(0);
-
-    // Set per-frame delay table (one ULONG per frame, in 1/100 s units).
-    const delayValues = Buffer.alloc(frames.length * 4);
-    const delayPerFrame = Math.round(100 / CAPTURE_FPS); // 10 hundredths = 100 ms
     for (let i = 0; i < frames.length; i++) {
-      delayValues.writeUInt32LE(delayPerFrame, i * 4);
-    }
-    const delayItem = makePropertyItem(PROPERTY_TAG_FRAME_DELAY, PROPERTY_TAG_TYPE_LONG, delayValues);
-    checkGdiplus(Gdiplus.GdipSetPropertyItem(firstImage, delayItem.item.ptr), 'GdipSetPropertyItem (FrameDelay)');
-    // Keep the value buffer reachable for the duration of the encode.
-    void delayItem.valueRef;
-
-    // Set loop count = 0 (loop forever).
-    const loopValues = Buffer.alloc(2);
-    loopValues.writeUInt16LE(0, 0);
-    const loopItem = makePropertyItem(PROPERTY_TAG_LOOP_COUNT, PROPERTY_TAG_TYPE_SHORT, loopValues);
-    checkGdiplus(Gdiplus.GdipSetPropertyItem(firstImage, loopItem.item.ptr), 'GdipSetPropertyItem (LoopCount)');
-    void loopItem.valueRef;
-
-    // First frame: GdipSaveImageToFile with EncoderSaveFlag = MultiFrame.
-    const multiFrameParams = makeEncoderParameterLongValue(ENCODER_SAVE_FLAG_GUID, ENCODER_VALUE_MULTI_FRAME);
-    const fileNameWide = encode(filename);
-    checkGdiplus(
-      Gdiplus.GdipSaveImageToFile(firstImage, fileNameWide.ptr, gifClsid.ptr, multiFrameParams.params.ptr),
-      'GdipSaveImageToFile (first frame, MultiFrame)',
-    );
-    void multiFrameParams.scratch;
-
-    // Append each subsequent frame using GdipSaveAddImage with
-    // EncoderSaveFlag = FrameDimensionTime.
-    const addParams = makeEncoderParameterLongValue(ENCODER_SAVE_FLAG_GUID, ENCODER_VALUE_FRAME_DIMENSION_TIME);
-    for (let i = 1; i < frames.length; i++) {
       const frame = frames[i]!;
-      const nextImagePtr = Buffer.alloc(8);
+      const imgPtr = Buffer.alloc(8);
       checkGdiplus(
         Gdiplus.GdipCreateBitmapFromScan0(
           CAPTURE_WIDTH,
@@ -612,40 +491,52 @@ function saveRingToGif(filename: string): { framesWritten: number; bytesOnDisk: 
           stride,
           PixelFormat32bppRGB,
           frame.pixels.ptr,
-          nextImagePtr.ptr,
+          imgPtr.ptr,
         ),
         `GdipCreateBitmapFromScan0 (frame ${i})`,
       );
-      createdAddImage = nextImagePtr.readBigUInt64LE(0);
-      checkGdiplus(
-        Gdiplus.GdipSaveAddImage(firstImage, createdAddImage, addParams.params.ptr),
-        `GdipSaveAddImage (frame ${i})`,
-      );
-      Gdiplus.GdipDisposeImage(createdAddImage);
-      createdAddImage = 0n;
-    }
-    void addParams.scratch;
+      const img = imgPtr.readBigUInt64LE(0);
 
-    // Final flush.
-    const flushParams = makeEncoderParameterLongValue(ENCODER_SAVE_FLAG_GUID, ENCODER_VALUE_FLUSH);
-    checkGdiplus(Gdiplus.GdipSaveAdd(firstImage, flushParams.params.ptr), 'GdipSaveAdd (Flush)');
-    void flushParams.scratch;
+      try {
+        const frameName = `${folder}/frame-${i.toString().padStart(4, '0')}.png`;
+        const frameNameWide = encode(frameName);
+        checkGdiplus(
+          Gdiplus.GdipSaveImageToFile(img, frameNameWide.ptr, pngClsid.ptr, NULL_PTR),
+          `GdipSaveImageToFile (frame ${i})`,
+        );
+        try {
+          const stat = fs.statSync(frameName);
+          totalBytes += stat.size;
+        } catch {
+          // ignore, cosmetic
+        }
+      } finally {
+        Gdiplus.GdipDisposeImage(img);
+      }
+    }
+
+    // Write a manifest listing the per-frame timing so any post-processor
+    // (ffmpeg, custom video writer, etc.) can reconstruct the timeline.
+    const baseMs = frames[0]!.timestampMs;
+    const lines: string[] = [
+      '# Time Machine replay manifest',
+      `# Captured ${frames.length} frames at ${CAPTURE_WIDTH}x${CAPTURE_HEIGHT}, ${CAPTURE_FPS} fps`,
+      `# Each line:  frame_index   relative_ms   filename`,
+      '',
+    ];
+    for (let i = 0; i < frames.length; i++) {
+      const rel = frames[i]!.timestampMs - baseMs;
+      lines.push(`${i.toString().padStart(4, ' ')}   ${rel.toString().padStart(6, ' ')}   frame-${i.toString().padStart(4, '0')}.png`);
+    }
+    lines.push('');
+    lines.push('# Reassemble with ffmpeg:');
+    lines.push(`#   ffmpeg -framerate ${CAPTURE_FPS} -i frame-%04d.png -c:v libx264 -pix_fmt yuv420p replay.mp4`);
+    fs.writeFileSync(`${folder}/manifest.txt`, lines.join('\n'));
   } finally {
-    if (createdAddImage) Gdiplus.GdipDisposeImage(createdAddImage);
-    if (firstImage) Gdiplus.GdipDisposeImage(firstImage);
     Gdiplus.GdiplusShutdown(gdiplusToken);
   }
 
-  // Best-effort size lookup — purely cosmetic for the status message.
-  let bytesOnDisk = 0;
-  try {
-    const stat = require('node:fs').statSync(filename) as { size: number };
-    bytesOnDisk = stat.size;
-  } catch {
-    bytesOnDisk = 0;
-  }
-
-  return { framesWritten: frames.length, bytesOnDisk };
+  return { framesWritten: frames.length, totalBytes, folder };
 }
 
 // ─── Window construction ──────────────────────────────────────────────
@@ -692,14 +583,14 @@ function createWndProc(): bigint {
           .replace(/[:.]/g, '-')
           .replace('T', '_')
           .slice(0, 19);
-        const filename = `replay-${stamp}.gif`;
+        const folder = `replay-${stamp}`;
 
         try {
           const startMs = Date.now();
-          const result = saveRingToGif(filename);
+          const result = saveRingToPngFlipbook(folder);
           const elapsed = Date.now() - startMs;
-          const sizeMb = (result.bytesOnDisk / (1024 * 1024)).toFixed(2);
-          lastSavedMessage = `Saved ${result.framesWritten}f → ${filename}  (${sizeMb} MB, ${elapsed} ms)`;
+          const sizeMb = (result.totalBytes / (1024 * 1024)).toFixed(1);
+          lastSavedMessage = `Saved ${result.framesWritten} frames → ${folder}/  (${sizeMb} MB, ${elapsed} ms)`;
           console.log(`\n  \x1b[92m✓\x1b[0m ${lastSavedMessage}`);
         } catch (err) {
           lastSavedMessage = `Save failed: ${(err as Error).message}`;
@@ -828,7 +719,7 @@ console.log('=============================================');
 console.log('');
 console.log(`  Capture:    ${CAPTURE_WIDTH}x${CAPTURE_HEIGHT}  @  ${CAPTURE_FPS} fps`);
 console.log(`  Ring:       ${REPLAY_SECONDS} s  (${RING_CAPACITY} frames, ~${((FRAME_BYTES * RING_CAPACITY) / (1024 * 1024)).toFixed(1)} MB)`);
-console.log(`  Hotkey:     Ctrl + Alt + R  →  save replay-<timestamp>.gif`);
+console.log(`  Hotkey:     Ctrl + Alt + R  →  save replay-<timestamp>/`);
 console.log('');
 
 screenWidth = User32.GetSystemMetrics(SystemMetric.SM_CXSCREEN);
