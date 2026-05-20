@@ -82,7 +82,7 @@ import { JSCallback, read, type Pointer } from 'bun:ffi';
 import { Dwmapi, GDI32, Gdiplus, Kernel32, User32 } from '../index';
 import { ExtendedWindowStyles, ShowWindowCommand, SystemMetric, WindowStyles } from '@bun-win32/user32';
 import { SystemBackdropType, WindowAttribute } from '@bun-win32/dwmapi';
-import { PixelFormat32bppARGB, Status } from '@bun-win32/gdiplus';
+import { PixelFormat32bppRGB, Status } from '@bun-win32/gdiplus';
 
 // ─── Win32 constants not surfaced through enum exports ────────────────
 const NULL_HWND = 0n;
@@ -235,7 +235,7 @@ function clearRing(): void {
 // Pre-built `BITMAPINFOHEADER` describing the 32bpp BGRA top-down DIB we
 // want GetDIBits to materialize.  `biHeight` is intentionally negative so
 // that the resulting scanlines are top-down — matching the orientation
-// expected by GdipCreateBitmapFromScan0 for PixelFormat32bppARGB.
+// expected by GdipCreateBitmapFromScan0 for PixelFormat32bppRGB.
 const bitmapInfo = Buffer.alloc(40);
 bitmapInfo.writeUInt32LE(40, 0); // biSize
 bitmapInfo.writeInt32LE(CAPTURE_WIDTH, 4); // biWidth
@@ -564,7 +564,7 @@ function saveRingToGif(filename: string): { framesWritten: number; bytesOnDisk: 
         CAPTURE_WIDTH,
         CAPTURE_HEIGHT,
         stride,
-        PixelFormat32bppARGB,
+        PixelFormat32bppRGB,
         firstFrame.pixels.ptr,
         firstImagePtr.ptr,
       ),
@@ -610,7 +610,7 @@ function saveRingToGif(filename: string): { framesWritten: number; bytesOnDisk: 
           CAPTURE_WIDTH,
           CAPTURE_HEIGHT,
           stride,
-          PixelFormat32bppARGB,
+          PixelFormat32bppRGB,
           frame.pixels.ptr,
           nextImagePtr.ptr,
         ),

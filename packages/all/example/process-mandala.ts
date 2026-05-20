@@ -1,31 +1,26 @@
 /**
  * Process Mandala — the entire process tree of Windows, drawn as a living mandala.
  *
- * Every running process is arranged radially by parent-child relationships in a
+ * Every running process arranged radially by parent-child relationships in a
  * borderless 1100x1100 Mica window. Each root (System, Idle, orphaned trees)
- * claims a wedge of the circle, sized by its descendant count. Their children
- * radiate outward into concentric rings (radius = depth * 80 px); every child
- * claims a sub-sector of its parent's angular sweep. Each process is a colored
- * petal whose radius is proportional to log(WorkingSetSize), colored by a
- * deterministic FNV-1a hash of its executable name. Thin antialiased filaments
- * connect parents to children. The entire mandala re-enumerates every 2 s and
- * repaints at 2 Hz. Hovering a petal highlights it and pops a floating tooltip
- * with exe name, PID, parent PID, thread count, depth, and working-set size.
- * ESC closes the window.
+ * claims an angular sector sized by its descendant count; their children radiate
+ * outward into concentric rings (radius = depth * 80 px); every child sub-claims
+ * a slice of its parent's sweep. Each process is a colored petal whose radius is
+ * proportional to log(WorkingSetSize), colored by a deterministic FNV-1a hash
+ * of its executable name. Thin antialiased filaments connect parents to children.
+ * The whole mandala re-enumerates every 2 s and repaints at 2 Hz. Hovering a
+ * petal highlights it and pops a floating tooltip with exe name, PID, parent
+ * PID, thread count, depth, and working-set size. ESC closes the window.
  *
  * Pipeline:
- *   1. Gdiplus.GdiplusStartup                         — bring up the GDI+ host
- *   2. User32.RegisterClassExW + CreateWindowExW      — borderless WS_POPUP frame
- *   3. Dwmapi.DwmSetWindowAttribute                   — Mica backdrop + dark mode
- *   4. Kernel32.CreateToolhelp32Snapshot              — TH32CS_SNAPPROCESS snapshot
- *   5. Kernel32.Process32FirstW / Process32NextW      — walk PROCESSENTRY32W
- *   6. Kernel32.OpenProcess (LIMITED_QUERY)           — per-PID inspection handle
- *   7. Psapi.GetProcessMemoryInfo                     — read WorkingSetSize
- *   8. Build parent→children tree, recursive radial layout
- *   9. GDI+ render: filaments + petals + tooltip; blit offscreen → window HDC
- *  10. SetTimer @ 500 ms for repaint; re-enumerate when stale > 2 s
- *  11. WM_MOUSEMOVE drives hover hit-testing
- *  12. Cleanup: DeleteGraphics + DisposeImage + GdiplusShutdown + DestroyWindow
+ *   Gdiplus.GdiplusStartup → User32.RegisterClassExW + CreateWindowExW →
+ *   Dwmapi.DwmSetWindowAttribute (Mica + dark mode) →
+ *   Kernel32.CreateToolhelp32Snapshot + Process32FirstW/NextW (walk PEs) →
+ *   Kernel32.OpenProcess (LIMITED_QUERY) + Psapi.GetProcessMemoryInfo →
+ *   Build parent→children tree → recursive radial layout →
+ *   GDI+ render (filaments + petals + tooltip) → blit offscreen → window HDC →
+ *   SetTimer @ 500 ms drives repaint (re-enumerate when stale > 2 s) →
+ *   WM_MOUSEMOVE drives hover hit-testing → cleanup on WM_DESTROY / ESC.
  *
  * APIs demonstrated:
  *   Kernel32  CreateToolhelp32Snapshot / Process32FirstW / Process32NextW /
@@ -36,16 +31,13 @@
  *             TranslateMessage / DispatchMessageW / InvalidateRect / GetDC /
  *             ReleaseDC / GetSystemMetrics / ShowWindow / UpdateWindow
  *   Dwmapi    DwmSetWindowAttribute (DWMWA_SYSTEMBACKDROP_TYPE, DARK_MODE)
- *   Gdiplus   GdiplusStartup / GdiplusShutdown / GdipCreateBitmapFromScan0 /
- *             GdipGetImageGraphicsContext / GdipCreateFromHDC /
- *             GdipSetSmoothingMode / GdipSetTextRenderingHint / GdipFillRectangle
- *             GdipFillRectangleI / GdipFillEllipseI / GdipDrawEllipseI /
- *             GdipDrawLine / GdipCreateSolidFill / GdipCreatePen1 /
- *             GdipCreateLineBrushFromRectWithAngle / GdipDeleteBrush /
- *             GdipDeletePen / GdipDeleteFont / GdipDeleteFontFamily /
- *             GdipCreateFontFamilyFromName / GdipCreateFont / GdipDrawString /
- *             GdipCreateStringFormat / GdipSetStringFormatAlign /
- *             GdipDrawImageRectI
+ *   Gdiplus   GdiplusStartup / Shutdown / CreateBitmapFromScan0 /
+ *             GetImageGraphicsContext / CreateFromHDC / SetSmoothingMode /
+ *             SetTextRenderingHint / FillRectangle/I / FillEllipseI /
+ *             DrawEllipseI / DrawLine / CreateSolidFill / CreatePen1 /
+ *             CreateLineBrushFromRectWithAngle / DeleteBrush / DeletePen /
+ *             CreateFontFamilyFromName / CreateFont / DrawString /
+ *             CreateStringFormat / SetStringFormatAlign / DrawImageRectI
  *
  * PROCESSENTRY32W (x64, 568 B): dwSize@0x00, th32ProcessID@0x08,
  *   cntThreads@0x1C, th32ParentProcessID@0x20, szExeFile[260]@0x2C.
@@ -434,62 +426,35 @@ function drawText(g: bigint, text: string, font: bigint, x: number, y: number, w
 function renderFrame(hWnd: bigint): void {
   maybeReenumerate();
 
-  // Backdrop: deep purple→indigo radial-ish via a linear gradient through the
-  // diagonal. The DWM Mica composes behind whatever we leave translucent.
-  const backdropBrushBuffer = Buffer.alloc(8);
-  Gdiplus.GdipCreateLineBrushFromRectWithAngle(
-    writeRect(0, 0, WINDOW_SIZE, WINDOW_SIZE),
-    argb(255, 0x0e, 0x0a, 0x1c),
-    argb(255, 0x1a, 0x0e, 0x30),
-    45.0,
-    1,
-    0,
-    backdropBrushBuffer.ptr,
-  );
-  const backdropBrush = backdropBrushBuffer.readBigUInt64LE(0);
-  Gdiplus.GdipFillRectangle(offscreenGraphics, backdropBrush, 0, 0, WINDOW_SIZE, WINDOW_SIZE);
-  Gdiplus.GdipDeleteBrush(backdropBrush);
+  // Backdrop: deep purple→indigo gradient along the diagonal. DWM Mica composes
+  // behind anything we leave translucent.
+  const gradientBuffer = Buffer.alloc(8);
+  Gdiplus.GdipCreateLineBrushFromRectWithAngle(writeRect(0, 0, WINDOW_SIZE, WINDOW_SIZE), argb(255, 0x0e, 0x0a, 0x1c), argb(255, 0x1a, 0x0e, 0x30), 45.0, 1, 0, gradientBuffer.ptr);
+  const gradientBrush = gradientBuffer.readBigUInt64LE(0);
+  Gdiplus.GdipFillRectangle(offscreenGraphics, gradientBrush, 0, 0, WINDOW_SIZE, WINDOW_SIZE);
+  Gdiplus.GdipDeleteBrush(gradientBrush);
 
-  // Faint concentric guide rings — one per generation depth observed.
+  // Faint concentric guide rings, one per observed generation depth.
   let maxDepth = 0;
   for (const node of cachedSnapshot.nodes) if (node.depth > maxDepth) maxDepth = node.depth;
-  for (let depth = 1; depth <= maxDepth; depth++) {
-    const radius = depth * RING_SPACING;
-    drawEllipseRing(offscreenGraphics, CENTER, CENTER, radius, argb(28, 0xff, 0xff, 0xff), 1);
-  }
+  for (let depth = 1; depth <= maxDepth; depth++) drawEllipseRing(offscreenGraphics, CENTER, CENTER, depth * RING_SPACING, argb(28, 0xff, 0xff, 0xff), 1);
 
-  // Connecting filaments — parent → child. Drawn first so petals overdraw them.
+  // Connecting filaments first; petals overdraw them.
   for (const node of cachedSnapshot.nodes) {
     for (const child of node.children) {
       const alpha = Math.max(60, 220 - child.depth * 35);
-      drawLine(
-        offscreenGraphics,
-        node.x,
-        node.y,
-        child.x,
-        child.y,
-        argb(alpha, 0xc8, 0xb0, 0xff),
-        1,
-      );
+      drawLine(offscreenGraphics, node.x, node.y, child.x, child.y, argb(alpha, 0xc8, 0xb0, 0xff), 1);
     }
   }
 
-  // Hit test the cursor against every node to find the hovered one (if any).
+  // Hit-test cursor → hovered petal.
   const hovered = hoverX >= 0 && hoverY >= 0 ? findHoveredNode(hoverX, hoverY) : null;
 
-  // Petals — each process is a filled circle, the hovered one is highlighted.
+  // Petals: a filled disc + a brighter inner core; hovered gets a double halo.
   for (const node of cachedSnapshot.nodes) {
     fillEllipse(offscreenGraphics, node.x, node.y, node.radius, node.color);
-    // Inner highlight: a smaller, brighter disc for a "petal core" feel.
-    fillEllipse(
-      offscreenGraphics,
-      node.x - node.radius * 0.2,
-      node.y - node.radius * 0.2,
-      node.radius * 0.45,
-      argb(120, 0xff, 0xff, 0xff),
-    );
+    fillEllipse(offscreenGraphics, node.x - node.radius * 0.2, node.y - node.radius * 0.2, node.radius * 0.45, argb(120, 0xff, 0xff, 0xff));
     if (node === hovered) {
-      // Bright halo around the hovered petal.
       drawEllipseRing(offscreenGraphics, node.x, node.y, node.radius + 4, argb(255, 0xff, 0xff, 0xff), 2);
       drawEllipseRing(offscreenGraphics, node.x, node.y, node.radius + 8, argb(120, 0xff, 0xff, 0xff), 1);
     }
@@ -497,16 +462,9 @@ function renderFrame(hWnd: bigint): void {
 
   // Title chrome.
   drawText(offscreenGraphics, 'Process Mandala', titleFont, 24, 22, 600, 28, argb(255, 0xff, 0xee, 0xd6));
-  drawText(
-    offscreenGraphics,
+  drawText(offscreenGraphics,
     `${cachedSnapshot.nodes.length} processes  •  ${cachedSnapshot.roots.length} roots  •  ${maxDepth + 1} generations  •  refresh ${(REENUMERATE_EVERY_MS / 1000).toFixed(0)}s  •  esc closes`,
-    subtitleFont,
-    24,
-    52,
-    900,
-    20,
-    argb(180, 0xff, 0xff, 0xff),
-  );
+    subtitleFont, 24, 52, 900, 20, argb(180, 0xff, 0xff, 0xff));
 
   // Tooltip for the hovered process.
   if (hovered) {
@@ -516,29 +474,22 @@ function renderFrame(hWnd: bigint): void {
       { text: `${hovered.threadCount} thread${hovered.threadCount === 1 ? '' : 's'}  •  depth ${hovered.depth}`, font: tooltipFont, color: argb(200, 0xc8, 0xc8, 0xff) },
       { text: hovered.workingSetBytes > 0 ? `working set ${formatBytes(hovered.workingSetBytes)}` : 'working set unavailable', font: tooltipFont, color: argb(220, 0xa6, 0xff, 0xa6) },
     ];
-
-    const tooltipPadding = 10;
-    const tooltipLineHeight = 18;
-    const tooltipWidth = 280;
-    const tooltipHeight = tooltipPadding * 2 + lines.length * tooltipLineHeight;
-
-    // Anchor the tooltip near the cursor but keep it inside the window.
-    let tipX = hoverX + 18;
-    let tipY = hoverY + 18;
-    if (tipX + tooltipWidth > WINDOW_SIZE - 12) tipX = hoverX - tooltipWidth - 18;
-    if (tipY + tooltipHeight > WINDOW_SIZE - 12) tipY = hoverY - tooltipHeight - 18;
+    const PAD = 10, LINE_H = 18, TIP_W = 280, TIP_H = PAD * 2 + lines.length * LINE_H;
+    // Anchor near cursor, but keep tooltip on-screen.
+    let tipX = hoverX + 18, tipY = hoverY + 18;
+    if (tipX + TIP_W > WINDOW_SIZE - 12) tipX = hoverX - TIP_W - 18;
+    if (tipY + TIP_H > WINDOW_SIZE - 12) tipY = hoverY - TIP_H - 18;
     if (tipX < 12) tipX = 12;
     if (tipY < 12) tipY = 12;
 
-    // Shadow + body + colored top edge that picks up the petal's hue.
-    fillRect(offscreenGraphics, tipX + 3, tipY + 3, tooltipWidth, tooltipHeight, argb(120, 0, 0, 0));
-    fillRect(offscreenGraphics, tipX, tipY, tooltipWidth, tooltipHeight, argb(235, 0x12, 0x10, 0x22));
-    fillRect(offscreenGraphics, tipX, tipY, tooltipWidth, 2, argb(255, (hovered.color >>> 16) & 0xff, (hovered.color >>> 8) & 0xff, hovered.color & 0xff));
+    fillRect(offscreenGraphics, tipX + 3, tipY + 3, TIP_W, TIP_H, argb(120, 0, 0, 0)); // shadow
+    fillRect(offscreenGraphics, tipX, tipY, TIP_W, TIP_H, argb(235, 0x12, 0x10, 0x22)); // body
+    fillRect(offscreenGraphics, tipX, tipY, TIP_W, 2, argb(255, (hovered.color >>> 16) & 0xff, (hovered.color >>> 8) & 0xff, hovered.color & 0xff)); // hue edge
 
-    let lineY = tipY + tooltipPadding;
+    let lineY = tipY + PAD;
     for (const line of lines) {
-      drawText(offscreenGraphics, line.text, line.font, tipX + tooltipPadding, lineY, tooltipWidth - tooltipPadding * 2, tooltipLineHeight, line.color);
-      lineY += tooltipLineHeight;
+      drawText(offscreenGraphics, line.text, line.font, tipX + PAD, lineY, TIP_W - PAD * 2, LINE_H, line.color);
+      lineY += LINE_H;
     }
   }
 

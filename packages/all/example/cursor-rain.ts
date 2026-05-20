@@ -192,8 +192,7 @@ bitmapInfo.writeUInt32LE(DIB_BYTES, 20); // biSizeImage
 const dibBitsPointerBuffer = Buffer.alloc(8);
 const dibBitmap = GDI32.CreateDIBSection(memoryDC, bitmapInfo.ptr!, DIB_RGB_COLORS, dibBitsPointerBuffer.ptr!, 0n, 0);
 if (!dibBitmap) { console.error('CreateDIBSection failed.'); process.exit(1); }
-const dibPixelsAddress = Number(read.u64(dibBitsPointerBuffer.ptr!, 0));
-const dibPixels = new Uint8Array(toArrayBuffer(dibPixelsAddress as Pointer, 0, DIB_BYTES));
+const dibPixels = new Uint8Array(toArrayBuffer(Number(read.u64(dibBitsPointerBuffer.ptr!, 0)) as Pointer, 0, DIB_BYTES));
 const previousBitmap = GDI32.SelectObject(memoryDC, dibBitmap);
 
 // ── UpdateLayeredWindow parameter buffers (re-used every frame) ───────────────

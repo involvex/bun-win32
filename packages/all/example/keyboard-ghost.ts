@@ -26,7 +26,7 @@
  * APIs demonstrated:
  *   - User32: SetWindowsHookExW(WH_KEYBOARD_LL), UnhookWindowsHookEx,
  *     CallNextHookEx, CreateWindowExW, UpdateLayeredWindow, GetCursorPos,
- *     GetAsyncKeyState, SetTimer, RegisterClassExW, GetMessageW loop.
+ *     GetAsyncKeyState, SetTimer + TIMERPROC, GetMessageW loop.
  *   - GDI32: CreateCompatibleDC, CreateDIBSection, SelectObject, DeleteDC.
  *   - Gdiplus: GdiplusStartup, GdipCreateBitmapFromScan0,
  *     GdipGetImageGraphicsContext, GdipDrawString, GdipBitmapLockBits.
@@ -414,11 +414,9 @@ function teardown(): void {
   GDI32.DeleteDC(memoryDeviceContext);
   User32.ReleaseDC(NULL_BIGINT, screenDeviceContext);
   User32.DestroyWindow(overlayHwnd);
-  User32.UnregisterClassW(windowClassName.ptr, NULL_BIGINT);
   Gdiplus.GdiplusShutdown(gdiplusStartupToken);
   lowLevelKeyboardHook.close();
   timerCallback.close();
-  wndProc.close();
   console.log('Goodbye.');
 }
 process.on('SIGINT', () => {

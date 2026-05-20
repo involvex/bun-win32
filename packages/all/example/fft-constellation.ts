@@ -239,6 +239,7 @@ for (let i = 0; i < CAPTURE_BUFFER_COUNT; i += 1) {
 
 let captureDeviceHandle: bigint = 0n;
 let capturePreparedHeaderCount = 0;
+let captureShuttingDown = false;
 
 /** Build a WAVEFORMATEX describing our 44.1 kHz mono 16-bit PCM capture. */
 function buildCaptureFormatBuffer(): Buffer {
@@ -280,6 +281,10 @@ function initializeCaptureHeader(index: number): void {
  */
 const waveInCallback = new JSCallback(
   (_hWaveIn: bigint, uMsg: number, _dwInstance: bigint, dwParam1: bigint, _dwParam2: bigint): void => {
+    // waveInStop/Reset/Close can synchronously fire a final WIM_DATA with the
+    // partial buffer. By the time that fires the Buffer-backed PCM slot may
+    // already be in teardown — bail before touching it.
+    if (captureShuttingDown) return;
     if (uMsg !== MM_WIM_DATA) return;
     if (dwParam1 === 0n) return;
 
@@ -293,25 +298,31 @@ const waveInCallback = new JSCallback(
     }
     if (matchedSlot < 0) return;
 
-    const header = captureHeaderBuffers[matchedSlot]!;
-    const pcm = capturePcmBuffers[matchedSlot]!;
-    const bytesRecorded = header.readUInt32LE(12);
-    const sampleCount = Math.min(FFT_SIZE, Math.floor(bytesRecorded / BLOCK_ALIGN_BYTES));
+    try {
+      const header = captureHeaderBuffers[matchedSlot]!;
+      const pcm = capturePcmBuffers[matchedSlot]!;
+      const bytesRecorded = header.readUInt32LE(12);
+      const sampleCount = Math.min(FFT_SIZE, Math.floor(bytesRecorded / BLOCK_ALIGN_BYTES));
 
-    // Decode i16 → f32 [-1,1] straight into the rolling input window. We
-    // overwrite all FFT_SIZE slots: if the driver gave us fewer samples than
-    // expected (it shouldn't — bufferLength == FFT_SIZE * 2), zero-pad the tail.
-    for (let i = 0; i < sampleCount; i += 1) {
-      latestSamples[i] = pcm.readInt16LE(i * 2) / 32_768;
-    }
-    for (let i = sampleCount; i < FFT_SIZE; i += 1) latestSamples[i] = 0;
-    totalSampleFramesReceived += sampleCount;
+      // Decode i16 → f32 [-1,1] straight into the rolling input window. We
+      // overwrite all FFT_SIZE slots: if the driver gave us fewer samples than
+      // expected (it shouldn't — bufferLength == FFT_SIZE * 2), zero-pad the tail.
+      for (let i = 0; i < sampleCount; i += 1) {
+        latestSamples[i] = pcm.readInt16LE(i * 2) / 32_768;
+      }
+      for (let i = sampleCount; i < FFT_SIZE; i += 1) latestSamples[i] = 0;
+      totalSampleFramesReceived += sampleCount;
 
-    // Clear dwBytesRecorded + dwFlags for the next capture cycle and re-queue.
-    header.writeUInt32LE(0, 12);
-    header.writeUInt32LE(0, 24);
-    if (captureDeviceHandle !== 0n) {
-      Winmm.waveInAddBuffer(captureDeviceHandle, header.ptr!, header.byteLength);
+      // Clear dwBytesRecorded + dwFlags for the next capture cycle and re-queue.
+      header.writeUInt32LE(0, 12);
+      header.writeUInt32LE(0, 24);
+      if (captureDeviceHandle !== 0n && !captureShuttingDown) {
+        Winmm.waveInAddBuffer(captureDeviceHandle, header.ptr!, header.byteLength);
+      }
+    } catch {
+      // Swallow — JSCallback exceptions are sent back through the FFI boundary
+      // and can crash the host. Capture failures will surface as visualization
+      // going quiet, which is the right thing.
     }
   },
   { args: ['u64', 'u32', 'u64', 'u64', 'u64'], returns: 'void' },
@@ -355,6 +366,9 @@ function startMicrophoneCapture(): boolean {
 /** Stop, reset, unprepare every WAVEHDR, and close the input device. */
 function stopMicrophoneCapture(): void {
   if (captureDeviceHandle === 0n) return;
+  // Flag first — waveInStop/Reset can fire one final WIM_DATA synchronously,
+  // and the callback would otherwise try to read from a half-stopped device.
+  captureShuttingDown = true;
   Winmm.waveInStop(captureDeviceHandle);
   Winmm.waveInReset(captureDeviceHandle);
   for (let i = 0; i < capturePreparedHeaderCount; i += 1) {

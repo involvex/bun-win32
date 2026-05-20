@@ -368,67 +368,37 @@ function takeSnapshot(): Snapshot {
   };
 }
 
-// ── Win32 window ──────────────────────────────────────────────────────────────
-
+// ── Win32 window: WndProc + WNDCLASSEXW + CreateWindowExW + DWM polish. ──
 let shouldClose = false;
-
 const wndProcCallback = new JSCallback(
   (hWnd: bigint, msg: number, wParam: bigint, lParam: bigint): bigint => {
-    if (msg === WM_KEYDOWN) {
-      if (Number(wParam) === VirtualKey.VK_ESCAPE) {
-        shouldClose = true;
-        User32.PostQuitMessage(0);
-        return 0n;
-      }
-    }
-    if (msg === WM_CLOSE) {
+    if (msg === WM_KEYDOWN && Number(wParam) === VirtualKey.VK_ESCAPE) {
       shouldClose = true;
-      User32.DestroyWindow(hWnd);
-      return 0n;
-    }
-    if (msg === WM_DESTROY) {
       User32.PostQuitMessage(0);
       return 0n;
     }
-    // The WM_TIMER messages are dispatched here too; we drive sampling +
-    // rendering directly from the main loop below for simplicity (TimerProc
-    // would otherwise need to bridge through this callback), so just fall
-    // through to the default handler.
+    if (msg === WM_CLOSE) { shouldClose = true; User32.DestroyWindow(hWnd); return 0n; }
+    if (msg === WM_DESTROY) { User32.PostQuitMessage(0); return 0n; }
     return User32.DefWindowProcW(hWnd, msg, wParam, lParam);
   },
   { args: ['u64', 'u32', 'u64', 'i64'], returns: 'i64' },
 );
 
 const className = encodeWide('BunOsTomography');
-
-// WNDCLASSEXW = 80 bytes on x64. Fields are written explicitly so the binding
-// is robust against future layout audits.
+// WNDCLASSEXW (80B on x64). Pinned offsets are documented in MSDN.
 const wndClassBuffer = Buffer.alloc(80);
 const wndClassView = new DataView(wndClassBuffer.buffer);
 wndClassView.setUint32(0, 80, true); // cbSize
-wndClassView.setUint32(4, 0, true); // style
 wndClassBuffer.writeBigUInt64LE(BigInt(wndProcCallback.ptr!), 8); // lpfnWndProc
-wndClassView.setInt32(16, 0, true); // cbClsExtra
-wndClassView.setInt32(20, 0, true); // cbWndExtra
-wndClassBuffer.writeBigUInt64LE(0n, 24); // hInstance
-wndClassBuffer.writeBigUInt64LE(0n, 32); // hIcon
-wndClassBuffer.writeBigUInt64LE(0n, 40); // hCursor
-wndClassBuffer.writeBigUInt64LE(0n, 48); // hbrBackground
-wndClassBuffer.writeBigUInt64LE(0n, 56); // lpszMenuName
 wndClassBuffer.writeBigUInt64LE(BigInt(className.ptr), 64); // lpszClassName
-wndClassBuffer.writeBigUInt64LE(0n, 72); // hIconSm
-
-const classAtom = User32.RegisterClassExW(wndClassBuffer.ptr);
-if (!classAtom) {
-  console.error('RegisterClassExW failed');
-  process.exit(1);
+if (!User32.RegisterClassExW(wndClassBuffer.ptr)) {
+  console.error('RegisterClassExW failed'); process.exit(1);
 }
 
 const screenWidth = User32.GetSystemMetrics(SystemMetric.SM_CXSCREEN);
 const screenHeight = User32.GetSystemMetrics(SystemMetric.SM_CYSCREEN);
 const windowX = Math.max(0, Math.floor((screenWidth - WINDOW_WIDTH) / 2));
 const windowY = Math.max(0, Math.floor((screenHeight - WINDOW_HEIGHT) / 2));
-
 const moduleHandle = Kernel32.GetModuleHandleW(null!);
 
 const windowHandle = User32.CreateWindowExW(
@@ -436,26 +406,15 @@ const windowHandle = User32.CreateWindowExW(
   className.ptr,
   encodeWide('OS Tomography — Live Wait-Chain X-Ray').ptr,
   WindowStyles.WS_POPUP | WindowStyles.WS_VISIBLE,
-  windowX,
-  windowY,
-  WINDOW_WIDTH,
-  WINDOW_HEIGHT,
-  0n,
-  0n,
-  moduleHandle,
-  null,
+  windowX, windowY, WINDOW_WIDTH, WINDOW_HEIGHT,
+  0n, 0n, moduleHandle, null,
 );
+if (!windowHandle) { console.error('CreateWindowExW failed'); process.exit(1); }
 
-if (!windowHandle) {
-  console.error('CreateWindowExW failed');
-  process.exit(1);
-}
-
-// Apply Mica backdrop and dark-mode title region through DWM.
+// DWM polish: Mica system backdrop + dark-mode non-client region.
 const backdropAttribute = Buffer.alloc(4);
 backdropAttribute.writeInt32LE(SystemBackdropType.DWMSBT_MAINWINDOW, 0);
 Dwmapi.DwmSetWindowAttribute(windowHandle, WindowAttribute.DWMWA_SYSTEMBACKDROP_TYPE, backdropAttribute.ptr, 4);
-
 const darkModeAttribute = Buffer.alloc(4);
 darkModeAttribute.writeInt32LE(1, 0);
 Dwmapi.DwmSetWindowAttribute(windowHandle, WindowAttribute.DWMWA_USE_IMMERSIVE_DARK_MODE, darkModeAttribute.ptr, 4);

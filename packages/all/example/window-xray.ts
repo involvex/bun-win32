@@ -40,10 +40,13 @@
  *       The DIB is `BitBlt`'d into the layered window's own DC and the window
  *       is repositioned next to the cursor with `SetWindowPos`.
  *
- * `ESC`, right-click on the overlay, and `Ctrl+C` in the terminal all trigger
- * a single `cleanup()` path that releases the GDI/GDI+/process handles and
- * destroys the window. `SetConsoleCtrlHandler` is installed via a real
- * `JSCallback` so a console close still tears the HUD down.
+ * Because the HUD is `WS_EX_TRANSPARENT` and `WS_EX_NOACTIVATE`, every mouse
+ * and keyboard message hits the window underneath instead of the overlay -
+ * the practical close path is `Ctrl+C` in the terminal, wired through a real
+ * `JSCallback` passed to `SetConsoleCtrlHandler` so the cleanup runs the GDI/
+ * GDI+/process-handle teardown before exit. (ESC and right-click handlers
+ * are kept in the WndProc for completeness, in case the EX_TRANSPARENT bit
+ * is dropped.)
  *
  * APIs demonstrated (User32):
  *   - RegisterClassExW / CreateWindowExW / DestroyWindow / UnregisterClassW
@@ -557,7 +560,7 @@ function createRenderer(referenceDc: bigint): Renderer {
 
     if (snapshot.targetHwnd === NULL) {
       drawText('(hover over a window to inspect it)', brushes.label, fonts.value, 0, 50, HUD_WIDTH, 24, formats.center);
-      drawText('press ESC or right-click here to close', brushes.label, fonts.label, 0, HUD_HEIGHT - 22, HUD_WIDTH, 18, formats.center);
+      drawText('press Ctrl+C in the terminal to close', brushes.label, fonts.label, 0, HUD_HEIGHT - 22, HUD_WIDTH, 18, formats.center);
       return;
     }
 
@@ -633,7 +636,7 @@ function createRenderer(referenceDc: bigint): Renderer {
     const waitText = snapshot.waitDetail.length > 0 ? `${snapshot.waitStatus}  ·  ${snapshot.waitDetail}` : snapshot.waitStatus;
     drawRow('wait', waitText, waitBrush, fonts.label);
 
-    drawText('powered by @bun-win32/all  ·  press ESC to close', brushes.label, fonts.label, 0, HUD_HEIGHT - 18, HUD_WIDTH, 14, formats.center);
+    drawText('powered by @bun-win32/all  ·  press Ctrl+C in the terminal to close', brushes.label, fonts.label, 0, HUD_HEIGHT - 18, HUD_WIDTH, 14, formats.center);
   };
 
   const blitTo = (destinationDeviceContext: bigint): void => {
@@ -668,7 +671,7 @@ console.log('window beneath it - class, process, geometry,');
 console.log('DWM compositing state, and UI-thread wait state.');
 console.log('');
 console.log('Move the mouse over any window to see it light up.');
-console.log('Press ESC, right-click the HUD, or Ctrl+C to close.');
+console.log('Press Ctrl+C in the terminal to close (the overlay is click-through).');
 console.log('');
 
 // GDI+ must be initialized before any Gdip* call.
