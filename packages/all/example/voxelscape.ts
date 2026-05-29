@@ -115,6 +115,7 @@ const VK_SPACE = 0x20;
 const VK_SHIFT = 0x10;
 const VK_LBUTTON = 0x01;
 const VK_RBUTTON = 0x02;
+const VK_F = 0x46; // toggle fly/walk
 
 // ── Fullscreen-triangle vertex shader (SV_VertexID, no vertex buffer) ──────────
 const VS_SOURCE = `
@@ -803,6 +804,151 @@ function pickVoxel(
   return { hit: false, cell: [cx, cy, cz], prev: [px, py, pz] };
 }
 
+// ── Swept-AABB physics (pure; shared by the player and all entities) ───────────
+export interface MoveResult {
+  x: number;
+  y: number;
+  z: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  onGround: boolean;
+  hitX: boolean;
+  hitY: boolean;
+  hitZ: boolean;
+}
+
+/**
+ * Does the body AABB — centered on (x,z) with width sx,sz, feet at y, height sy —
+ * overlap any solid voxel? `sampleSolid` decides per cell (incl. out-of-bounds).
+ */
+function bodyHitsSolid(
+  x: number,
+  y: number,
+  z: number,
+  sx: number,
+  sy: number,
+  sz: number,
+  sampleSolid: (x: number, y: number, z: number) => boolean,
+): boolean {
+  const x0 = Math.floor(x - sx / 2);
+  const x1 = Math.floor(x + sx / 2 - 1e-6);
+  const z0 = Math.floor(z - sz / 2);
+  const z1 = Math.floor(z + sz / 2 - 1e-6);
+  const y0 = Math.floor(y);
+  const y1 = Math.floor(y + sy - 1e-6);
+  for (let yy = y0; yy <= y1; yy += 1) {
+    for (let zz = z0; zz <= z1; zz += 1) {
+      for (let xx = x0; xx <= x1; xx += 1) {
+        if (sampleSolid(xx, yy, zz)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** Binary-search the farthest clear position from `from` (clear) toward `to`. */
+function sweepAxis(blocked: (p: number) => boolean, from: number, to: number): { p: number; hit: boolean } {
+  if (!blocked(to)) return { p: to, hit: false };
+  let lo = from;
+  let hi = to;
+  for (let i = 0; i < 12; i += 1) {
+    const mid = (lo + hi) * 0.5;
+    if (blocked(mid)) hi = mid;
+    else lo = mid;
+  }
+  return { p: lo, hit: true };
+}
+
+/**
+ * Move a body AABB through the voxel grid with axis-separated swept collision.
+ * Resolves X, then Z, then Y; sub-steps so no axis advances more than ~0.4 voxels
+ * (anti-tunnelling); auto-climbs ledges up to `stepUp` tall when blocked horizontally
+ * (so walking up voxel terrain is smooth); sets `onGround` when downward motion is
+ * stopped. Pure: `sampleSolid` is the only world access. Gravity/jump are the caller's.
+ */
+export function sweptMove(
+  px: number,
+  py: number,
+  pz: number,
+  vx: number,
+  vy: number,
+  vz: number,
+  sx: number,
+  sy: number,
+  sz: number,
+  dt: number,
+  sampleSolid: (x: number, y: number, z: number) => boolean,
+  stepUp: number,
+): MoveResult {
+  const maxMove = Math.max(Math.abs(vx), Math.abs(vy), Math.abs(vz)) * dt;
+  const steps = Math.min(16, Math.max(1, Math.ceil(maxMove / 0.4)));
+  const h = dt / steps;
+  let x = px;
+  let y = py;
+  let z = pz;
+  let onGround = false;
+  let hitX = false;
+  let hitY = false;
+  let hitZ = false;
+
+  for (let s = 0; s < steps; s += 1) {
+    if (vx !== 0) {
+      const nx = x + vx * h;
+      const r = sweepAxis((p) => bodyHitsSolid(p, y, z, sx, sy, sz, sampleSolid), x, nx);
+      if (r.hit) {
+        if (
+          stepUp > 0 &&
+          !bodyHitsSolid(x, y + stepUp, z, sx, sy, sz, sampleSolid) &&
+          !bodyHitsSolid(nx, y + stepUp, z, sx, sy, sz, sampleSolid)
+        ) {
+          x = nx;
+          y += stepUp;
+        } else {
+          x = r.p;
+          vx = 0;
+          hitX = true;
+        }
+      } else {
+        x = r.p;
+      }
+    }
+    if (vz !== 0) {
+      const nz = z + vz * h;
+      const r = sweepAxis((p) => bodyHitsSolid(x, y, p, sx, sy, sz, sampleSolid), z, nz);
+      if (r.hit) {
+        if (
+          stepUp > 0 &&
+          !bodyHitsSolid(x, y + stepUp, z, sx, sy, sz, sampleSolid) &&
+          !bodyHitsSolid(x, y + stepUp, nz, sx, sy, sz, sampleSolid)
+        ) {
+          z = nz;
+          y += stepUp;
+        } else {
+          z = r.p;
+          vz = 0;
+          hitZ = true;
+        }
+      } else {
+        z = r.p;
+      }
+    }
+    if (vy !== 0) {
+      const ny = y + vy * h;
+      const r = sweepAxis((p) => bodyHitsSolid(x, p, z, sx, sy, sz, sampleSolid), y, ny);
+      if (r.hit) {
+        if (vy < 0) onGround = true;
+        y = r.p;
+        vy = 0;
+        hitY = true;
+      } else {
+        y = r.p;
+      }
+    }
+  }
+  return { x, y, z, vx, vy, vz, onGround, hitX, hitY, hitZ };
+}
+
 function main(): void {
   const win = gpu.createWindow({ title: 'Voxelscape — raytraced voxel world', width: WIDTH, height: HEIGHT, borderless: true });
   const { w: cw, h: ch } = win.clientSize();
@@ -812,6 +958,10 @@ function main(): void {
   const voxels = generateWorld();
   const voxelBytes = Buffer.from(voxels.buffer, 0, voxels.byteLength);
   const field = gpu.makeStructuredBuffer({ stride: 4, count: W * H * D, srv: true, cpuWritable: true, initialData: voxelBytes });
+
+  /** Block id at (x,y,z), or air outside the world. */
+  const voxelAt = (x: number, y: number, z: number): number =>
+    x < 0 || y < 0 || z < 0 || x >= W || y >= H || z >= D ? B_AIR : voxels[idx(x, y, z)]!;
 
   // Compile shaders.
   let vs: bigint;
@@ -846,6 +996,39 @@ function main(): void {
   let camZ = -10;
   let yaw = 0.0; // around +Y; 0 looks toward +Z
   let pitch = -0.28;
+
+  // ── Player body (walk mode) ───────────────────────────────────────────────────
+  const PSX = 0.6; // body half-extents → AABB 0.6 × 1.8 × 0.6
+  const PSY = 1.8;
+  const PSZ = 0.6;
+  const EYE_H = 1.62; // eye height above the feet
+  const GRAVITY = 28;
+  const JUMP_V = 8.8;
+  const WALK_SPEED = 5.6;
+  const SPRINT_SPEED = 9.4;
+  const STEP_UP = 1.05; // climb a single full block automatically
+  // Spawn on solid ground a bit off the central river.
+  const spawnX = Math.floor(W * 0.5) + 0.5;
+  const spawnZ = Math.floor(D * 0.28) + 0.5;
+  let spawnFeet = SEA_LEVEL + 1;
+  for (let y = H - 1; y >= 1; y -= 1) {
+    if (isSolid(voxelAt(Math.floor(spawnX), y, Math.floor(spawnZ)))) {
+      spawnFeet = y + 1;
+      break;
+    }
+  }
+  const player: [number, number, number] = [spawnX, spawnFeet + 0.05, spawnZ];
+  const pvel: [number, number, number] = [0, 0, 0];
+  let onGround = false;
+  let flying = false; // interactive starts in walk mode; F toggles free-fly
+  let prevF = false;
+  // Solid test for body collision: world edges + floor are walls; air/water/lava pass through.
+  const solidAt = (x: number, y: number, z: number): boolean => {
+    if (x < 0 || z < 0 || x >= W || z >= D) return true;
+    if (y < 0) return true;
+    if (y >= H) return false;
+    return isSolid(voxelAt(x, y, z));
+  };
   // Low golden-hour sun sitting just above the horizon so the hero shot frames it
   // over the water with long shadows, warm haze, and god-rays.
   const sun: [number, number, number] = (() => {
@@ -951,20 +1134,63 @@ function main(): void {
         User32.SetCursorPos(centerScr.x, centerScr.y);
       }
 
+      // ── Fly/walk toggle (F) ────────────────────────────────────────────────
+      const fDown = win.keyDown(VK_F);
+      if (fDown && !prevF) flying = !flying;
+      prevF = fDown;
+
       const { fwd, right } = basis();
-      const speed = (win.keyDown(VK_SHIFT) ? 26 : 14) * dt;
       let mvF = 0;
       let mvR = 0;
-      let mvU = 0;
       if (win.keyDown(VK_W)) mvF += 1;
       if (win.keyDown(VK_S)) mvF -= 1;
       if (win.keyDown(VK_DK)) mvR += 1;
       if (win.keyDown(VK_A)) mvR -= 1;
-      if (win.keyDown(VK_SPACE)) mvU += 1;
-      if (win.keyDown(VK_SHIFT)) mvU -= 1;
-      camX += (fwd[0] * mvF + right[0] * mvR) * speed;
-      camY += (fwd[1] * mvF + mvU) * speed;
-      camZ += (fwd[2] * mvF + right[2] * mvR) * speed;
+
+      if (flying) {
+        // Free-fly: move the eye directly along the look basis (no gravity/collision).
+        const speed = (win.keyDown(VK_SHIFT) ? 30 : 15) * dt;
+        let mvU = 0;
+        if (win.keyDown(VK_SPACE)) mvU += 1;
+        if (win.keyDown(VK_SHIFT)) mvU -= 1;
+        player[0] += (fwd[0] * mvF + right[0] * mvR) * speed;
+        player[1] += (fwd[1] * mvF + mvU) * speed;
+        player[2] += (fwd[2] * mvF + right[2] * mvR) * speed;
+        pvel[0] = 0;
+        pvel[1] = 0;
+        pvel[2] = 0;
+      } else {
+        // Walk: horizontal velocity on the yaw plane + gravity + jump + swim + step-up.
+        const fwdH: [number, number] = [Math.sin(yaw), Math.cos(yaw)];
+        const spd = win.keyDown(VK_SHIFT) ? SPRINT_SPEED : WALK_SPEED;
+        const inWater = voxelAt(Math.floor(player[0]), Math.floor(player[1] + 0.9), Math.floor(player[2])) === B_WATER;
+        const inLava = voxelAt(Math.floor(player[0]), Math.floor(player[1] + 0.2), Math.floor(player[2])) === B_LAVA;
+        const drag = inWater ? 0.62 : 1.0;
+        pvel[0] = (fwdH[0] * mvF + right[0] * mvR) * spd * drag;
+        pvel[2] = (fwdH[1] * mvF + right[2] * mvR) * spd * drag;
+        pvel[1] -= (inWater ? GRAVITY * 0.28 : GRAVITY) * dt;
+        if (inWater) {
+          pvel[1] += GRAVITY * 0.2 * dt; // buoyancy
+          pvel[1] = Math.max(pvel[1], -4.5); // slow sink
+          if (win.keyDown(VK_SPACE)) pvel[1] = 4.2; // swim up
+        } else if (onGround && win.keyDown(VK_SPACE)) {
+          pvel[1] = JUMP_V; // jump (auto-repeats while held on ground)
+        }
+        if (inLava) pvel[1] = 9.0; // slapstick pop out of lava
+        pvel[1] = Math.max(pvel[1], -55); // terminal velocity
+        const res = sweptMove(player[0], player[1], player[2], pvel[0], pvel[1], pvel[2], PSX, PSY, PSZ, dt, solidAt, STEP_UP);
+        player[0] = res.x;
+        player[1] = res.y;
+        player[2] = res.z;
+        pvel[0] = res.vx;
+        pvel[1] = res.vy;
+        pvel[2] = res.vz;
+        onGround = res.onGround;
+      }
+      // Eye follows the body.
+      camX = player[0];
+      camY = player[1] + EYE_H;
+      camZ = player[2];
 
       // ── Block edit picking from screen center ─────────────────────────────────
       const { fwd: cf } = basis();
