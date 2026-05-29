@@ -106,6 +106,375 @@ export function isSolid(b: number): boolean {
   return SOLID[b] === true;
 }
 
+// ── Cellular physics simulation ────────────────────────────────────────────────
+// A pure, factory-created world + active-set automaton: falling sand/gravel,
+// mass-based water that floods and settles, throttled lava (lava+water → obsidian/
+// stone + steam, ignites flammables), a fire overlay, TNT fuses + chain reactions,
+// and radial explosions. The game layer drives it via stepTick() and reacts to the
+// returned SimEvents (explosions/steam/splashes/extinguished) with FX/audio/debris.
+const SIM_TICK_SECONDS = 1 / 20;
+const WATER_MAX = 1.0;
+const WATER_MIN = 0.045;
+const TNT_FUSE = 1.4; // seconds
+const TNT_RADIUS = 4.4;
+const TNT_POWER = 1.0;
+const HDIRS: ReadonlyArray<readonly [number, number]> = [
+  [1, 0],
+  [-1, 0],
+  [0, 1],
+  [0, -1],
+];
+const N6: ReadonlyArray<readonly [number, number, number]> = [
+  [1, 0, 0],
+  [-1, 0, 0],
+  [0, 1, 0],
+  [0, -1, 0],
+  [0, 0, 1],
+  [0, 0, -1],
+];
+
+export interface ExplodeResult {
+  destroyed: { x: number; y: number; z: number; block: number }[];
+  litTNT: number;
+}
+export interface SimEvents {
+  explosions: { x: number; y: number; z: number; power: number; result: ExplodeResult }[];
+  steam: { x: number; y: number; z: number }[];
+  splashes: { x: number; y: number; z: number }[];
+  extinguished: { x: number; y: number; z: number }[];
+}
+export interface Sim {
+  W: number;
+  H: number;
+  D: number;
+  world: Uint32Array;
+  water: Float32Array;
+  active: Set<number>;
+  fuses: Map<number, number>;
+  burning: Map<number, number>;
+  idx(x: number, y: number, z: number): number;
+  inBounds(x: number, y: number, z: number): boolean;
+  getBlock(x: number, y: number, z: number): number;
+  setBlock(x: number, y: number, z: number, t: number): void;
+  wake(x: number, y: number, z: number): void;
+  light(x: number, y: number, z: number): void;
+  ignite(x: number, y: number, z: number): void;
+  explode(x: number, y: number, z: number, radius: number, power: number): ExplodeResult;
+  stepTick(budget: number): SimEvents;
+}
+
+/** Build a simulation of size SW×SH×SD, optionally seeded with `data` (its buffer is taken over). */
+export function createSim(SW: number, SH: number, SD: number, data?: Uint32Array): Sim {
+  const world = data ?? new Uint32Array(SW * SH * SD);
+  const water = new Float32Array(SW * SH * SD);
+  const active = new Set<number>();
+  const fuses = new Map<number, number>();
+  const burning = new Map<number, number>();
+  const SWD = SW * SD;
+  let tick = 0;
+
+  const sidx = (x: number, y: number, z: number): number => x + z * SW + y * SWD;
+  const inB = (x: number, y: number, z: number): boolean => x >= 0 && y >= 0 && z >= 0 && x < SW && y < SH && z < SD;
+  const get = (x: number, y: number, z: number): number => (inB(x, y, z) ? world[sidx(x, y, z)]! : B_AIR);
+
+  const wake = (x: number, y: number, z: number): void => {
+    if (inB(x, y, z)) active.add(sidx(x, y, z));
+    for (const [dx, dy, dz] of N6) if (inB(x + dx, y + dy, z + dz)) active.add(sidx(x + dx, y + dy, z + dz));
+  };
+
+  const set = (x: number, y: number, z: number, t: number): void => {
+    if (!inB(x, y, z)) return;
+    const i = sidx(x, y, z);
+    world[i] = t;
+    if (t === B_WATER) {
+      if (water[i]! < WATER_MIN) water[i] = WATER_MAX; // placing water = one full cell
+    } else {
+      water[i] = 0;
+    }
+    wake(x, y, z);
+  };
+
+  // Seed water mass from any pre-filled water (lake/river/sea); leave it OUT of the
+  // active set so settled bodies stay inert until an edit/physics event disturbs them.
+  if (data) for (let i = 0; i < world.length; i += 1) if (world[i] === B_WATER) water[i] = WATER_MAX;
+
+  const light = (x: number, y: number, z: number): void => {
+    if (get(x, y, z) !== B_TNT) return;
+    const i = sidx(x, y, z);
+    if (!fuses.has(i)) fuses.set(i, TNT_FUSE + Math.random() * 0.5);
+  };
+
+  const ignite = (x: number, y: number, z: number): void => {
+    if (!inB(x, y, z)) return;
+    const i = sidx(x, y, z);
+    if (FLAMMABLE[world[i]!]! <= 0 || burning.has(i)) return;
+    burning.set(i, 1.4 + 2.2 * FLAMMABLE[world[i]!]! + Math.random() * 0.6);
+  };
+
+  const explode = (cx: number, cy: number, cz: number, radius: number, power: number): ExplodeResult => {
+    const destroyed: { x: number; y: number; z: number; block: number }[] = [];
+    let litTNT = 0;
+    const ri = Math.ceil(radius);
+    const r2 = radius * radius;
+    for (let dy = -ri; dy <= ri; dy += 1) {
+      for (let dz = -ri; dz <= ri; dz += 1) {
+        for (let dx = -ri; dx <= ri; dx += 1) {
+          const d2 = dx * dx + dy * dy + dz * dz;
+          if (d2 > r2) continue;
+          const x = cx + dx;
+          const y = cy + dy;
+          const z = cz + dz;
+          if (!inB(x, y, z)) continue;
+          const b = world[sidx(x, y, z)]!;
+          if (b === B_AIR) continue;
+          if (b === B_TNT) {
+            light(x, y, z); // chain reaction (fused, not destroyed here)
+            litTNT += 1;
+            continue;
+          }
+          if (b === B_OBSIDIAN) continue; // immune
+          const falloff = 1 - Math.sqrt(d2) / radius; // 1 at center → 0 at rim
+          const pDestroy = power * falloff * 1.4 - BLAST_RESIST[b]!;
+          if (Math.random() < pDestroy) {
+            destroyed.push({ x, y, z, block: b });
+            set(x, y, z, B_AIR); // wakes neighbors so sand/water collapse into the crater
+          }
+        }
+      }
+    }
+    return { destroyed, litTNT };
+  };
+
+  // ── Per-cell rules (return true if the cell should stay active) ───────────────
+  const fallStep = (x: number, y: number, z: number, i: number, b: number): boolean => {
+    if (y <= 0) return false;
+    const bi = sidx(x, y - 1, z);
+    const bb = world[bi]!;
+    if (bb === B_AIR) {
+      world[bi] = b;
+      world[i] = B_AIR;
+      wake(x, y - 1, z);
+      wake(x, y, z);
+      return true;
+    }
+    if (bb === B_WATER) {
+      // Sink: the solid drops, the displaced water rises into the vacated cell.
+      const wm = water[bi]! > 0 ? water[bi]! : WATER_MAX;
+      world[bi] = b;
+      water[bi] = 0;
+      world[i] = B_WATER;
+      water[i] = wm;
+      wake(x, y - 1, z);
+      wake(x, y, z);
+      return true;
+    }
+    return false;
+  };
+
+  const waterStep = (x: number, y: number, z: number, i: number): boolean => {
+    // Touching lava turns flowing water to stone (+ steam handled by lava side).
+    for (const [dx, dy, dz] of N6) {
+      if (get(x + dx, y + dy, z + dz) === B_LAVA) {
+        world[i] = B_STONE;
+        water[i] = 0;
+        wake(x, y, z);
+        return true;
+      }
+    }
+    let m = water[i]!;
+    if (m <= 0) {
+      world[i] = B_AIR;
+      return false;
+    }
+    let changed = false;
+    // 1. Fall straight down into air/under-filled water.
+    if (y > 0) {
+      const bi = sidx(x, y - 1, z);
+      const bb = world[bi]!;
+      if (bb === B_AIR || bb === B_WATER) {
+        const room = WATER_MAX - water[bi]!;
+        if (room > 1e-3) {
+          const t = Math.min(m, room);
+          water[bi]! += t;
+          m -= t;
+          if (world[bi] !== B_WATER) world[bi] = B_WATER;
+          wake(x, y - 1, z);
+          changed = true;
+        }
+      }
+    }
+    // 2. Spread horizontally toward equalization (randomized order kills axis bias).
+    if (m > WATER_MIN) {
+      const o = (Math.random() * 4) | 0;
+      for (let k = 0; k < 4; k += 1) {
+        const dir = HDIRS[(o + k) % 4]!;
+        const nx = x + dir[0];
+        const nz = z + dir[1];
+        if (!inB(nx, y, nz)) continue;
+        const ni = sidx(nx, y, nz);
+        const nb = world[ni]!;
+        if (nb !== B_AIR && nb !== B_WATER) continue;
+        const diff = m - water[ni]!;
+        if (diff > 0.01) {
+          const t = diff * 0.25;
+          water[ni]! += t;
+          m -= t;
+          if (world[ni] !== B_WATER) world[ni] = B_WATER;
+          wake(nx, y, nz);
+          changed = true;
+        }
+      }
+    }
+    water[i] = m;
+    if (m < WATER_MIN) {
+      water[i] = 0;
+      world[i] = B_AIR;
+      wake(x, y, z);
+      return true;
+    }
+    // Evaporation valve: stranded shallow water above sea level slowly clears.
+    if (y > SEA_LEVEL && m < 0.3 && get(x, y - 1, z) !== B_WATER && Math.random() < 0.03) {
+      water[i]! -= 0.06;
+      changed = true;
+    }
+    return changed;
+  };
+
+  const lavaStep = (x: number, y: number, z: number, i: number, events: SimEvents): boolean => {
+    // Lava touching water solidifies to obsidian (+ steam).
+    for (const [dx, dy, dz] of N6) {
+      if (get(x + dx, y + dy, z + dz) === B_WATER) {
+        world[i] = B_OBSIDIAN;
+        wake(x, y, z);
+        events.steam.push({ x, y, z });
+        return true;
+      }
+    }
+    // Ignite adjacent flammables.
+    for (const [dx, dy, dz] of N6) ignite(x + dx, y + dy, z + dz);
+    const canDown = y > 0 && get(x, y - 1, z) === B_AIR;
+    let sideDir: readonly [number, number] | null = null;
+    const o = (Math.random() * 4) | 0;
+    for (let k = 0; k < 4; k += 1) {
+      const dir = HDIRS[(o + k) % 4]!;
+      if (get(x + dir[0], y, z + dir[1]) === B_AIR && get(x + dir[0], y - 1, z + dir[1]) === B_AIR) {
+        sideDir = dir;
+        break;
+      }
+    }
+    // Viscous: only actually flow every 3rd tick.
+    if (tick % 3 === 0) {
+      if (canDown) {
+        world[sidx(x, y - 1, z)] = B_LAVA;
+        world[i] = B_AIR;
+        wake(x, y - 1, z);
+        wake(x, y, z);
+        return true;
+      }
+      if (sideDir) {
+        world[sidx(x + sideDir[0], y, z + sideDir[1])] = B_LAVA;
+        world[i] = B_AIR;
+        wake(x + sideDir[0], y, z + sideDir[1]);
+        wake(x, y, z);
+        return true;
+      }
+    }
+    return canDown || sideDir !== null; // stay active until it has settled
+  };
+
+  const processFuses = (events: SimEvents): void => {
+    for (const [fi, tleft] of [...fuses]) {
+      const nt = tleft - SIM_TICK_SECONDS;
+      if (nt > 0) {
+        fuses.set(fi, nt);
+        continue;
+      }
+      fuses.delete(fi);
+      const y = (fi / SWD) | 0;
+      const rem = fi - y * SWD;
+      const z = (rem / SW) | 0;
+      const x = rem - z * SW;
+      if (world[fi] === B_TNT) {
+        world[fi] = B_AIR;
+        wake(x, y, z);
+        const result = explode(x, y, z, TNT_RADIUS, TNT_POWER);
+        events.explosions.push({ x, y, z, power: TNT_POWER, result });
+      }
+    }
+  };
+
+  const processBurning = (events: SimEvents): void => {
+    for (const [bi, tleft] of [...burning]) {
+      const y = (bi / SWD) | 0;
+      const rem = bi - y * SWD;
+      const z = (rem / SW) | 0;
+      const x = rem - z * SW;
+      // Spread to flammable neighbors.
+      for (const [dx, dy, dz] of N6) {
+        const nb = get(x + dx, y + dy, z + dz);
+        if (FLAMMABLE[nb]! > 0 && Math.random() < FLAMMABLE[nb]! * 0.05) ignite(x + dx, y + dy, z + dz);
+      }
+      const nt = tleft - SIM_TICK_SECONDS;
+      if (nt > 0) {
+        burning.set(bi, nt);
+        continue;
+      }
+      burning.delete(bi);
+      if (FLAMMABLE[world[bi]!]! > 0) {
+        world[bi] = B_AIR;
+        wake(x, y, z);
+        events.extinguished.push({ x, y, z });
+      }
+    }
+  };
+
+  const stepTick = (budget: number): SimEvents => {
+    tick += 1;
+    const events: SimEvents = { explosions: [], steam: [], splashes: [], extinguished: [] };
+    processFuses(events);
+    processBurning(events);
+    const list = Array.from(active);
+    let visited = 0;
+    for (const i of list) {
+      if (visited >= budget) break;
+      if (!active.has(i)) continue;
+      visited += 1;
+      active.delete(i);
+      const y = (i / SWD) | 0;
+      const rem = i - y * SWD;
+      const z = (rem / SW) | 0;
+      const x = rem - z * SW;
+      const b = world[i]!;
+      let keep = false;
+      if (FALLS[b]) keep = fallStep(x, y, z, i, b);
+      else if (b === B_WATER) keep = waterStep(x, y, z, i);
+      else if (b === B_LAVA) keep = lavaStep(x, y, z, i, events);
+      if (keep) active.add(i);
+    }
+    return events;
+  };
+
+  return {
+    W: SW,
+    H: SH,
+    D: SD,
+    world,
+    water,
+    active,
+    fuses,
+    burning,
+    idx: sidx,
+    inBounds: inB,
+    getBlock: get,
+    setBlock: set,
+    wake,
+    light,
+    ignite,
+    explode,
+    stepTick,
+  };
+}
+
 // Virtual-key codes for interactive controls.
 const VK_W = 0x57;
 const VK_A = 0x41;
@@ -955,7 +1324,8 @@ function main(): void {
   const g = gpu.createDevice(win.hwnd, { width: cw, height: ch });
 
   // Build the world on the CPU and upload it as a structured buffer SRV.
-  const voxels = generateWorld();
+  const sim = createSim(W, H, D, generateWorld());
+  const voxels = sim.world; // authoritative grid (the sim owns + mutates it)
   const voxelBytes = Buffer.from(voxels.buffer, 0, voxels.byteLength);
   const field = gpu.makeStructuredBuffer({ stride: 4, count: W * H * D, srv: true, cpuWritable: true, initialData: voxelBytes });
 
@@ -1093,8 +1463,7 @@ function main(): void {
   }
 
   function setBlock(x: number, y: number, z: number, t: number): void {
-    if (x < 0 || y < 0 || z < 0 || x >= W || y >= H || z >= D) return;
-    voxels[idx(x, y, z)] = t;
+    sim.setBlock(x, y, z, t); // routes through the sim so edits wake the physics
   }
 
   function drawHud(): void {
@@ -1114,6 +1483,12 @@ function main(): void {
 
   const FOV = 1.5;
 
+  // ── Physics ticking (fixed 20 Hz, accumulator-driven; per-tick cell-visit cap) ─
+  const PHYS_TICK = 1 / 20;
+  const PHYS_BUDGET = 24000;
+  let physAccum = 0;
+  let editedThisFrame = false;
+
   while (!win.shouldClose()) {
     win.pump();
     if (win.shouldClose()) break;
@@ -1122,6 +1497,7 @@ function main(): void {
     const dt = Math.min(0.05, (now - lastNow) / 1000);
     lastNow = now;
     const elapsed = (now - startTime) / 1000;
+    editedThisFrame = false;
 
     if (interactive) {
       // ── Relative mouse-look via GetCursorPos diff against the recenter point ──
@@ -1200,14 +1576,14 @@ function main(): void {
         const pick = pickVoxel(voxels, [camX, camY, camZ], cf, 64);
         if (pick.hit) {
           setBlock(pick.cell[0], pick.cell[1], pick.cell[2], B_AIR);
-          reuploadField();
+          editedThisFrame = true;
         }
       }
       if (rightDown && !prevRight) {
         const pick = pickVoxel(voxels, [camX, camY, camZ], cf, 64);
         if (pick.hit) {
           setBlock(pick.prev[0], pick.prev[1], pick.prev[2], B_STONE);
-          reuploadField();
+          editedThisFrame = true;
         }
       }
       prevLeft = leftDown;
@@ -1245,6 +1621,18 @@ function main(): void {
       // Tilt down to survey terrain, levelling toward the horizon so sky + sun show.
       pitch = lerp01(-0.34, -0.11, ease) + Math.sin(tt * 0.5) * 0.012;
     }
+
+    // ── Step the physics simulation (fixed timestep) ───────────────────────────
+    const wasActive = sim.active.size > 0 || sim.fuses.size > 0 || sim.burning.size > 0;
+    physAccum += dt;
+    let ticksRun = 0;
+    while (physAccum >= PHYS_TICK && ticksRun < 6) {
+      sim.stepTick(PHYS_BUDGET);
+      physAccum -= PHYS_TICK;
+      ticksRun += 1;
+    }
+    // Re-upload the grid only when something changed (idle world ⇒ no upload).
+    if (wasActive || editedThisFrame) reuploadField();
 
     // ── Build the constant buffer immediately before the consuming call ─────────
     const { fwd, right, up } = basis();
