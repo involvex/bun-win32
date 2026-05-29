@@ -48,10 +48,12 @@ import { captureBackBuffer, formatGrid } from './_snapshot';
 
 const encodeWide = (str: string): Buffer => Buffer.from(`${str}\0`, 'utf16le');
 
-// A modest borderless window (no need to fill the whole desktop). The HDR target + post
-// both use clientW/clientH so they follow the window's real client size.
-const WIDTH = 1280;
-const HEIGHT = 720;
+// A large borderless window scaled to the monitor (not the whole desktop). The HDR
+// target + post use clientW/clientH so they follow the window's real client size.
+const screenW = User32.GetSystemMetrics(SystemMetric.SM_CXSCREEN) || 1920;
+const screenH = User32.GetSystemMetrics(SystemMetric.SM_CYSCREEN) || 1080;
+const HEIGHT = Math.min(1200, Math.floor(screenH * 0.86));
+const WIDTH = Math.min(Math.floor(screenW * 0.9), Math.round(HEIGHT * 1.6));
 
 // Virtual-key codes for the interactive controls.
 const VK_LEFT = 0x25;
@@ -65,6 +67,17 @@ const VK_Z = 0x5a;
 const VK_X = 0x58;
 const VK_P = 0x50;
 const VK_R = 0x52;
+const VK_F = 0x46;
+const VK_G = 0x47;
+const VK_H = 0x48;
+const VK_J = 0x4a;
+const VK_K = 0x4b;
+const VK_B = 0x42;
+const VK_N = 0x4e;
+const VK_C = 0x43;
+const VK_0 = 0x30;
+const VK_1 = 0x31;
+const VK_2 = 0x32;
 
 // 256 × 256 = 65,536 cloth nodes. numthreads(256) → side groups for the 1D dispatch.
 const GRID_W = 256;
@@ -659,7 +672,13 @@ function mul4(a: number[], b: number[]): number[] {
 const PIN_MODE_LABELS = ['Top corners', 'Top edge', 'Left edge'] as const;
 let pinMode = 0; // 0 = top corners, 1 = top edge, 2 = left edge
 let windStrength = 5.6; // Z/X adjust; clamped [0, 12]
+let windOn = true; // F toggles the wind on/off
 let autoOrbit = true; // Space toggles the gentle idle orbit
+let gravity = -4.2; // G/H adjust; clamped [-14, 0]
+let stiffness = 1.0; // J/K adjust; clamped [0.2, 1.0] (slack ↔ rigid)
+let brushGain = 0.2; // B/N adjust (× camDist); clamped [0, 1] — mouse-brush strength
+let collideOn = true; // C toggles the hidden collision sphere
+let solveIters = SOLVE_ITERS; // 1/2 adjust; clamped [2, 40] — constraint quality
 
 // ── GDI HUD font ──────────────────────────────────────────────────────────────
 const hudFont = GDI32.CreateFontW(-19, 0, 0, 0, 600, 0, 0, 0, 0, 0, 0, 4 /* ANTIALIASED_QUALITY */, 0, encodeWide('Consolas').ptr!);
@@ -673,21 +692,26 @@ function drawHud(fps: number): void {
 
     // Line 1 — live state (drawn with the bold font, drop-shadowed for legibility).
     const prevBold = GDI32.SelectObject(dc, hudFont);
-    const line1 = `Cloth · ${nodeLabel} nodes · pin: ${PIN_MODE_LABELS[pinMode]} · wind ${windStrength.toFixed(1)} · ${fps} fps`;
+    const line1 = `Cloth · ${nodeLabel} nodes · pin ${PIN_MODE_LABELS[pinMode]} · wind ${windOn ? windStrength.toFixed(1) : 'off'} · grav ${(-gravity).toFixed(1)} · stiff ${stiffness.toFixed(2)} · iters ${solveIters} · brush ${brushGain.toFixed(2)} · ${fps} fps`;
     const t1 = encodeWide(line1);
     GDI32.SetTextColor(dc, 0x00100804);
     GDI32.TextOutW(dc, 19, 19, t1.ptr!, line1.length);
     GDI32.SetTextColor(dc, 0x00f0d8b0);
     GDI32.TextOutW(dc, 18, 18, t1.ptr!, line1.length);
 
-    // Line 2 — the controls legend (lighter, smaller).
+    // Lines 2-3 — the controls legend (lighter, smaller).
     GDI32.SelectObject(dc, hudFontSmall);
-    const line2 = 'LMB drag: brush  ·  arrows: orbit  ·  Q/E: zoom  ·  Z/X: wind  ·  P: pin mode  ·  Space: auto-orbit  ·  R: reset  ·  ESC';
-    const t2 = encodeWide(line2);
-    GDI32.SetTextColor(dc, 0x00080604);
-    GDI32.TextOutW(dc, 19, 45, t2.ptr!, line2.length);
-    GDI32.SetTextColor(dc, 0x00c0b090);
-    GDI32.TextOutW(dc, 18, 44, t2.ptr!, line2.length);
+    const legend: ReadonlyArray<readonly [string, number]> = [
+      ['LMB drag: brush   ·   arrows: orbit   ·   Q/E: zoom   ·   Space: auto-orbit   ·   0: reset view', 44],
+      ['P: pin   ·   Z/X: wind   ·   F: wind on/off   ·   G/H: gravity   ·   J/K: stiffness   ·   B/N: brush   ·   1/2: iters   ·   C: collision   ·   R: reset   ·   ESC', 64],
+    ];
+    for (const [ln, y] of legend) {
+      const tt = encodeWide(ln);
+      GDI32.SetTextColor(dc, 0x00080604);
+      GDI32.TextOutW(dc, 19, y + 1, tt.ptr!, ln.length);
+      GDI32.SetTextColor(dc, 0x00c0b090);
+      GDI32.TextOutW(dc, 18, y, tt.ptr!, ln.length);
+    }
 
     GDI32.SelectObject(dc, prevBold);
   });
@@ -781,16 +805,18 @@ const rtvArrEmpty: readonly bigint[] = [];
 const SPHERE_R = CLOTH_W * 0.22;
 
 // ── Camera + interaction state (user-driven) ──────────────────────────────────
-let camYaw = -0.35;
-let camPitch = 0.18;
-let camDist = CLOTH_W * 1.15;
+const CAM_YAW0 = -0.35;
+const CAM_PITCH0 = 0.18;
+const CAM_DIST0 = CLOTH_W * 1.15;
+let camYaw = CAM_YAW0;
+let camPitch = CAM_PITCH0;
+let camDist = CAM_DIST0;
+let lastFrameWall = startTime; // wall clock of the previous frame, for time-based rates
 // Previous mouse position in NDC, for computing the per-frame drag vector.
 let prevNdcX = 0;
 let prevNdcY = 0;
 // Edge-trigger latches: act once per key press, not once per frame held.
-let pLast = false;
-let spaceLast = false;
-let rLast = false;
+let pLast = false, spaceLast = false, rLast = false, fLast = false, cLast = false, zeroLast = false, k1Last = false, k2Last = false;
 
 // Recreate the three position buffers from the flat seed (R = reset).
 function resetCloth(): void {
@@ -808,33 +834,46 @@ while (!win.shouldClose()) {
   win.pump();
   if (win.shouldClose()) break;
 
+  // Real frame-delta (seconds), clamped. ALL interactive rates below are per-SECOND
+  // (× rdt), so the camera and tweaks behave identically no matter the (uncapped) fps.
+  const frameNow = performance.now();
+  const rdt = Math.min(0.05, Math.max(0, (frameNow - lastFrameWall) / 1000));
+  lastFrameWall = frameNow;
+
   simTime += SIM_DT;
   const dt = SIM_DT;
   const t = simTime;
 
-  // ── Input: camera (held), tweaks (held), and edge-triggered toggles ──
-  if (win.keyDown(VK_LEFT)) { camYaw -= 0.03; autoOrbit = false; }
-  if (win.keyDown(VK_RIGHT)) { camYaw += 0.03; autoOrbit = false; }
-  if (win.keyDown(VK_UP)) camPitch += 0.02;
-  if (win.keyDown(VK_DOWN)) camPitch -= 0.02;
+  // ── Input: camera + tweaks are HELD (time-based, units/sec × rdt); toggles edge-fire ──
+  const ORBIT = 1.4, PITCHR = 1.0, ZOOM = 0.9, AUTO = 0.2, WINDR = 3.0, GRAVR = 6.0, STIFFR = 0.5, BRUSHR = 0.4;
+  if (win.keyDown(VK_LEFT)) { camYaw -= ORBIT * rdt; autoOrbit = false; }
+  if (win.keyDown(VK_RIGHT)) { camYaw += ORBIT * rdt; autoOrbit = false; }
+  if (win.keyDown(VK_UP)) camPitch += PITCHR * rdt;
+  if (win.keyDown(VK_DOWN)) camPitch -= PITCHR * rdt;
   camPitch = Math.max(-1.35, Math.min(1.35, camPitch));
-  if (win.keyDown(VK_Q)) camDist *= 0.98;
-  if (win.keyDown(VK_E)) camDist *= 1.02;
+  if (win.keyDown(VK_Q)) camDist *= Math.exp(-ZOOM * rdt);
+  if (win.keyDown(VK_E)) camDist *= Math.exp(ZOOM * rdt);
   camDist = Math.max(CLOTH_W * 0.4, Math.min(CLOTH_W * 3.0, camDist));
-  if (win.keyDown(VK_Z)) windStrength = Math.max(0, windStrength - 0.2);
-  if (win.keyDown(VK_X)) windStrength = Math.min(12, windStrength + 0.2);
+  if (win.keyDown(VK_Z)) windStrength = Math.max(0, windStrength - WINDR * rdt);
+  if (win.keyDown(VK_X)) windStrength = Math.min(12, windStrength + WINDR * rdt);
+  if (win.keyDown(VK_G)) gravity = Math.max(-14, gravity - GRAVR * rdt);
+  if (win.keyDown(VK_H)) gravity = Math.min(0, gravity + GRAVR * rdt);
+  if (win.keyDown(VK_J)) stiffness = Math.max(0.2, stiffness - STIFFR * rdt);
+  if (win.keyDown(VK_K)) stiffness = Math.min(1.0, stiffness + STIFFR * rdt);
+  if (win.keyDown(VK_B)) brushGain = Math.max(0, brushGain - BRUSHR * rdt);
+  if (win.keyDown(VK_N)) brushGain = Math.min(1.0, brushGain + BRUSHR * rdt);
 
-  const pNow = win.keyDown(VK_P);
-  if (pNow && !pLast) pinMode = (pinMode + 1) % 3;
-  pLast = pNow;
-  const spaceNow = win.keyDown(VK_SPACE);
-  if (spaceNow && !spaceLast) autoOrbit = !autoOrbit;
-  spaceLast = spaceNow;
-  const rNow = win.keyDown(VK_R);
-  if (rNow && !rLast) resetCloth();
-  rLast = rNow;
+  // Edge-triggered toggles (one action per press, not once per frame held).
+  const pNow = win.keyDown(VK_P); if (pNow && !pLast) pinMode = (pinMode + 1) % 3; pLast = pNow;
+  const spNow = win.keyDown(VK_SPACE); if (spNow && !spaceLast) autoOrbit = !autoOrbit; spaceLast = spNow;
+  const rNow = win.keyDown(VK_R); if (rNow && !rLast) resetCloth(); rLast = rNow;
+  const fNow = win.keyDown(VK_F); if (fNow && !fLast) windOn = !windOn; fLast = fNow;
+  const cNow = win.keyDown(VK_C); if (cNow && !cLast) collideOn = !collideOn; cLast = cNow;
+  const k1Now = win.keyDown(VK_1); if (k1Now && !k1Last) solveIters = Math.max(2, solveIters - 1); k1Last = k1Now;
+  const k2Now = win.keyDown(VK_2); if (k2Now && !k2Last) solveIters = Math.min(40, solveIters + 1); k2Last = k2Now;
+  const zNow = win.keyDown(VK_0); if (zNow && !zeroLast) { camYaw = CAM_YAW0; camPitch = CAM_PITCH0; camDist = CAM_DIST0; autoOrbit = true; } zeroLast = zNow;
 
-  if (autoOrbit) camYaw += 0.0035;
+  if (autoOrbit) camYaw += AUTO * rdt;
 
   // In capture mode hold a fixed front-quarter framing so the gallery PNG always shows
   // the broad draping face (the unbounded auto-orbit would otherwise rotate to an
@@ -866,17 +905,17 @@ while (!win.shouldClose()) {
   simData.writeFloatLE(GRID_W, 8);
   simData.writeFloatLE(GRID_H, 12);
   simData.writeFloatLE(REST, 16);
-  simData.writeFloatLE(-4.2, 20); // gravity (y) — light, so the cloth flies rather than droops
+  simData.writeFloatLE(gravity, 20); // gravity (y) — G/H tweakable
   simData.writeFloatLE(0.990, 24); // damping (a touch firmer so flaps settle, not ring)
-  simData.writeFloatLE(1.0, 28); // stiffness
+  simData.writeFloatLE(stiffness, 28); // J/K tweakable
   simData.writeFloatLE(windDir[0], 32);
   simData.writeFloatLE(windDir[1], 36);
   simData.writeFloatLE(windDir[2], 40);
-  simData.writeFloatLE(windStrength, 44);
+  simData.writeFloatLE(windOn ? windStrength : 0, 44); // F toggles wind
   simData.writeFloatLE(sphereCenter[0], 48);
   simData.writeFloatLE(sphereCenter[1], 52);
   simData.writeFloatLE(sphereCenter[2], 56);
-  simData.writeFloatLE(SPHERE_R, 60);
+  simData.writeFloatLE(collideOn ? SPHERE_R : 0, 60); // C toggles the collision sphere
   simData.writeFloatLE(pinMode, 64); // gP2.x — which lattice nodes are held, in-shader
   gpu.updateConstantBuffer(simCb, simData);
 
@@ -910,7 +949,7 @@ while (!win.shouldClose()) {
   const upX = fwdY * rgtZ - fwdZ * rgtY;
   const upY = fwdZ * rgtX - fwdX * rgtZ;
   const upZ = fwdX * rgtY - fwdY * rgtX;
-  const gain = camDist * 0.2; // gentle brush: a drag nudges the cloth a fraction of the cursor motion (tunable)
+  const gain = camDist * brushGain; // mouse-brush strength (B/N tweakable)
   const dragWX = rgtX * dragNdcX * gain + upX * dragNdcY * gain;
   const dragWY = rgtY * dragNdcX * gain + upY * dragNdcY * gain;
   const dragWZ = rgtZ * dragNdcX * gain + upZ * dragNdcY * gain;
@@ -936,7 +975,7 @@ while (!win.shouldClose()) {
   unbindCsUav(1);
 
   // ── 2. Jacobi constraint solve, ping-ponging posBuf <-> scratchBuf ──
-  for (let iter = 0; iter < SOLVE_ITERS; iter += 1) {
+  for (let iter = 0; iter < solveIters; iter += 1) {
     gpu.csSet(csSolve, { cb: [simCb], uav: [scratchBuf.uav!], srv: [posBuf.srv!] });
     gpu.dispatch(GROUPS, 1, 1);
     unbindCsUav(1);
