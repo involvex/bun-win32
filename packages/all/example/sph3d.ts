@@ -44,6 +44,7 @@ import { FFIType } from 'bun:ffi';
 import { GDI32, User32 } from '../index';
 import { VirtualKey } from '@bun-win32/user32';
 import * as gpu from './_gpu';
+import * as hud from './_hud';
 import { captureBackBuffer, formatGrid } from './_snapshot';
 
 const encodeWide = (str: string): Buffer => Buffer.from(`${str}\0`, 'utf16le');
@@ -570,19 +571,18 @@ const hudFont = GDI32.CreateFontW(-19, 0, 0, 0, 600, 0, 0, 0, 0, 0, 0, 4, 0, enc
 const TRANSPARENT_BK = 1;
 const particleLabel = PARTICLE_COUNT.toLocaleString();
 function drawHud(fps: number): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (!dc) return;
-  const prevFont = GDI32.SelectObject(dc, hudFont);
-  GDI32.SetBkMode(dc, TRANSPARENT_BK);
-  const line = `SPH 3D · ${particleLabel} particles · ${fps} fps · GPU: ${dev.gpuName}`;
-  const text = encodeWide(line);
-  const len = line.length;
-  GDI32.SetTextColor(dc, 0x00100804);
-  GDI32.TextOutW(dc, 19, 19, text.ptr!, len);
-  GDI32.SetTextColor(dc, 0x00f0e0c0);
-  GDI32.TextOutW(dc, 18, 18, text.ptr!, len);
-  GDI32.SelectObject(dc, prevFont);
-  User32.ReleaseDC(win.hwnd, dc);
+  hud.draw(dev, clientW, clientH, (dc) => {
+    const prevFont = GDI32.SelectObject(dc, hudFont);
+    GDI32.SetBkMode(dc, TRANSPARENT_BK);
+    const line = `SPH 3D · ${particleLabel} particles · ${fps} fps · GPU: ${dev.gpuName}`;
+    const text = encodeWide(line);
+    const len = line.length;
+    GDI32.SetTextColor(dc, 0x00100804);
+    GDI32.TextOutW(dc, 19, 19, text.ptr!, len);
+    GDI32.SetTextColor(dc, 0x00f0e0c0);
+    GDI32.TextOutW(dc, 18, 18, text.ptr!, len);
+    GDI32.SelectObject(dc, prevFont);
+  });
 }
 
 // ── Teardown ────────────────────────────────────────────────────────────────
@@ -592,6 +592,7 @@ function cleanup(code: number): never {
     cleaned = true;
     try {
       gpu.setBlendState(0n);
+      hud.release();
       GDI32.DeleteObject(hudFont);
       gpu.comRelease(additiveBlend);
       gpu.comRelease(noCullRaster);
@@ -813,6 +814,7 @@ while (!win.shouldClose()) {
   // DXGI_SWAP_EFFECT_DISCARD leaves the back buffer undefined after Present).
   if (SELFSHOT && !selfShotDone && frame >= 60) {
     selfShotDone = true;
+    drawHud(fps);
     const dir = `${import.meta.dir}/screenshots`;
     try { require('node:fs').mkdirSync(dir, { recursive: true }); } catch { /* exists */ }
     const snap = captureBackBuffer(dev, `${dir}/sph3d.selfcheck.png`, { gridW: 48, gridH: 22 });
@@ -822,9 +824,9 @@ while (!win.shouldClose()) {
     break;
   }
 
+  drawHud(fps);
   dev.present(false);
   presented += 1;
-  drawHud(fps);
 
   frame += 1;
   fpsFrames += 1;

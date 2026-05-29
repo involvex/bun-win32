@@ -40,6 +40,7 @@
 import { GDI32, User32 } from '../index';
 import { VirtualKey } from '@bun-win32/user32';
 import * as gpu from './_gpu';
+import * as hud from './_hud';
 
 const encodeWide = (str: string): Buffer => Buffer.from(`${str}\0`, 'utf16le');
 
@@ -465,19 +466,18 @@ const TRANSPARENT_BK = 1;
 const particleLabel = PARTICLE_COUNT.toLocaleString();
 
 function drawHud(fps: number): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (!dc) return;
-  const prevFont = GDI32.SelectObject(dc, hudFont);
-  GDI32.SetBkMode(dc, TRANSPARENT_BK);
-  const line = `${particleLabel} particles · ${fps} fps · GPU: ${dev.gpuName}`;
-  const text = encodeWide(line);
-  const len = line.length;
-  GDI32.SetTextColor(dc, 0x00100804); // dark shadow (BGR)
-  GDI32.TextOutW(dc, 19, 19, text.ptr!, len);
-  GDI32.SetTextColor(dc, 0x00f0d8b0); // warm icy-white
-  GDI32.TextOutW(dc, 18, 18, text.ptr!, len);
-  GDI32.SelectObject(dc, prevFont);
-  User32.ReleaseDC(win.hwnd, dc);
+  hud.draw(dev, clientW, clientH, (dc) => {
+    const prevFont = GDI32.SelectObject(dc, hudFont);
+    GDI32.SetBkMode(dc, TRANSPARENT_BK);
+    const line = `${particleLabel} particles · ${fps} fps · GPU: ${dev.gpuName}`;
+    const text = encodeWide(line);
+    const len = line.length;
+    GDI32.SetTextColor(dc, 0x00100804); // dark shadow (BGR)
+    GDI32.TextOutW(dc, 19, 19, text.ptr!, len);
+    GDI32.SetTextColor(dc, 0x00f0d8b0); // warm icy-white
+    GDI32.TextOutW(dc, 18, 18, text.ptr!, len);
+    GDI32.SelectObject(dc, prevFont);
+  });
 }
 
 // ── Render loop ─────────────────────────────────────────────────────────────
@@ -505,6 +505,7 @@ function cleanup(code: number): never {
     // Unbind UAVs/SRVs to avoid in-use warnings, then release everything.
     try {
       gpu.setBlendState(0n);
+      hud.release();
       GDI32.DeleteObject(hudFont);
       gpu.comRelease(additiveBlend);
       gpu.comRelease(sampler);
@@ -645,10 +646,12 @@ while (!win.shouldClose()) {
   // Unbind the HDR SRV so it is free to be a render target next frame.
   gpu.psSet(psPost, { srv: [0n] });
 
+  // Composite the GDI HUD INTO the back buffer (alpha-over) BEFORE present so it
+  // becomes part of the presented frame and never strobes on the uncapped blt swap.
+  drawHud(fps);
+
   dev.present(false);
   presented += 1;
-
-  drawHud(fps);
 
   frames += 1;
   if (now - fpsWindowStart >= 500) {

@@ -40,7 +40,8 @@
 
 import { FFIType, type Pointer } from 'bun:ffi';
 
-import { GDI32, User32 } from '../index';
+import { GDI32 } from '../index';
+import * as hud from './_hud';
 import {
   clear,
   comRelease,
@@ -417,19 +418,18 @@ const hudFont = GDI32.CreateFontW(-18, 0, 0, 0, 600, 0, 0, 0, 0, 0, 0, 4 /* ANTI
 const TRANSPARENT_BK = 1;
 
 function drawHud(fps: number): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (!dc) return;
-  const prevFont = GDI32.SelectObject(dc, hudFont);
-  GDI32.SetBkMode(dc, TRANSPARENT_BK);
-  const line = `Boids · ${NUM_BOIDS} · ${fps} fps · ${gpu.gpuName}`;
-  const text = Buffer.from(`${line}\0`, 'utf16le');
-  const len = line.length;
-  GDI32.SetTextColor(dc, 0x00000000); // shadow
-  GDI32.TextOutW(dc, 17, 17, text.ptr!, len);
-  GDI32.SetTextColor(dc, 0x00ffd8a0); // BGR: warm cyan-white
-  GDI32.TextOutW(dc, 16, 16, text.ptr!, len);
-  GDI32.SelectObject(dc, prevFont);
-  User32.ReleaseDC(win.hwnd, dc);
+  hud.draw(gpu, clientW, clientH, (dc) => {
+    const prevFont = GDI32.SelectObject(dc, hudFont);
+    GDI32.SetBkMode(dc, TRANSPARENT_BK);
+    const line = `Boids · ${NUM_BOIDS} · ${fps} fps · ${gpu.gpuName}`;
+    const text = Buffer.from(`${line}\0`, 'utf16le');
+    const len = line.length;
+    GDI32.SetTextColor(dc, 0x00000000); // shadow
+    GDI32.TextOutW(dc, 17, 17, text.ptr!, len);
+    GDI32.SetTextColor(dc, 0x00ffd8a0); // BGR: warm cyan-white
+    GDI32.TextOutW(dc, 16, 16, text.ptr!, len);
+    GDI32.SelectObject(dc, prevFont);
+  });
 }
 
 // ── Teardown ──────────────────────────────────────────────────────────────────
@@ -437,6 +437,7 @@ let cleanedUp = false;
 function cleanup(code: number): never {
   if (!cleanedUp) {
     cleanedUp = true;
+    hud.release();
     GDI32.DeleteObject(hudFont);
     comRelease(blendState);
     comRelease(cb);
@@ -581,8 +582,8 @@ while (!win.shouldClose()) {
   // Unbind the VS SRV so next frame's compute pass can re-use the buffer as a UAV.
   vcall(gpu.context, CTX_VS_SET_SHADER_RESOURCES, [FFIType.u32, FFIType.u32, FFIType.ptr], [0, 1, emptyBind.ptr!], FFIType.void);
 
-  gpu.present(false);
   drawHud(fps);
+  gpu.present(false);
 
   frames += 1;
   if (now - fpsWindowStart >= 500) {

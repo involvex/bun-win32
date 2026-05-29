@@ -39,6 +39,7 @@ import { FFIType, read, type Pointer } from 'bun:ffi';
 import { GDI32, User32 } from '../index';
 import { SystemMetric } from '@bun-win32/user32';
 import * as gpu from './_gpu';
+import * as hud from './_hud';
 import { captureBackBuffer, formatGrid } from './_snapshot';
 import { V, T, D, NH, NL, DFF, VOCAB, WEIGHTS_B64 } from './nano-gpt.weights';
 
@@ -752,38 +753,37 @@ const subFont = GDI32.CreateFontW(-Math.round(clientH * 0.026), 0, 0, 0, 500, 0,
 const labelFont = GDI32.CreateFontW(-Math.round(clientH * 0.024), 0, 0, 0, 600, 0, 0, 0, 0, 0, 0, 4, 0, encodeWide('Consolas').ptr!);
 
 function drawHud(fps: number, tokRate: number): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (!dc) return;
-  GDI32.SetBkMode(dc, TRANSPARENT_BK);
+  hud.draw(dev, clientW, clientH, (dc) => {
+    GDI32.SetBkMode(dc, TRANSPARENT_BK);
 
-  let prev = GDI32.SelectObject(dc, titleFont);
-  const title = `nano-gpt · 111,606-param transformer · ${dev.gpuName} · pure TypeScript`;
-  const tw = encodeWide(title);
-  GDI32.SetTextColor(dc, 0x00100804);
-  GDI32.TextOutW(dc, MARGIN_X + 2, Math.round(clientH * 0.030) + 2, tw.ptr!, title.length);
-  GDI32.SetTextColor(dc, 0x00f2dcaa);
-  GDI32.TextOutW(dc, MARGIN_X, Math.round(clientH * 0.030), tw.ptr!, title.length);
+    const prev = GDI32.SelectObject(dc, titleFont);
+    const title = `nano-gpt · 111,606-param transformer · ${dev.gpuName} · pure TypeScript`;
+    const tw = encodeWide(title);
+    GDI32.SetTextColor(dc, 0x00100804);
+    GDI32.TextOutW(dc, MARGIN_X + 2, Math.round(clientH * 0.030) + 2, tw.ptr!, title.length);
+    GDI32.SetTextColor(dc, 0x00f2dcaa);
+    GDI32.TextOutW(dc, MARGIN_X, Math.round(clientH * 0.030), tw.ptr!, title.length);
 
-  GDI32.SelectObject(dc, subFont);
-  const sub = `decoder-only · ${NL} blocks · ${NH} heads · D=${D} · forward pass = D3D11 compute · ${tokRate.toFixed(1)} tok/s · ${fps} fps · ESC`;
-  const sw = encodeWide(sub);
-  GDI32.SetTextColor(dc, 0x0090a0b0);
-  GDI32.TextOutW(dc, MARGIN_X, Math.round(clientH * 0.082), sw.ptr!, sub.length);
+    GDI32.SelectObject(dc, subFont);
+    const sub = `decoder-only · ${NL} blocks · ${NH} heads · D=${D} · forward pass = D3D11 compute · ${tokRate.toFixed(1)} tok/s · ${fps} fps · ESC`;
+    const sw = encodeWide(sub);
+    GDI32.SetTextColor(dc, 0x0090a0b0);
+    GDI32.TextOutW(dc, MARGIN_X, Math.round(clientH * 0.082), sw.ptr!, sub.length);
 
-  // labels over the GPU panels
-  GDI32.SelectObject(dc, labelFont);
-  const heatLbl = 'causal self-attention (block 3, head 1)';
-  const hw = encodeWide(heatLbl);
-  GDI32.SetTextColor(dc, 0x00c8d8e8);
-  GDI32.TextOutW(dc, HEAT_LEFT, HEAT_TOP - Math.round(clientH * 0.038), hw.ptr!, heatLbl.length);
-  if (BARS_H > 1) {
-    const barLbl = 'next-token probability (top-12)';
-    const bw = encodeWide(barLbl);
-    GDI32.TextOutW(dc, BARS_LEFT, BARS_TOP - Math.round(clientH * 0.036), bw.ptr!, barLbl.length);
-  }
+    // labels over the GPU panels
+    GDI32.SelectObject(dc, labelFont);
+    const heatLbl = 'causal self-attention (block 3, head 1)';
+    const hw = encodeWide(heatLbl);
+    GDI32.SetTextColor(dc, 0x00c8d8e8);
+    GDI32.TextOutW(dc, HEAT_LEFT, HEAT_TOP - Math.round(clientH * 0.038), hw.ptr!, heatLbl.length);
+    if (BARS_H > 1) {
+      const barLbl = 'next-token probability (top-12)';
+      const bw = encodeWide(barLbl);
+      GDI32.TextOutW(dc, BARS_LEFT, BARS_TOP - Math.round(clientH * 0.036), bw.ptr!, barLbl.length);
+    }
 
-  GDI32.SelectObject(dc, prev);
-  User32.ReleaseDC(win.hwnd, dc);
+    GDI32.SelectObject(dc, prev);
+  });
 }
 
 // ── Teardown ──────────────────────────────────────────────────────────────────
@@ -794,6 +794,7 @@ function cleanup(code: number): never {
     try {
       gpu.csSet(0n, { uav: [0n] });
       gpu.setRenderTargets([]);
+      hud.release();
       GDI32.DeleteObject(titleFont);
       GDI32.DeleteObject(subFont);
       GDI32.DeleteObject(labelFont);
@@ -904,6 +905,9 @@ while (!win.shouldClose()) {
 
   bindAndDraw(time, caretOn);
 
+  // HUD composited INTO the back buffer (flicker-free), BEFORE present + capture.
+  drawHud(fps, tokRate);
+
   // Self-shot: capture the GPU back buffer of the target frame BEFORE present.
   const lastFrame = (durationMs > 0 && now - start >= durationMs) || (SELFCHECK && frame === 6);
   if (SELFSHOT && lastFrame) {
@@ -914,7 +918,6 @@ while (!win.shouldClose()) {
   }
 
   dev.present(false);
-  drawHud(fps, tokRate);
 
   frame += 1; fpsFrames += 1;
   if (now - fpsWindow >= 500) {

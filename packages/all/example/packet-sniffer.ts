@@ -67,6 +67,7 @@ import {
   DXGI_FORMAT_B8G8R8A8_UNORM,
 } from './_gpu';
 import { captureBackBuffer, formatGrid } from './_snapshot';
+import * as hud from './_hud';
 
 const encodeWide = (str: string): Buffer => Buffer.from(`${str}\0`, 'utf16le');
 
@@ -603,17 +604,16 @@ const ps = makePixelShader(compile(PS, 'main', 'ps_5_0'));
 // ── Live-window HUD font ─────────────────────────────────────────────────────────
 const hudFont = GDI32.CreateFontW(-18, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 4, 0, encodeWide('Consolas').ptr!);
 function drawHud(fps: number): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (!dc) return;
-  GDI32.SetBkMode(dc, 1);
-  GDI32.SelectObject(dc, hudFont);
-  const title = `PACKET SNIFFER · ${cap.localIp} · ${totalPkts} pkts · ${fmtBytes(totalBytes)} · ${fps} fps · ESC`;
-  const tw = encodeWide(title);
-  GDI32.SetTextColor(dc, 0x00201005);
-  GDI32.TextOutW(dc, 21, 17, tw.ptr!, title.length);
-  GDI32.SetTextColor(dc, 0x00ffcc55);
-  GDI32.TextOutW(dc, 20, 16, tw.ptr!, title.length);
-  User32.ReleaseDC(win.hwnd, dc);
+  hud.draw(gpu, clientW, clientH, (dc) => {
+    GDI32.SetBkMode(dc, 1);
+    GDI32.SelectObject(dc, hudFont);
+    const title = `PACKET SNIFFER · ${cap.localIp} · ${totalPkts} pkts · ${fmtBytes(totalBytes)} · ${fps} fps · ESC`;
+    const tw = encodeWide(title);
+    GDI32.SetTextColor(dc, 0x00201005);
+    GDI32.TextOutW(dc, 21, 17, tw.ptr!, title.length);
+    GDI32.SetTextColor(dc, 0x00ffcc55);
+    GDI32.TextOutW(dc, 20, 16, tw.ptr!, title.length);
+  });
 }
 
 function fmtBytes(n: number): string {
@@ -723,6 +723,7 @@ function cleanup(code: number): never {
       /* ignore */
     }
     try {
+      hud.release();
       GDI32.DeleteObject(hudFont);
       GDI32.DeleteObject(ovrTitleFont);
       GDI32.DeleteObject(ovrLabelFont);
@@ -904,8 +905,8 @@ while (!win.shouldClose()) {
     console.log(`[shot] ok=${stats.ok} nonBlack=${stats.nonBlackFrac.toFixed(3)} meanLuma=${stats.meanLuma.toFixed(3)} grid=${stats.gridW}x${stats.gridH} -> ${stats.path}`);
   }
 
-  gpu.present(false);
   drawHud(fps);
+  gpu.present(false);
 
   frame += 1;
   fpsFrames += 1;

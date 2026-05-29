@@ -37,6 +37,7 @@ import { GDI32, User32, Winmm } from '../index';
 import { MIDI_MAPPER, type HMIDIOUT } from '@bun-win32/winmm';
 
 import * as gpu from './_gpu';
+import * as hud from './_hud';
 import { captureBackBuffer, formatGrid } from './_snapshot';
 
 const TRANSPARENT_BK = 1;
@@ -430,21 +431,20 @@ function main(): void {
   }
 
   function drawHud(curBeat: number): void {
-    const dc = User32.GetDC(win.hwnd);
-    if (!dc) return;
-    const prevFont = GDI32.SelectObject(dc, hudFont);
-    GDI32.SetBkMode(dc, TRANSPARENT_BK);
-    const bar = Math.floor(curBeat / BEATS_PER_BAR) + 1;
-    const synthLabel = midiOk ? 'Windows GM synth' : 'SILENT (no MIDI device)';
-    const line = `MIDI-MUSIC · pure-TS generative · ${synthLabel} · ${BPM} BPM · bar ${bar} · pad/arp/lead/bass`;
-    const text = Buffer.from(`${line}\0`, 'utf16le');
-    const len = line.length;
-    GDI32.SetTextColor(dc, 0x101010);
-    GDI32.TextOutW(dc, 25, 23, text.ptr!, len);
-    GDI32.SetTextColor(dc, 0x00f0e8ff);
-    GDI32.TextOutW(dc, 24, 22, text.ptr!, len);
-    GDI32.SelectObject(dc, prevFont);
-    User32.ReleaseDC(win.hwnd, dc);
+    hud.draw(g, cw, ch, (dc) => {
+      const prevFont = GDI32.SelectObject(dc, hudFont);
+      GDI32.SetBkMode(dc, TRANSPARENT_BK);
+      const bar = Math.floor(curBeat / BEATS_PER_BAR) + 1;
+      const synthLabel = midiOk ? 'Windows GM synth' : 'SILENT (no MIDI device)';
+      const line = `MIDI-MUSIC · pure-TS generative · ${synthLabel} · ${BPM} BPM · bar ${bar} · pad/arp/lead/bass`;
+      const text = Buffer.from(`${line}\0`, 'utf16le');
+      const len = line.length;
+      GDI32.SetTextColor(dc, 0x101010);
+      GDI32.TextOutW(dc, 25, 23, text.ptr!, len);
+      GDI32.SetTextColor(dc, 0x00f0e8ff);
+      GDI32.TextOutW(dc, 24, 22, text.ptr!, len);
+      GDI32.SelectObject(dc, prevFont);
+    });
   }
 
   console.log('MIDI-MUSIC — generative GM synth performance + GPU note-rain.');
@@ -524,6 +524,10 @@ function main(): void {
     gpu.psSet(ps, { cb: [cb], srv: [events.srv!] });
     gpu.drawFullscreenTriangle();
 
+    // Composite the HUD into the back buffer (BEFORE present + capture) so it
+    // becomes part of the presented frame and never flickers.
+    drawHud(nowBeat);
+
     const lastFrame = durationMs > 0 && now - startTime >= durationMs;
     if (lastFrame && process.env.SELFSHOT === '1') {
       const shotDir = resolve(import.meta.dir, '..', 'screenshots');
@@ -539,7 +543,6 @@ function main(): void {
     }
 
     g.present(false);
-    drawHud(nowBeat);
 
     frames += 1;
     if (now - fpsWindowStart >= 500) {
@@ -559,6 +562,7 @@ function main(): void {
     Winmm.midiOutReset(hmo);
     Winmm.midiOutClose(hmo);
   }
+  hud.release();
   GDI32.DeleteObject(hudFont);
   comReleaseSafe(cb);
   comReleaseSafe(events.srv);

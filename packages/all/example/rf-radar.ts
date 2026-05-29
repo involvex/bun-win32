@@ -40,6 +40,7 @@ import { mkdirSync } from 'node:fs';
 import { BluetoothApis, GDI32, User32, Wlanapi } from '../index';
 
 import * as gpu from './_gpu';
+import * as hud from './_hud';
 import { captureBackBuffer, formatGrid } from './_snapshot';
 
 // ── WLAN struct geometry (proven in wlanapi/example/signal-monitor.ts) ─────────
@@ -502,6 +503,7 @@ let cleanedUp = false;
 function cleanup(code: number): never {
   if (!cleanedUp) {
     cleanedUp = true;
+    hud.release();
     GDI32.DeleteObject(hudFont);
     GDI32.DeleteObject(labelFont);
     gpu.comRelease(additive);
@@ -560,58 +562,59 @@ function guidBytes(value: string): Buffer {
 }
 
 function drawLabels(): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (dc === 0n) return;
-  const prevFont = GDI32.SelectObject(dc, labelFont);
-  GDI32.SetBkMode(dc, TRANSPARENT_BK);
-  // Draw a label per contact, offset clear of its (now larger) glowing blip.
-  for (const c of contacts.values()) {
-    const px = cx + Math.cos(c.a) * c.r * radarRadiusPx;
-    const py = cy + Math.sin(c.a) * c.r * radarRadiusPx;
-    // Blip glow extent in px ≈ core(14..34, BT 20) so push the label past it.
-    const coreR = c.isBT ? 20 : 14 + 20 * Math.max(0, Math.min(1, c.quality / 100));
-    const offset = coreR + 12;
-    // Bias the label to the side of the bearing that points away from centre,
-    // and keep it on-screen.
-    const dirX = Math.cos(c.a);
-    const dirY = Math.sin(c.a);
-    let lx = Math.round(px + dirX * offset + (dirX >= 0 ? 4 : -4));
-    let ly = Math.round(py + dirY * offset - 8);
-    // SSID + live signal so the contact reads at a glance.
-    const name = c.label.length > 18 ? `${c.label.slice(0, 17)}…` : c.label;
-    const txt = c.isBT ? name : `${name}  ${Math.round(c.quality)}%`;
-    if (lx < 6) lx = 6;
-    if (lx > cw - 220) lx = cw - 220;
-    if (ly < 6) ly = 6;
-    if (ly > ch - 24) ly = ch - 24;
-    const buf = Buffer.from(`${txt}\0`, 'utf16le');
-    const len = txt.length;
-    // Stronger drop shadow (two offsets) so labels stay legible over the glow.
+  // Composite the GDI HUD INTO the back buffer (flicker-free) via the shared helper.
+  // `dc` is a memory DC sized to (cw, ch), so all window pixel coords are unchanged.
+  hud.draw(g, cw, ch, (dc) => {
+    const prevFont = GDI32.SelectObject(dc, labelFont);
+    GDI32.SetBkMode(dc, TRANSPARENT_BK);
+    // Draw a label per contact, offset clear of its (now larger) glowing blip.
+    for (const c of contacts.values()) {
+      const px = cx + Math.cos(c.a) * c.r * radarRadiusPx;
+      const py = cy + Math.sin(c.a) * c.r * radarRadiusPx;
+      // Blip glow extent in px ≈ core(14..34, BT 20) so push the label past it.
+      const coreR = c.isBT ? 20 : 14 + 20 * Math.max(0, Math.min(1, c.quality / 100));
+      const offset = coreR + 12;
+      // Bias the label to the side of the bearing that points away from centre,
+      // and keep it on-screen.
+      const dirX = Math.cos(c.a);
+      const dirY = Math.sin(c.a);
+      let lx = Math.round(px + dirX * offset + (dirX >= 0 ? 4 : -4));
+      let ly = Math.round(py + dirY * offset - 8);
+      // SSID + live signal so the contact reads at a glance.
+      const name = c.label.length > 18 ? `${c.label.slice(0, 17)}…` : c.label;
+      const txt = c.isBT ? name : `${name}  ${Math.round(c.quality)}%`;
+      if (lx < 6) lx = 6;
+      if (lx > cw - 220) lx = cw - 220;
+      if (ly < 6) ly = 6;
+      if (ly > ch - 24) ly = ch - 24;
+      const buf = Buffer.from(`${txt}\0`, 'utf16le');
+      const len = txt.length;
+      // Stronger drop shadow (two offsets) so labels stay legible over the glow.
+      GDI32.SetTextColor(dc, 0x00000000);
+      GDI32.TextOutW(dc, lx + 1, ly + 1, buf.ptr!, len);
+      GDI32.TextOutW(dc, lx + 2, ly + 2, buf.ptr!, len);
+      let col = 0x0080ffb0; // default bright green (BGR)
+      if (c.isBT) col = 0x00ffb060;
+      else if (c.kind === 2) col = 0x0050c0ff; // enterprise amber
+      else if (c.kind === 3) col = 0x0060e0ff; // WPA3 gold
+      GDI32.SetTextColor(dc, col);
+      GDI32.TextOutW(dc, lx, ly, buf.ptr!, len);
+    }
+    // HUD line.
+    GDI32.SelectObject(dc, hudFont);
+    let wifiN = 0;
+    let btN = 0;
+    for (const c of contacts.values()) (c.isBT ? (btN += 1) : (wifiN += 1));
+    const hudLine = wlanOk
+      ? `RF RADAR · ${wifiN} WiFi AP · ${btN} BT · ${fps} fps · ${g.gpuName}`
+      : `RF RADAR · NO WLAN ADAPTER · ${btN} BT · ${fps} fps`;
+    const hbuf = Buffer.from(`${hudLine}\0`, 'utf16le');
     GDI32.SetTextColor(dc, 0x00000000);
-    GDI32.TextOutW(dc, lx + 1, ly + 1, buf.ptr!, len);
-    GDI32.TextOutW(dc, lx + 2, ly + 2, buf.ptr!, len);
-    let col = 0x0080ffb0; // default bright green (BGR)
-    if (c.isBT) col = 0x00ffb060;
-    else if (c.kind === 2) col = 0x0050c0ff; // enterprise amber
-    else if (c.kind === 3) col = 0x0060e0ff; // WPA3 gold
-    GDI32.SetTextColor(dc, col);
-    GDI32.TextOutW(dc, lx, ly, buf.ptr!, len);
-  }
-  // HUD line.
-  GDI32.SelectObject(dc, hudFont);
-  let wifiN = 0;
-  let btN = 0;
-  for (const c of contacts.values()) (c.isBT ? (btN += 1) : (wifiN += 1));
-  const hud = wlanOk
-    ? `RF RADAR · ${wifiN} WiFi AP · ${btN} BT · ${fps} fps · ${g.gpuName}`
-    : `RF RADAR · NO WLAN ADAPTER · ${btN} BT · ${fps} fps`;
-  const hbuf = Buffer.from(`${hud}\0`, 'utf16le');
-  GDI32.SetTextColor(dc, 0x00000000);
-  GDI32.TextOutW(dc, 25, 25, hbuf.ptr!, hud.length);
-  GDI32.SetTextColor(dc, 0x0060ff90);
-  GDI32.TextOutW(dc, 24, 24, hbuf.ptr!, hud.length);
-  GDI32.SelectObject(dc, prevFont);
-  User32.ReleaseDC(win.hwnd, dc);
+    GDI32.TextOutW(dc, 25, 25, hbuf.ptr!, hudLine.length);
+    GDI32.SetTextColor(dc, 0x0060ff90);
+    GDI32.TextOutW(dc, 24, 24, hbuf.ptr!, hudLine.length);
+    GDI32.SelectObject(dc, prevFont);
+  });
 }
 
 while (!win.shouldClose()) {
@@ -699,6 +702,10 @@ while (!win.shouldClose()) {
     gpu.vcall(g.context, gpu.CTX_VS_SET_SHADER_RESOURCES, [FFIType.u32, FFIType.u32, FFIType.ptr], [0, 1, emptyBind.ptr!], FFIType.void);
   }
 
+  // Composite the GDI HUD/labels INTO the back buffer (BEFORE present, so it never
+  // flickers and shows up in back-buffer captures).
+  drawLabels();
+
   // SELFSHOT: capture the GPU back buffer on the final frame, BEFORE present().
   const lastFrame = durationMs > 0 && now - startTime >= durationMs;
   if (selfShot && (lastFrame || loopFrames >= 90)) {
@@ -713,7 +720,6 @@ while (!win.shouldClose()) {
   }
 
   g.present(false);
-  drawLabels();
 
   frames += 1;
   loopFrames += 1;

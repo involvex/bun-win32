@@ -50,8 +50,9 @@ import { resolve } from 'node:path';
 
 import { FFIType, read, type Pointer } from 'bun:ffi';
 
-import { GDI32, User32 } from '../index';
+import { GDI32 } from '../index';
 import * as gpu from './_gpu';
+import * as hud from './_hud';
 import { captureBackBuffer, formatGrid } from './_snapshot';
 
 const encodeWide = (str: string): Buffer => Buffer.from(`${str}\0`, 'utf16le');
@@ -358,25 +359,26 @@ const psCode = gpu.compile(PS_SRC, 'main', 'ps_5_0');
 const ps = gpu.makePixelShader(psCode);
 const cb = gpu.makeConstantBuffer(48);
 
-// ── GDI HUD (live window only; composites after Present, so it is NOT in the
-// captured back buffer — the still self-explains purely through the legible
-// thermal pass on recognizable desktop content). ───────────────────────────────
+// ── GDI HUD (live window only). Composited INTO the back buffer via _hud (an
+// offscreen DIB alpha-blended over the scene BEFORE Present) so the label is
+// flicker-free. The capture frames snapshot the back buffer BEFORE drawHud runs,
+// so the saved still stays HUD-free and self-explains through the legible thermal
+// pass on recognizable desktop content. ────────────────────────────────────────
 const TRANSPARENT_BK = 1;
 const hudFont = GDI32.CreateFontW(-22, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 4 /* ANTIALIASED_QUALITY */, 0, encodeWide('Consolas').ptr!);
 function drawHud(filterId: number, fps: number): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (!dc) return;
-  const prevFont = GDI32.SelectObject(dc, hudFont);
-  GDI32.SetBkMode(dc, TRANSPARENT_BK);
-  const line = `● LIVE DESKTOP  ·  ${FILTER_NAMES[filterId]}  ·  ${fps} fps  ·  pure-TS Win32 reality filter`;
-  const text = encodeWide(line);
-  const len = line.length;
-  GDI32.SetTextColor(dc, 0x00000000); // black drop shadow
-  GDI32.TextOutW(dc, 21, 21, text.ptr!, len);
-  GDI32.SetTextColor(dc, 0x0040ffff); // BGR: hot amber-yellow, matches the thermal palette
-  GDI32.TextOutW(dc, 19, 19, text.ptr!, len);
-  GDI32.SelectObject(dc, prevFont);
-  User32.ReleaseDC(win.hwnd, dc);
+  hud.draw(g, CW, CH, (dc) => {
+    const prevFont = GDI32.SelectObject(dc, hudFont);
+    GDI32.SetBkMode(dc, TRANSPARENT_BK);
+    const line = `● LIVE DESKTOP  ·  ${FILTER_NAMES[filterId]}  ·  ${fps} fps  ·  pure-TS Win32 reality filter`;
+    const text = encodeWide(line);
+    const len = line.length;
+    GDI32.SetTextColor(dc, 0x00000000); // black drop shadow
+    GDI32.TextOutW(dc, 21, 21, text.ptr!, len);
+    GDI32.SetTextColor(dc, 0x0040ffff); // BGR: hot amber-yellow, matches the thermal palette
+    GDI32.TextOutW(dc, 19, 19, text.ptr!, len);
+    GDI32.SelectObject(dc, prevFont);
+  });
 }
 
 // ── Filter timeline ────────────────────────────────────────────────────────────
@@ -476,6 +478,7 @@ function cleanup(code: number): void {
   try {
     // Unbind render targets before releasing so we never free a still-bound RTV.
     gpu.setRenderTargets([]);
+    hud.release();
     if (srcTex !== null) {
       gpu.comRelease(srcTex.srv!);
       gpu.comRelease(srcTex.tex);
@@ -574,8 +577,10 @@ if (SHOT_ALL && durationMs > 0) {
     console.log(`\n── ${FILTER_NAMES[id]} ──`);
     console.log(formatGrid(stats));
     console.log(`[shot] filter=${FILTER_NAMES[id]} slug=${FILTER_SLUGS[id]} ok=${stats.ok} nonBlack=${stats.nonBlackFrac.toFixed(3)} meanLuma=${stats.meanLuma.toFixed(3)} -> ${stats.path}`);
-    g.present(false);
+    // HUD composites into the back buffer (after the capture above, before Present)
+    // so the saved PNG stays clean while the live window shows the flicker-free label.
     drawHud(id, fps);
+    g.present(false);
   }
   GDI32.DeleteObject(hudFont);
   cleanup(0);
@@ -653,16 +658,19 @@ while (!win.shouldClose()) {
     break;
   }
 
-  g.present(false);
-
-  // GDI HUD on top of the live window (after Present). Not in the captured PNG.
-  drawHud(activeFilter, fps);
   fpsFrames += 1;
   if (now - fpsTimer >= 1000) {
     fps = Math.round((fpsFrames * 1000) / (now - fpsTimer));
     fpsFrames = 0;
     fpsTimer = now;
   }
+
+  // GDI HUD composited INTO the back buffer (before Present) so the label is
+  // flicker-free. The capture frame above snapshots & breaks before reaching here,
+  // so the saved PNG stays HUD-free.
+  drawHud(activeFilter, fps);
+
+  g.present(false);
 }
 
 GDI32.DeleteObject(hudFont);

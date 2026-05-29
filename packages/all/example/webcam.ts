@@ -37,6 +37,7 @@ import { GDI32, User32 } from '../index';
 import { SystemMetric } from '@bun-win32/user32';
 import Mfplat, { MFMediaType_Video, MFVideoFormat_RGB32, MFVideoFormat_NV12 } from '@bun-win32/mfplat';
 import * as gpu from './_gpu';
+import * as hud from './_hud';
 import { captureBackBuffer, formatGrid } from './_snapshot';
 
 // ── HRESULTs / constants ───────────────────────────────────────────────────────
@@ -550,8 +551,8 @@ const camH = cam.available ? cam.h : BBH;
 const camFlip = process.env.WEBCAM_FLIP === '1' ? 1 : 0;
 
 // ── GDI HUD ─────────────────────────────────────────────────────────────────────
-// Clean two-line overlay (drawn after Present, so it is NOT in the back-buffer
-// snapshot — the human reviewer captures the composited frame separately).
+// Clean two-line overlay composited INTO the back buffer (via _hud) BEFORE Present,
+// so it is part of the presented frame (and the snapshot) and never strobes.
 const hudFont = GDI32.CreateFontW(-24, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 4, 0, wide('Consolas').ptr!);
 const hudFontSmall = GDI32.CreateFontW(-17, 0, 0, 0, 500, 0, 0, 0, 0, 0, 0, 4, 0, wide('Consolas').ptr!);
 function drawTextShadow(dc: bigint, x: number, y: number, s: string, rgb: number): void {
@@ -562,22 +563,21 @@ function drawTextShadow(dc: bigint, x: number, y: number, s: string, rgb: number
   GDI32.TextOutW(dc, x, y, text.ptr!, s.length);
 }
 function drawHud(effect: number, fps: number): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (!dc) return;
-  GDI32.SetBkMode(dc, TRANSPARENT_BK);
-  // Headline (BGR colors: amber when live, cyan when fallback).
-  const device = cam.available ? `${cam.name} ${cam.w}x${cam.h}` : 'NO CAMERA';
-  const line1 = `pure-TS Media Foundation camera · ${device} · effect: ${EFFECT_NAMES[effect]} · keys 1-4`;
-  const prevFont = GDI32.SelectObject(dc, hudFont);
-  drawTextShadow(dc, 24, 22, line1, cam.available ? 0x0040ddff : 0x00ffd060);
-  // Sub-line: format / fps / GPU / quit.
-  const line2 = cam.available
-    ? `${cam.format} · ${fps} fps · ${g.gpuName} · SPACE cycle · ESC quit`
-    : `procedural fallback · run Camera Hub / plug a camera · ${fps} fps · ${g.gpuName} · ESC quit`;
-  GDI32.SelectObject(dc, hudFontSmall);
-  drawTextShadow(dc, 24, 56, line2, 0x00c0c0c0);
-  GDI32.SelectObject(dc, prevFont);
-  User32.ReleaseDC(win.hwnd, dc);
+  hud.draw(g, BBW, BBH, (dc) => {
+    GDI32.SetBkMode(dc, TRANSPARENT_BK);
+    // Headline (BGR colors: amber when live, cyan when fallback).
+    const device = cam.available ? `${cam.name} ${cam.w}x${cam.h}` : 'NO CAMERA';
+    const line1 = `pure-TS Media Foundation camera · ${device} · effect: ${EFFECT_NAMES[effect]} · keys 1-4`;
+    const prevFont = GDI32.SelectObject(dc, hudFont);
+    drawTextShadow(dc, 24, 22, line1, cam.available ? 0x0040ddff : 0x00ffd060);
+    // Sub-line: format / fps / GPU / quit.
+    const line2 = cam.available
+      ? `${cam.format} · ${fps} fps · ${g.gpuName} · SPACE cycle · ESC quit`
+      : `procedural fallback · run Camera Hub / plug a camera · ${fps} fps · ${g.gpuName} · ESC quit`;
+    GDI32.SelectObject(dc, hudFontSmall);
+    drawTextShadow(dc, 24, 56, line2, 0x00c0c0c0);
+    GDI32.SelectObject(dc, prevFont);
+  });
 }
 
 // ── Self-check: read back the swapchain back buffer → 2D pixel stats. ───────────
@@ -696,6 +696,10 @@ while (!win.shouldClose()) {
   // Unbind the SRV so the next ReadSample's UpdateSubresource into the same texture is legal.
   gpu.psSet(pixelShaders[effect]!, { srv: [0n] });
 
+  // Composite the HUD INTO the back buffer (after the scene, before Present / snapshot)
+  // so the text is part of the presented frame and never strobes.
+  drawHud(effect, fps);
+
   // Self-verification reads the back buffer BEFORE Present (DISCARD makes it undefined
   // after). Wait past camera warm-up (~60 frames) AND ~1.2s so live pixels have landed.
   const warmedUp = frames >= 60 && now - start >= 1200;
@@ -715,7 +719,6 @@ while (!win.shouldClose()) {
   }
 
   g.present(false);
-  drawHud(effect, fps);
   frames += 1;
 
   fpsFrames += 1;
@@ -741,6 +744,7 @@ const elapsed = (performance.now() - start) / 1000;
 console.log(`webcam: presented ${frames} frames (${live} live captures) over ${elapsed.toFixed(2)}s.`);
 
 cam.shutdown();
+hud.release();
 GDI32.DeleteObject(hudFont);
 GDI32.DeleteObject(hudFontSmall);
 gpu.comRelease(sampler);

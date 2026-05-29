@@ -37,7 +37,8 @@
 
 import { FFIType } from 'bun:ffi';
 
-import { GDI32, User32 } from '../index';
+import { GDI32 } from '../index';
+import * as hud from './_hud';
 import {
   CTX_CS_SET_SHADER_RESOURCES,
   CTX_CS_SET_UNORDERED_ACCESS_VIEWS,
@@ -337,20 +338,19 @@ function clearCsSrv(): void {
 const hudFont = GDI32.CreateFontW(-18, 0, 0, 0, 600, 0, 0, 0, 0, 0, 0, 4 /* ANTIALIASED_QUALITY */, 0, encodeWide('Consolas').ptr!);
 const TRANSPARENT_BK = 1;
 function drawHud(fps: number): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (!dc) return;
-  const prevFont = GDI32.SelectObject(dc, hudFont);
-  GDI32.SetBkMode(dc, TRANSPARENT_BK);
-  const millions = (AGENT_COUNT / 1_000_000).toFixed(2);
-  const line = `Physarum · ${millions}M agents · ${fps} fps · ${gpu.gpuName} · ESC`;
-  const text = encodeWide(line);
-  const len = line.length;
-  GDI32.SetTextColor(dc, 0x00100800); // dark shadow (BGR)
-  GDI32.TextOutW(dc, 17, 17, text.ptr!, len);
-  GDI32.SetTextColor(dc, 0x00f5e8c8); // warm cyan-white (BGR)
-  GDI32.TextOutW(dc, 16, 16, text.ptr!, len);
-  GDI32.SelectObject(dc, prevFont);
-  User32.ReleaseDC(win.hwnd, dc);
+  hud.draw(gpu, clientW, clientH, (dc) => {
+    const prevFont = GDI32.SelectObject(dc, hudFont);
+    GDI32.SetBkMode(dc, TRANSPARENT_BK);
+    const millions = (AGENT_COUNT / 1_000_000).toFixed(2);
+    const line = `Physarum · ${millions}M agents · ${fps} fps · ${gpu.gpuName} · ESC`;
+    const text = encodeWide(line);
+    const len = line.length;
+    GDI32.SetTextColor(dc, 0x00100800); // dark shadow (BGR)
+    GDI32.TextOutW(dc, 17, 17, text.ptr!, len);
+    GDI32.SetTextColor(dc, 0x00f5e8c8); // warm cyan-white (BGR)
+    GDI32.TextOutW(dc, 16, 16, text.ptr!, len);
+    GDI32.SelectObject(dc, prevFont);
+  });
 }
 
 // ── Teardown ──────────────────────────────────────────────────────────────────
@@ -358,6 +358,7 @@ let cleaned = false;
 function cleanup(code: number): never {
   if (!cleaned) {
     cleaned = true;
+    hud.release();
     GDI32.DeleteObject(hudFont);
     comRelease(agents.uav ?? 0n);
     comRelease(agents.buffer);
@@ -452,8 +453,8 @@ while (!win.shouldClose()) {
   vcall(gpu.context, 8 /* CTX_PS_SET_SHADER_RESOURCES */, [FFIType.u32, FFIType.u32, FFIType.ptr], [0, 1, nullPtrArr.ptr!], FFIType.void);
   setRenderTargets([]);
 
-  gpu.present(false);
   drawHud(fps);
+  gpu.present(false);
 
   // Ping-pong: next frame, agents deposit on the freshly-diffused field.
   const tmp = trailA;

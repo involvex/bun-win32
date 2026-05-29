@@ -32,6 +32,7 @@
 import { GDI32, User32 } from '../index';
 
 import * as gpu from './_gpu';
+import * as hud from './_hud';
 import { captureBackBuffer, formatGrid } from './_snapshot';
 
 // Virtual keys.
@@ -420,48 +421,47 @@ function main(): void {
   const dirPen = GDI32.CreatePen(0, 2, 0x004040ff);
 
   function drawMinimap(): void {
-    const dc = User32.GetDC(win.hwnd);
-    if (!dc) return;
-    for (let my = 0; my < MAP_DIM; my++) {
-      for (let mx = 0; mx < MAP_DIM; mx++) {
-        const c = MAP[my * MAP_DIM + mx] ?? 0;
-        const brush = c === 1 ? brickBrush : c === 2 ? stoneBrush : c === 3 ? mossBrush : c === 4 ? blueBrush : floorBrush;
-        GDI32.SelectObject(dc, brush);
-        const x0 = MM_X + mx * MM_CELL;
-        const y0 = MM_Y + my * MM_CELL;
-        GDI32.Rectangle(dc, x0, y0, x0 + MM_CELL + 1, y0 + MM_CELL + 1);
+    hud.draw(g, cw, ch, (dc) => {
+      for (let my = 0; my < MAP_DIM; my++) {
+        for (let mx = 0; mx < MAP_DIM; mx++) {
+          const c = MAP[my * MAP_DIM + mx] ?? 0;
+          const brush = c === 1 ? brickBrush : c === 2 ? stoneBrush : c === 3 ? mossBrush : c === 4 ? blueBrush : floorBrush;
+          GDI32.SelectObject(dc, brush);
+          const x0 = MM_X + mx * MM_CELL;
+          const y0 = MM_Y + my * MM_CELL;
+          GDI32.Rectangle(dc, x0, y0, x0 + MM_CELL + 1, y0 + MM_CELL + 1);
+        }
       }
-    }
-    const px0 = MM_X + px * MM_CELL;
-    const py0 = MM_Y + py * MM_CELL;
-    const dirX = Math.cos(angle);
-    const dirY = Math.sin(angle);
-    const planeX = -dirY * FOV;
-    const planeY = dirX * FOV;
-    const rayLen = 6 * MM_CELL;
-    GDI32.SelectObject(dc, conePen);
-    for (const camX of [-1, 1]) {
-      const rx = dirX + planeX * camX;
-      const ry = dirY + planeY * camX;
-      const len = Math.hypot(rx, ry) || 1;
+      const px0 = MM_X + px * MM_CELL;
+      const py0 = MM_Y + py * MM_CELL;
+      const dirX = Math.cos(angle);
+      const dirY = Math.sin(angle);
+      const planeX = -dirY * FOV;
+      const planeY = dirX * FOV;
+      const rayLen = 6 * MM_CELL;
+      GDI32.SelectObject(dc, conePen);
+      for (const camX of [-1, 1]) {
+        const rx = dirX + planeX * camX;
+        const ry = dirY + planeY * camX;
+        const len = Math.hypot(rx, ry) || 1;
+        GDI32.MoveToEx(dc, Math.round(px0), Math.round(py0), null);
+        GDI32.LineTo(dc, Math.round(px0 + (rx / len) * rayLen), Math.round(py0 + (ry / len) * rayLen));
+      }
+      GDI32.SelectObject(dc, dirPen);
       GDI32.MoveToEx(dc, Math.round(px0), Math.round(py0), null);
-      GDI32.LineTo(dc, Math.round(px0 + (rx / len) * rayLen), Math.round(py0 + (ry / len) * rayLen));
-    }
-    GDI32.SelectObject(dc, dirPen);
-    GDI32.MoveToEx(dc, Math.round(px0), Math.round(py0), null);
-    GDI32.LineTo(dc, Math.round(px0 + dirX * MM_CELL * 2.2), Math.round(py0 + dirY * MM_CELL * 2.2));
-    GDI32.SelectObject(dc, playerBrush);
-    GDI32.Ellipse(dc, Math.round(px0 - 3), Math.round(py0 - 3), Math.round(px0 + 3), Math.round(py0 + 3));
+      GDI32.LineTo(dc, Math.round(px0 + dirX * MM_CELL * 2.2), Math.round(py0 + dirY * MM_CELL * 2.2));
+      GDI32.SelectObject(dc, playerBrush);
+      GDI32.Ellipse(dc, Math.round(px0 - 3), Math.round(py0 - 3), Math.round(px0 + 3), Math.round(py0 + 3));
 
-    GDI32.SelectObject(dc, hudFont);
-    GDI32.SetBkMode(dc, TRANSPARENT_BK);
-    const line = `Raycaster · pure TypeScript · ${fps} fps · ${g.driver}`;
-    const text = Buffer.from(`${line}\0`, 'utf16le');
-    GDI32.SetTextColor(dc, 0x00000000);
-    GDI32.TextOutW(dc, 21, 21, text.ptr!, line.length);
-    GDI32.SetTextColor(dc, 0x0020d0f0);
-    GDI32.TextOutW(dc, 20, 20, text.ptr!, line.length);
-    User32.ReleaseDC(win.hwnd, dc);
+      GDI32.SelectObject(dc, hudFont);
+      GDI32.SetBkMode(dc, TRANSPARENT_BK);
+      const line = `Raycaster · pure TypeScript · ${fps} fps · ${g.driver}`;
+      const text = Buffer.from(`${line}\0`, 'utf16le');
+      GDI32.SetTextColor(dc, 0x00000000);
+      GDI32.TextOutW(dc, 21, 21, text.ptr!, line.length);
+      GDI32.SetTextColor(dc, 0x0020d0f0);
+      GDI32.TextOutW(dc, 20, 20, text.ptr!, line.length);
+    });
   }
 
   while (!win.shouldClose()) {
@@ -551,6 +551,10 @@ function main(): void {
     gpu.psSet(ps, { cb: [cb], srv: [mapSb.srv!] });
     gpu.drawFullscreenTriangle();
 
+    // ── HUD composited INTO the back buffer (before present, so it never flickers
+    // and shows up in the self-shot capture below) ────────────────────────────
+    drawMinimap();
+
     // ── Self-shot: read our OWN back buffer BEFORE present (DISCARD-safe) ──────
     const lastFrame = durationMs > 0 && now - startTime >= durationMs;
     if (SELFSHOT && lastFrame) {
@@ -561,7 +565,6 @@ function main(): void {
     }
 
     g.present(false);
-    drawMinimap();
 
     frames += 1;
     if (now - fpsWindowStart >= 500) {
@@ -574,6 +577,7 @@ function main(): void {
   }
 
   // ── Teardown ──────────────────────────────────────────────────────────────────
+  hud.release();
   GDI32.DeleteObject(hudFont);
   GDI32.DeleteObject(brickBrush);
   GDI32.DeleteObject(stoneBrush);

@@ -35,10 +35,11 @@
 
 import { FFIType } from 'bun:ffi';
 
-import { GDI32, User32, Xinput1_4 } from '../index';
+import { GDI32, Xinput1_4 } from '../index';
 
 import * as audio from './_audio';
 import * as gpu from './_gpu';
+import * as hud from './_hud';
 import { captureBackBuffer, formatGrid } from './_snapshot';
 import { loadAcid2 } from './gameboy-rom';
 import { loadLibbet } from './gameboy-game-rom';
@@ -1928,20 +1929,19 @@ function main(): void {
   }
 
   function drawHud(): void {
-    const dc = User32.GetDC(win.hwnd);
-    if (!dc) return;
-    const prevFont = GDI32.SelectObject(dc, hudFont);
-    GDI32.SetBkMode(dc, TRANSPARENT_BK);
-    const what = playingGame ? 'Libbet & the Magic Floor' : 'dmg-acid2 PPU test';
-    const snd = pcm.available ? ' · APU♪' : '';
-    const line = `Game Boy · ${what} · pure-TS SM83${snd} · ${fps} fps`;
-    const text = Buffer.from(`${line}\0`, 'utf16le');
-    GDI32.SetTextColor(dc, 0x00102018);
-    GDI32.TextOutW(dc, 13, 11, text.ptr!, line.length);
-    GDI32.SetTextColor(dc, 0x0070c088); // BGR — DMG green
-    GDI32.TextOutW(dc, 12, 10, text.ptr!, line.length);
-    GDI32.SelectObject(dc, prevFont);
-    User32.ReleaseDC(win.hwnd, dc);
+    hud.draw(g, cw, ch, (dc) => {
+      const prevFont = GDI32.SelectObject(dc, hudFont);
+      GDI32.SetBkMode(dc, TRANSPARENT_BK);
+      const what = playingGame ? 'Libbet & the Magic Floor' : 'dmg-acid2 PPU test';
+      const snd = pcm.available ? ' · APU♪' : '';
+      const line = `Game Boy · ${what} · pure-TS SM83${snd} · ${fps} fps`;
+      const text = Buffer.from(`${line}\0`, 'utf16le');
+      GDI32.SetTextColor(dc, 0x00102018);
+      GDI32.TextOutW(dc, 13, 11, text.ptr!, line.length);
+      GDI32.SetTextColor(dc, 0x0070c088); // BGR — DMG green
+      GDI32.TextOutW(dc, 12, 10, text.ptr!, line.length);
+      GDI32.SelectObject(dc, prevFont);
+    });
   }
 
   function renderToBackBuffer(): void {
@@ -2018,6 +2018,7 @@ function main(): void {
       const { mkdirSync } = require('node:fs') as typeof import('node:fs');
       const shotDir = resolve(import.meta.dir, '..', 'screenshots');
       mkdirSync(shotDir, { recursive: true });
+      drawHud(); // composite the HUD into the back buffer so it appears in the shot
       const stats = captureBackBuffer(g, resolve(shotDir, 'gameboy.png'), { gridW: 48, gridH: 22 });
       console.log(formatGrid(stats));
       console.log(`[shot] ok=${stats.ok} nonBlack=${stats.nonBlackFrac.toFixed(3)} meanLuma=${stats.meanLuma.toFixed(3)} -> ${stats.path}`);
@@ -2026,8 +2027,8 @@ function main(): void {
       break;
     }
 
-    g.present(false);
     drawHud();
+    g.present(false);
 
     frames += 1;
     if (now - fpsWindowStart >= 500) {
@@ -2041,6 +2042,7 @@ function main(): void {
 
   // ── Teardown ─────────────────────────────────────────────────────────────
   pcm.close();
+  hud.release();
   GDI32.DeleteObject(hudFont);
   comReleaseSafe(samp);
   comReleaseSafe(cb);

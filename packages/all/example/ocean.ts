@@ -41,6 +41,7 @@ import { GDI32, User32 } from '../index';
 import { VirtualKey } from '@bun-win32/user32';
 import * as gpu from './_gpu';
 import * as gpu3d from './_gpu3d';
+import * as hud from './_hud';
 import { captureBackBuffer, formatGrid } from './_snapshot';
 
 const encodeWide = (str: string): Buffer => Buffer.from(`${str}\0`, 'utf16le');
@@ -457,19 +458,18 @@ const sun: [number, number, number] = [Math.cos(sunElev) * Math.cos(sunAzim), Ma
 // ── GDI HUD font ──────────────────────────────────────────────────────────────
 const hudFont = GDI32.CreateFontW(-Math.max(18, Math.round(clientH / 52)), 0, 0, 0, 600, 0, 0, 0, 0, 0, 0, 4, 0, encodeWide('Consolas').ptr!);
 function drawHud(fps: number): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (!dc) return;
-  const prevFont = GDI32.SelectObject(dc, hudFont);
-  GDI32.SetBkMode(dc, TRANSPARENT_BK);
-  const line = `Ocean · ${NUM_WAVES} Gerstner waves · ${(GRID_VERT_COUNT / 3).toLocaleString()} tris · ${fps} fps · ${g.gpuName}`;
-  const text = encodeWide(line);
-  const len = line.length;
-  GDI32.SetTextColor(dc, 0x00201408); // dark shadow (BGR)
-  GDI32.TextOutW(dc, 23, 23, text.ptr!, len);
-  GDI32.SetTextColor(dc, 0x00f0e0c0); // warm icy-white
-  GDI32.TextOutW(dc, 22, 22, text.ptr!, len);
-  GDI32.SelectObject(dc, prevFont);
-  User32.ReleaseDC(win.hwnd, dc);
+  hud.draw(g, clientW, clientH, (dc) => {
+    const prevFont = GDI32.SelectObject(dc, hudFont);
+    GDI32.SetBkMode(dc, TRANSPARENT_BK);
+    const line = `Ocean · ${NUM_WAVES} Gerstner waves · ${(GRID_VERT_COUNT / 3).toLocaleString()} tris · ${fps} fps · ${g.gpuName}`;
+    const text = encodeWide(line);
+    const len = line.length;
+    GDI32.SetTextColor(dc, 0x00201408); // dark shadow (BGR)
+    GDI32.TextOutW(dc, 23, 23, text.ptr!, len);
+    GDI32.SetTextColor(dc, 0x00f0e0c0); // warm icy-white
+    GDI32.TextOutW(dc, 22, 22, text.ptr!, len);
+    GDI32.SelectObject(dc, prevFont);
+  });
 }
 
 console.log('Ocean — Gerstner-wave 3D sea, opaque triangle mesh + depth buffer, in pure TypeScript.');
@@ -488,6 +488,7 @@ function cleanup(code: number): never {
   if (!cleanedUp) {
     cleanedUp = true;
     try {
+      hud.release();
       GDI32.DeleteObject(hudFont);
       gpu.comRelease(skyPs);
       gpu.comRelease(skyVs);
@@ -599,6 +600,10 @@ while (!win.shouldClose()) {
   gpu3d.drawTriangles(GRID_VERT_COUNT);
   gpu.vsSetShaderResources([0n]);
 
+  // ── HUD: composite the GDI overlay INTO the back buffer (after the scene render,
+  // before present) so it never flickers and shows up in back-buffer captures.
+  drawHud(fps);
+
   // ── Self-check: capture the back buffer BEFORE present (DISCARD wipes it after).
   const lastFrame = durationMs > 0 && now - startTime >= durationMs;
   if (lastFrame && selfShot) {
@@ -610,7 +615,6 @@ while (!win.shouldClose()) {
   }
 
   g.present(false);
-  drawHud(fps);
 
   frames += 1;
   if (now - fpsWindowStart >= 500) {

@@ -36,9 +36,10 @@
  * Run: bun run packages/all/example/pathtracer.ts
  */
 
-import { GDI32, User32 } from '../index';
+import { GDI32 } from '../index';
 import { VirtualKey } from '@bun-win32/user32';
 import * as gpu from './_gpu';
+import * as hud from './_hud';
 
 const WIDTH = 1280;
 const HEIGHT = 720;
@@ -496,19 +497,18 @@ const encode = (str: string): Buffer => Buffer.from(`${str}\0`, 'utf16le');
 const hudFont = GDI32.CreateFontW(-18, 0, 0, 0, 600, 0, 0, 0, 0, 0, 0, 4 /* ANTIALIASED_QUALITY */, 0, encode('Consolas').ptr!);
 
 function drawHud(fps: number): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (!dc) return;
-  const prevFont = GDI32.SelectObject(dc, hudFont);
-  GDI32.SetBkMode(dc, TRANSPARENT_BK);
-  const line = `Path tracer · ${spp} spp · ${fps} fps · drag to orbit · WASD/arrows to move · move to reset`;
-  const text = encode(line);
-  const len = line.length;
-  GDI32.SetTextColor(dc, 0x000000); // shadow
-  GDI32.TextOutW(dc, 17, 17, text.ptr!, len);
-  GDI32.SetTextColor(dc, 0x00e8f0f8); // BGR warm white
-  GDI32.TextOutW(dc, 16, 16, text.ptr!, len);
-  GDI32.SelectObject(dc, prevFont);
-  User32.ReleaseDC(win.hwnd, dc);
+  hud.draw(device, clientW, clientH, (dc) => {
+    const prevFont = GDI32.SelectObject(dc, hudFont);
+    GDI32.SetBkMode(dc, TRANSPARENT_BK);
+    const line = `Path tracer · ${spp} spp · ${fps} fps · drag to orbit · WASD/arrows to move · move to reset`;
+    const text = encode(line);
+    const len = line.length;
+    GDI32.SetTextColor(dc, 0x000000); // shadow
+    GDI32.TextOutW(dc, 17, 17, text.ptr!, len);
+    GDI32.SetTextColor(dc, 0x00e8f0f8); // BGR warm white
+    GDI32.TextOutW(dc, 16, 16, text.ptr!, len);
+    GDI32.SelectObject(dc, prevFont);
+  });
 }
 
 console.log('Path Tracer — progressive GPU path tracing in pure TypeScript.');
@@ -526,6 +526,7 @@ let cleanedUp = false;
 function cleanup(code: number): never {
   if (!cleanedUp) {
     cleanedUp = true;
+    hud.release();
     GDI32.DeleteObject(hudFont);
     gpu.comRelease(accumA.srv!);
     gpu.comRelease(accumA.rtv!);
@@ -602,6 +603,19 @@ while (!win.shouldClose()) {
   gpu.drawFullscreenTriangle();
   gpu.setRenderTargets([]); // unbind writeTex SRV before it becomes a RTV again
 
+  // FPS accounting (before the HUD so it shows the freshest number).
+  const now = performance.now();
+  frames += 1;
+  if (now - fpsWindowStart >= 500) {
+    fps = Math.round((frames * 1000) / (now - fpsWindowStart));
+    frames = 0;
+    fpsWindowStart = now;
+  }
+
+  // Composite the GDI HUD INTO the back buffer (alpha-blended) BEFORE present so
+  // the text becomes part of the presented frame and never strobes.
+  drawHud(fps);
+
   // VSync-paced present: one new sample per refresh (~60 spp/s) so the convergence
   // from noisy to clean reads as a smooth few-second reveal rather than an instant snap.
   device.present(true);
@@ -612,16 +626,6 @@ while (!win.shouldClose()) {
   writeTex = tmp;
 
   frameCounter += 1;
-
-  // FPS accounting.
-  const now = performance.now();
-  frames += 1;
-  if (now - fpsWindowStart >= 500) {
-    fps = Math.round((frames * 1000) / (now - fpsWindowStart));
-    frames = 0;
-    fpsWindowStart = now;
-  }
-  drawHud(fps);
 
   if (durationMs > 0 && now - startTime >= durationMs) break;
 }

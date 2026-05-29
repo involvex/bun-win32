@@ -31,8 +31,9 @@
  * Run: bun run packages/all/example/fluid.ts
  */
 
-import { GDI32, User32 } from '../index';
+import { GDI32 } from '../index';
 import * as gpu from './_gpu';
+import * as hud from './_hud';
 
 const encodeWide = (str: string): Buffer => Buffer.from(`${str}\0`, 'utf16le');
 
@@ -348,18 +349,17 @@ const hudFont = GDI32.CreateFontW(-18, 0, 0, 0, 600, 0, 0, 0, 0, 0, 0, 4 /* ANTI
 const TRANSPARENT_BK = 1;
 let fps = 0;
 function drawHud(): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (!dc) return;
-  const prevFont = GDI32.SelectObject(dc, hudFont);
-  GDI32.SetBkMode(dc, TRANSPARENT_BK);
-  const line = `Navier-Stokes fluid · ${SIM}^2 · ${fps} fps · drag to stir · ESC to exit`;
-  const text = encodeWide(line);
-  GDI32.SetTextColor(dc, 0x00201810); // shadow (BGR)
-  GDI32.TextOutW(dc, 19, 19, text.ptr!, line.length);
-  GDI32.SetTextColor(dc, 0x00f5e8d8); // bright warm white
-  GDI32.TextOutW(dc, 18, 18, text.ptr!, line.length);
-  GDI32.SelectObject(dc, prevFont);
-  User32.ReleaseDC(win.hwnd, dc);
+  hud.draw(g, clientW, clientH, (dc) => {
+    const prevFont = GDI32.SelectObject(dc, hudFont);
+    GDI32.SetBkMode(dc, TRANSPARENT_BK);
+    const line = `Navier-Stokes fluid · ${SIM}^2 · ${fps} fps · drag to stir · ESC to exit`;
+    const text = encodeWide(line);
+    GDI32.SetTextColor(dc, 0x00201810); // shadow (BGR)
+    GDI32.TextOutW(dc, 19, 19, text.ptr!, line.length);
+    GDI32.SetTextColor(dc, 0x00f5e8d8); // bright warm white
+    GDI32.TextOutW(dc, 18, 18, text.ptr!, line.length);
+    GDI32.SelectObject(dc, prevFont);
+  });
 }
 
 console.log(`Fluid — GPU stable-fluids (${SIM}^2) on ${g.driver} (${g.gpuName}). Drag to stir. ESC to exit.`);
@@ -379,6 +379,7 @@ let cleanedUp = false;
 function cleanup(code: number): never {
   if (!cleanedUp) {
     cleanedUp = true;
+    hud.release();
     GDI32.DeleteObject(hudFont);
     for (const s of [psAdvect, psSplat, psForce, psCurl, psVorticity, psDivergence, psJacobi, psGradient, psDisplay, vs]) gpu.comRelease(s);
     gpu.blobRelease(vsCode.blob);
@@ -598,8 +599,8 @@ while (!win.shouldClose()) {
   gpu.drawFullscreenTriangle();
   gpu.setRenderTargets([]);
 
-  g.present(false);
   drawHud();
+  g.present(false);
 
   frames += 1;
   if (now - fpsWindowStart >= 500) {

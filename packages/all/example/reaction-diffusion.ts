@@ -33,7 +33,7 @@
  * Run: bun run packages/all/example/reaction-diffusion.ts
  */
 
-import { GDI32, User32 } from '../index';
+import { GDI32 } from '../index';
 import {
   D3D11_FILTER_MIN_MAG_MIP_LINEAR,
   D3D11_FILTER_MIN_MAG_MIP_POINT,
@@ -56,6 +56,7 @@ import {
   vsSet,
   type TextureResult,
 } from './_gpu';
+import * as hud from './_hud';
 
 // DXGI_FORMAT_R16G16_FLOAT — two 16-bit floats per texel (chemical A in R, B in G).
 // Not surfaced by _gpu.ts; value from the DXGI_FORMAT enum (dxgiformat.h).
@@ -299,19 +300,18 @@ let fps = 0;
 let palette = 2; // start on the coral/ember palette
 
 function drawHud(): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (!dc) return;
-  const prevFont = GDI32.SelectObject(dc, hudFont);
-  GDI32.SetBkMode(dc, TRANSPARENT_BK);
-  const line = `Gray-Scott reaction-diffusion · ${fps} fps · click to seed`;
-  const text = encodeWide(line);
-  const len = line.length;
-  GDI32.SetTextColor(dc, 0x000000);
-  GDI32.TextOutW(dc, 17, 17, text.ptr!, len);
-  GDI32.SetTextColor(dc, 0x00e8f0ff); // warm white (BGR)
-  GDI32.TextOutW(dc, 16, 16, text.ptr!, len);
-  GDI32.SelectObject(dc, prevFont);
-  User32.ReleaseDC(win.hwnd, dc);
+  hud.draw(gpu, clientW, clientH, (dc) => {
+    const prevFont = GDI32.SelectObject(dc, hudFont);
+    GDI32.SetBkMode(dc, TRANSPARENT_BK);
+    const line = `Gray-Scott reaction-diffusion · ${fps} fps · click to seed`;
+    const text = encodeWide(line);
+    const len = line.length;
+    GDI32.SetTextColor(dc, 0x000000);
+    GDI32.TextOutW(dc, 17, 17, text.ptr!, len);
+    GDI32.SetTextColor(dc, 0x00e8f0ff); // warm white (BGR)
+    GDI32.TextOutW(dc, 16, 16, text.ptr!, len);
+    GDI32.SelectObject(dc, prevFont);
+  });
 }
 
 // ── Seed both textures with the initial state ──
@@ -350,6 +350,7 @@ let cleanedUp = false;
 function cleanup(code: number): never {
   if (!cleanedUp) {
     cleanedUp = true;
+    hud.release();
     GDI32.DeleteObject(hudFont);
     comRelease(sampPoint);
     comRelease(sampLinear);
@@ -451,8 +452,8 @@ while (!win.shouldClose()) {
   drawFullscreenTriangle();
   setRenderTargets([]);
 
-  gpu.present(false);
   drawHud();
+  gpu.present(false);
 
   // FPS accounting.
   frames += 1;

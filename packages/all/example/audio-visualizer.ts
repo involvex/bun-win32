@@ -38,6 +38,7 @@ import { FFIType } from 'bun:ffi';
 
 import { GDI32, User32 } from '../index';
 import { createMicAnalyser } from './_audio';
+import * as hud from './_hud';
 import {
   type Gpu,
   type Win,
@@ -410,6 +411,7 @@ function cleanup(code: number): never {
   if (!cleanedUp) {
     cleanedUp = true;
     try { mic.close(); } catch { /* ignore */ }
+    hud.release();
     GDI32.DeleteObject(hudFont);
     GDI32.DeleteObject(barFont);
     comRelease(sampWrap);
@@ -435,43 +437,42 @@ function cleanup(code: number): never {
 }
 process.on('SIGINT', () => cleanup(0));
 
-/** GDI HUD: name + bass/mid/treble bars + fps, drawn straight onto the window DC. */
+/** GDI HUD: name + bass/mid/treble bars + fps, composited into the back buffer. */
 function drawHud(): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (!dc) return;
-  GDI32.SetBkMode(dc, TRANSPARENT_BK);
+  hud.draw(gpu, clientW, clientH, (dc) => {
+    GDI32.SetBkMode(dc, TRANSPARENT_BK);
 
-  const prevFont = GDI32.SelectObject(dc, hudFont);
-  const title = `Audio reactive · ${mic.available ? 'mic FFT' : 'synthetic beat'} · feedback bloom · ${fps} fps`;
-  const tw = encode(title);
-  GDI32.SetTextColor(dc, 0x000000);
-  GDI32.TextOutW(dc, 17, 15, tw.ptr!, title.length);
-  GDI32.SetTextColor(dc, 0x00f5ead0); // BGR warm white
-  GDI32.TextOutW(dc, 16, 14, tw.ptr!, title.length);
-
-  // bass/mid/treble bars rendered as block text.
-  GDI32.SelectObject(dc, barFont);
-  const blocks = (v: number): string => {
-    const n = Math.max(0, Math.min(20, Math.round(v * 20)));
-    return '#'.repeat(n) + '.'.repeat(20 - n);
-  };
-  const lines: [string, number][] = [
-    [`bass   [${blocks(bassSmooth)}]`, 0x004060ff],   // BGR: orange-red
-    [`mid    [${blocks(midSmooth)}]`, 0x0040ff60],    // green
-    [`treble [${blocks(trebleSmooth)}]`, 0x00ffd040], // cyan-blue
-  ];
-  for (let i = 0; i < lines.length; i += 1) {
-    const [text, color] = lines[i]!;
-    const tb = encode(text);
-    const y = 40 + i * 20;
+    const prevFont = GDI32.SelectObject(dc, hudFont);
+    const title = `Audio reactive · ${mic.available ? 'mic FFT' : 'synthetic beat'} · feedback bloom · ${fps} fps`;
+    const tw = encode(title);
     GDI32.SetTextColor(dc, 0x000000);
-    GDI32.TextOutW(dc, 17, y + 1, tb.ptr!, text.length);
-    GDI32.SetTextColor(dc, color);
-    GDI32.TextOutW(dc, 16, y, tb.ptr!, text.length);
-  }
+    GDI32.TextOutW(dc, 17, 15, tw.ptr!, title.length);
+    GDI32.SetTextColor(dc, 0x00f5ead0); // BGR warm white
+    GDI32.TextOutW(dc, 16, 14, tw.ptr!, title.length);
 
-  GDI32.SelectObject(dc, prevFont);
-  User32.ReleaseDC(win.hwnd, dc);
+    // bass/mid/treble bars rendered as block text.
+    GDI32.SelectObject(dc, barFont);
+    const blocks = (v: number): string => {
+      const n = Math.max(0, Math.min(20, Math.round(v * 20)));
+      return '#'.repeat(n) + '.'.repeat(20 - n);
+    };
+    const lines: [string, number][] = [
+      [`bass   [${blocks(bassSmooth)}]`, 0x004060ff],   // BGR: orange-red
+      [`mid    [${blocks(midSmooth)}]`, 0x0040ff60],    // green
+      [`treble [${blocks(trebleSmooth)}]`, 0x00ffd040], // cyan-blue
+    ];
+    for (let i = 0; i < lines.length; i += 1) {
+      const [text, color] = lines[i]!;
+      const tb = encode(text);
+      const y = 40 + i * 20;
+      GDI32.SetTextColor(dc, 0x000000);
+      GDI32.TextOutW(dc, 17, y + 1, tb.ptr!, text.length);
+      GDI32.SetTextColor(dc, color);
+      GDI32.TextOutW(dc, 16, y, tb.ptr!, text.length);
+    }
+
+    GDI32.SelectObject(dc, prevFont);
+  });
 }
 
 while (!win.shouldClose()) {
@@ -525,8 +526,8 @@ while (!win.shouldClose()) {
   drawFullscreenTriangle();
   setRenderTargets([]); // unbind so texB can be the SRV again next frame
 
-  gpu.present(false);
   drawHud();
+  gpu.present(false);
 
   // Swap ping-pong: texB becomes the "previous" frame for the next feedback pass.
   const tmp = texA;

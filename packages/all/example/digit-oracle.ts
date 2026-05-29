@@ -38,6 +38,7 @@ import { FFIType, read, type Pointer } from 'bun:ffi';
 import { GDI32, User32 } from '../index';
 import { SystemMetric } from '@bun-win32/user32';
 import * as gpu from './_gpu';
+import * as hud from './_hud';
 import { N_IN, N_HID, N_OUT, WEIGHTS_B64, REF3_B64 } from './digit-oracle.weights';
 
 const encodeWide = (str: string): Buffer => Buffer.from(`${str}\0`, 'utf16le');
@@ -433,8 +434,7 @@ const labelFont = GDI32.CreateFontW(-Math.round(Math.min(clientH * 0.045, 40)), 
 const TRANSPARENT_BK = 1;
 
 function drawHud(fps: number, argmax: number, conf: number, hasInk: boolean): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (!dc) return;
+  hud.draw(dev, clientW, clientH, (dc) => {
   GDI32.SetBkMode(dc, TRANSPARENT_BK);
 
   // Title / status line.
@@ -491,7 +491,7 @@ function drawHud(fps: number, argmax: number, conf: number, hasInk: boolean): vo
   }
 
   GDI32.SelectObject(dc, prevFont);
-  User32.ReleaseDC(win.hwnd, dc);
+  });
 }
 
 // ── Teardown ──────────────────────────────────────────────────────────────────
@@ -502,6 +502,7 @@ function cleanup(code: number): never {
     try {
       gpu.csSet(0n, { uav: [0n] });
       gpu.setRenderTargets([]);
+      hud.release();
       GDI32.DeleteObject(hudFont);
       GDI32.DeleteObject(bigFont);
       GDI32.DeleteObject(labelFont);
@@ -694,8 +695,8 @@ while (!win.shouldClose()) {
   // Unbind PS SRVs so the dynamic buffers can be Map-discarded next frame.
   gpu.psSet(ps, { srv: [0n, 0n] });
 
-  dev.present(false);
   drawHud(fps, argmax, conf, hasInk);
+  dev.present(false);
 
   frame += 1;
   fpsFrames += 1;

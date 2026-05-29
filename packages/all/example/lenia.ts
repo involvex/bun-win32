@@ -81,6 +81,7 @@ import {
   type TextureResult,
 } from './_gpu';
 import { captureBackBuffer, formatGrid } from './_snapshot';
+import * as hud from './_hud';
 
 const encodeWide = (str: string): Buffer => Buffer.from(`${str}\0`, 'utf16le');
 const TRANSPARENT_BK = 1;
@@ -423,19 +424,18 @@ seed();
 const hudFont = GDI32.CreateFontW(-18, 0, 0, 0, 600, 0, 0, 0, 0, 0, 0, 4, 0, encodeWide('Consolas').ptr!);
 let fps = 0;
 function drawHud(): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (!dc) return;
-  const prevFont = GDI32.SelectObject(dc, hudFont);
-  GDI32.SetBkMode(dc, TRANSPARENT_BK);
-  const line = `Lenia · continuous cellular automata · ${fps} fps · ${gpu.gpuName} · SPACE reseed · ESC`;
-  const text = encodeWide(line);
-  const len = line.length;
-  GDI32.SetTextColor(dc, 0x00100400);
-  GDI32.TextOutW(dc, 19, 19, text.ptr!, len);
-  GDI32.SetTextColor(dc, 0x0090f0c0); // warm teal-green (BGR)
-  GDI32.TextOutW(dc, 18, 18, text.ptr!, len);
-  GDI32.SelectObject(dc, prevFont);
-  User32.ReleaseDC(win.hwnd, dc);
+  hud.draw(gpu, clientW, clientH, (dc) => {
+    const prevFont = GDI32.SelectObject(dc, hudFont);
+    GDI32.SetBkMode(dc, TRANSPARENT_BK);
+    const line = `Lenia · continuous cellular automata · ${fps} fps · ${gpu.gpuName} · SPACE reseed · ESC`;
+    const text = encodeWide(line);
+    const len = line.length;
+    GDI32.SetTextColor(dc, 0x00100400);
+    GDI32.TextOutW(dc, 19, 19, text.ptr!, len);
+    GDI32.SetTextColor(dc, 0x0090f0c0); // warm teal-green (BGR)
+    GDI32.TextOutW(dc, 18, 18, text.ptr!, len);
+    GDI32.SelectObject(dc, prevFont);
+  });
 }
 
 // ── Teardown ──────────────────────────────────────────────────────────────────
@@ -450,6 +450,7 @@ function cleanup(code: number): never {
     clearCsSrv();
     clearPsSrv();
     setRenderTargets([]);
+    hud.release();
     GDI32.DeleteObject(hudFont);
     comRelease(sampLinear);
     comRelease(cbSim);
@@ -546,6 +547,10 @@ while (!win.shouldClose()) {
   clearPsSrv();
   setRenderTargets([]);
 
+  // ── HUD composited INTO the back buffer (after the scene, before present). ─────
+  drawHud();
+  setRenderTargets([]); // hud.draw leaves the back-buffer RTV bound; unbind before capture
+
   // ── Self-verification snapshot on the final frame, before present(). ───────────
   const lastFrame = durationMs > 0 && now - startTime >= durationMs;
   if (lastFrame && selfshot) {
@@ -556,8 +561,11 @@ while (!win.shouldClose()) {
     console.log(`[shot] ok=${stats.ok} nonBlack=${stats.nonBlackFrac.toFixed(3)} meanLuma=${stats.meanLuma.toFixed(3)} -> ${stats.path}`);
   }
 
-  gpu.present(false);
-  drawHud();
+  // Present the composited frame (scene + HUD). On the terminal self-check frame the
+  // back buffer is already captured to PNG and the window is about to be destroyed;
+  // presenting right after the capture's CopyResource/Map of this HUD-composited frame
+  // faults the driver, so skip the final present (the live HUD path is unaffected).
+  if (!(lastFrame && selfshot)) gpu.present(false);
 
   frame += 1;
   fpsFrames += 1;

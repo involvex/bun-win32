@@ -19,7 +19,8 @@
  *   3. makeTexture R16G16B16A16_FLOAT HDR scene target + two half-res HDR bloom ping-pong targets
  *      (each rtv+srv); makeSampler (linear/clamp); makeConstantBuffer (16-byte aligned)
  *   4. per frame: pass 1 ray-march → HDR scene; pass 2 bright-pass → bloomA; pass 3 H-blur → bloomB;
- *      pass 4 V-blur → bloomA; pass 5 composite scene+bloom → back buffer; present(); GDI HUD on top
+ *      pass 4 V-blur → bloomA; pass 5 composite scene+bloom → back buffer; GDI HUD composited into the
+ *      back buffer (flicker-free via ./_hud) before present()
  *   5. comRelease every COM object, free the GDI font, win.destroy() on exit (ESC or DEMO_DURATION_MS)
  *
  * @bun-win32 / engine APIs used: gpu.createWindow / createDevice / compile / makeVertexShader /
@@ -30,8 +31,9 @@
  * Run: bun run packages/all/example/blackhole.ts
  */
 
-import { GDI32, User32 } from '../index';
+import { GDI32 } from '../index';
 import * as gpu from './_gpu';
+import * as hud from './_hud';
 
 const WIDTH = 1280;
 const HEIGHT = 720;
@@ -368,22 +370,21 @@ function packCB(buf: Buffer, resX: number, resY: number, time: number, a: number
   buf.writeFloatLE(0, 28);
 }
 
-// ── GDI HUD (the engine doesn't draw text; use User32 GetDC + GDI32 TextOutW) ──
+// ── GDI HUD (the engine doesn't draw text; composite GDI into the back buffer via _hud) ──
 const hudFont = GDI32.CreateFontW(-18, 0, 0, 0, 600, 0, 0, 0, 0, 0, 0, 4 /* ANTIALIASED_QUALITY */, 0, Buffer.from('Consolas\0', 'utf16le').ptr!);
 function drawHud(currentFps: number): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (dc === 0n) return;
-  const prevFont = GDI32.SelectObject(dc, hudFont);
-  GDI32.SetBkMode(dc, TRANSPARENT_BK);
-  const line = `Schwarzschild black hole · gravitational lensing · ${currentFps} fps`;
-  const text = Buffer.from(`${line}\0`, 'utf16le');
-  const len = line.length;
-  GDI32.SetTextColor(dc, 0x000000);
-  GDI32.TextOutW(dc, 19, 19, text.ptr!, len);
-  GDI32.SetTextColor(dc, 0x00f0d8b0); // BGR warm white
-  GDI32.TextOutW(dc, 18, 18, text.ptr!, len);
-  GDI32.SelectObject(dc, prevFont);
-  User32.ReleaseDC(win.hwnd, dc);
+  hud.draw(dev, clientW, clientH, (dc) => {
+    const prevFont = GDI32.SelectObject(dc, hudFont);
+    GDI32.SetBkMode(dc, TRANSPARENT_BK);
+    const line = `Schwarzschild black hole · gravitational lensing · ${currentFps} fps`;
+    const text = Buffer.from(`${line}\0`, 'utf16le');
+    const len = line.length;
+    GDI32.SetTextColor(dc, 0x000000);
+    GDI32.TextOutW(dc, 19, 19, text.ptr!, len);
+    GDI32.SetTextColor(dc, 0x00f0d8b0); // BGR warm white
+    GDI32.TextOutW(dc, 18, 18, text.ptr!, len);
+    GDI32.SelectObject(dc, prevFont);
+  });
 }
 
 console.log('Black Hole — Schwarzschild gravitational lensing ray-traced on the GPU.');
@@ -395,6 +396,7 @@ let cleanedUp = false;
 function cleanup(): void {
   if (cleanedUp) return;
   cleanedUp = true;
+  hud.release();
   GDI32.DeleteObject(hudFont);
   gpu.comRelease(samp);
   gpu.comRelease(cbScene);
@@ -506,8 +508,8 @@ while (!win.shouldClose()) {
   gpu.drawFullscreenTriangle();
   gpu.setRenderTargets([]);
 
-  dev.present(false);
   drawHud(fps);
+  dev.present(false);
 
   frames += 1;
   totalFrames += 1;

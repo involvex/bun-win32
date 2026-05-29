@@ -63,7 +63,7 @@ import { FFIType } from 'bun:ffi';
 import { resolve } from 'node:path';
 import { mkdirSync } from 'node:fs';
 
-import { GDI32, User32 } from '../index';
+import { GDI32 } from '../index';
 import {
   CTX_CS_SET_SHADER_RESOURCES,
   CTX_CS_SET_UNORDERED_ACCESS_VIEWS,
@@ -94,6 +94,7 @@ import {
   vsSet,
 } from './_gpu';
 import { captureBackBuffer, formatGrid } from './_snapshot';
+import * as hud from './_hud';
 
 const encodeWide = (str: string): Buffer => Buffer.from(`${str}\0`, 'utf16le');
 
@@ -943,32 +944,31 @@ function drawShadowed(dc: bigint, x: number, y: number, str: string, fill: numbe
 }
 
 function drawHud(stepCount: number, lossVal: number, fps: number): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (!dc) return;
-  GDI32.SetBkMode(dc, TRANSPARENT_BK);
+  hud.draw(gpu, clientW, clientH, (dc) => {
+    GDI32.SetBkMode(dc, TRANSPARENT_BK);
 
-  // ── top-left: title + live metrics ──
-  const prevFont = GDI32.SelectObject(dc, hudFont);
-  drawShadowed(dc, 18, 16, `Neural Descent  ·  MLP ${INPUT}-${H1}-${H2}-3  ·  Fourier+Adam on GPU  ·  ${fps} fps  ·  ESC`, 0x00f5e8c8);
-  drawShadowed(dc, 18, 42, `step ${stepCount}    MSE ${lossVal.toExponential(3)}`, 0x00b9f5c8);
+    // ── top-left: title + live metrics ──
+    const prevFont = GDI32.SelectObject(dc, hudFont);
+    drawShadowed(dc, 18, 16, `Neural Descent  ·  MLP ${INPUT}-${H1}-${H2}-3  ·  Fourier+Adam on GPU  ·  ${fps} fps  ·  ESC`, 0x00f5e8c8);
+    drawShadowed(dc, 18, 42, `step ${stepCount}    MSE ${lossVal.toExponential(3)}`, 0x00b9f5c8);
 
-  // ── falling-loss sparkline (newest at the right) ──
-  if (lossHist.length > 0) {
-    const lo = Math.min(...lossHist);
-    const hi = Math.max(...lossHist);
-    const span = Math.max(1e-6, hi - lo);
-    let spark = '';
-    for (const v of lossHist) {
-      const n = (v - lo) / span; // 0 (best) .. 1 (worst)
-      spark += SPARK[Math.min(SPARK.length - 1, Math.floor(n * SPARK.length))];
+    // ── falling-loss sparkline (newest at the right) ──
+    if (lossHist.length > 0) {
+      const lo = Math.min(...lossHist);
+      const hi = Math.max(...lossHist);
+      const span = Math.max(1e-6, hi - lo);
+      let spark = '';
+      for (const v of lossHist) {
+        const n = (v - lo) / span; // 0 (best) .. 1 (worst)
+        spark += SPARK[Math.min(SPARK.length - 1, Math.floor(n * SPARK.length))];
+      }
+      drawShadowed(dc, 18, 68, `loss |${spark}|  ${hi.toExponential(1)} -> ${lo.toExponential(1)}`, 0x0080e0ff);
     }
-    drawShadowed(dc, 18, 68, `loss |${spark}|  ${hi.toExponential(1)} -> ${lo.toExponential(1)}`, 0x0080e0ff);
-  }
 
-  // (TARGET / NEURAL NET half-labels are rendered into the frame itself by the
-  // composite shader so they survive the back-buffer capture; no GDI duplicate.)
-  GDI32.SelectObject(dc, prevFont);
-  User32.ReleaseDC(win.hwnd, dc);
+    // (TARGET / NEURAL NET half-labels are rendered into the frame itself by the
+    // composite shader so they survive the back-buffer capture; no GDI duplicate.)
+    GDI32.SelectObject(dc, prevFont);
+  });
 }
 
 // ── Teardown ──────────────────────────────────────────────────────────────────
@@ -976,6 +976,7 @@ let cleaned = false;
 function cleanup(code: number): never {
   if (!cleaned) {
     cleaned = true;
+    hud.release();
     GDI32.DeleteObject(hudFont);
     for (const sb of [
       w1, b1, w2, b2, w3, b3, gw1, gb1, gw2, gb2, gw3, gb3,
@@ -1218,8 +1219,14 @@ while (!win.shouldClose()) {
   vcall(gpu.context, 8 /* PSSetShaderResources */, [FFIType.u32, FFIType.u32, FFIType.ptr], [0, 2, nullArr8.ptr!], FFIType.void);
   setRenderTargets([]);
 
-  // Gallery capture on the final frame (capture mode only).
+  // HUD composited into the back buffer BEFORE present so it never flickers (and
+  // so it survives the back-buffer gallery capture below alongside the in-frame
+  // baked loss panel rendered by the composite shader).
   const willBreak = durationMs > 0 && now - start >= durationMs;
+  drawHud(totalSteps, lastLoss, fps);
+
+  // Gallery capture on the final frame (capture mode only) — after the HUD is
+  // composited into the back buffer, before present.
   if (willBreak) {
     const shotDir = resolve(import.meta.dir, '..', 'screenshots');
     mkdirSync(shotDir, { recursive: true });
@@ -1230,7 +1237,6 @@ while (!win.shouldClose()) {
   }
 
   gpu.present(false);
-  drawHud(totalSteps, lastLoss, fps);
 
   frame += 1;
   fpsFrames += 1;

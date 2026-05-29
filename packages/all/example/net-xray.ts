@@ -44,6 +44,7 @@ import { FFIType, read, type Pointer } from 'bun:ffi';
 
 import { GDI32, Iphlpapi, Kernel32, User32 } from '../index';
 import * as gpu from './_gpu';
+import * as hud from './_hud';
 
 const encodeWide = (str: string): Buffer => Buffer.from(`${str}\0`, 'utf16le');
 
@@ -507,42 +508,40 @@ const hudFont = GDI32.CreateFontW(-20, 0, 0, 0, 600, 0, 0, 0, 0, 0, 0, 4, 0, enc
 const smallFont = GDI32.CreateFontW(-15, 0, 0, 0, 400, 0, 0, 0, 0, 0, 0, 4, 0, encodeWide('Consolas').ptr!);
 
 function drawHud(fps: number): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (!dc) return;
-  GDI32.SetBkMode(dc, 1 /* TRANSPARENT */);
+  hud.draw(dev, clientW, clientH, (dc) => {
+    GDI32.SetBkMode(dc, 1 /* TRANSPARENT */);
 
-  GDI32.SelectObject(dc, hudFont);
-  const title = `NET X-RAY · ${edges.size} edges · ${nodes.size} nodes · ${lastTcpRows} TCP / ${lastUdpRows} UDP · ${fps} fps · ESC`;
-  const tw = encodeWide(title);
-  GDI32.SetTextColor(dc, 0x00102018);
-  GDI32.TextOutW(dc, 23, 21, tw.ptr!, title.length);
-  GDI32.SetTextColor(dc, 0x0055ddff); // BGR warm gold
-  GDI32.TextOutW(dc, 22, 20, tw.ptr!, title.length);
+    GDI32.SelectObject(dc, hudFont);
+    const title = `NET X-RAY · ${edges.size} edges · ${nodes.size} nodes · ${lastTcpRows} TCP / ${lastUdpRows} UDP · ${fps} fps · ESC`;
+    const tw = encodeWide(title);
+    GDI32.SetTextColor(dc, 0x00102018);
+    GDI32.TextOutW(dc, 23, 21, tw.ptr!, title.length);
+    GDI32.SetTextColor(dc, 0x0055ddff); // BGR warm gold
+    GDI32.TextOutW(dc, 22, 20, tw.ptr!, title.length);
 
-  // Top talkers: hubs by degree.
-  GDI32.SelectObject(dc, smallFont);
-  const hubs = [...nodes.values()].filter((n) => n.kind === 0).sort((a, b) => b.degree - a.degree).slice(0, 10);
-  let y = 56;
-  GDI32.SetTextColor(dc, 0x00aad8ff);
-  const head = 'TOP TALKERS  (process · connections)';
-  const hw = encodeWide(head);
-  GDI32.TextOutW(dc, 22, y, hw.ptr!, head.length);
-  y += 22;
-  for (const h of hubs) {
-    const line = `${h.label.slice(0, 28).padEnd(29)} ${Math.round(h.degree)}`;
-    const lw = encodeWide(line);
-    GDI32.SetTextColor(dc, 0x0040c8ff);
-    GDI32.TextOutW(dc, 22, y, lw.ptr!, line.length);
-    y += 18;
-  }
+    // Top talkers: hubs by degree.
+    GDI32.SelectObject(dc, smallFont);
+    const hubs = [...nodes.values()].filter((n) => n.kind === 0).sort((a, b) => b.degree - a.degree).slice(0, 10);
+    let y = 56;
+    GDI32.SetTextColor(dc, 0x00aad8ff);
+    const head = 'TOP TALKERS  (process · connections)';
+    const hw = encodeWide(head);
+    GDI32.TextOutW(dc, 22, y, hw.ptr!, head.length);
+    y += 22;
+    for (const h of hubs) {
+      const line = `${h.label.slice(0, 28).padEnd(29)} ${Math.round(h.degree)}`;
+      const lw = encodeWide(line);
+      GDI32.SetTextColor(dc, 0x0040c8ff);
+      GDI32.TextOutW(dc, 22, y, lw.ptr!, line.length);
+      y += 18;
+    }
 
-  // Legend bottom-left.
-  const leg = 'gold = local process   azure = remote endpoint   white flare = NEW connection';
-  const lw = encodeWide(leg);
-  GDI32.SetTextColor(dc, 0x0088bbcc);
-  GDI32.TextOutW(dc, 22, clientH - 30, lw.ptr!, leg.length);
-
-  User32.ReleaseDC(win.hwnd, dc);
+    // Legend bottom-left.
+    const leg = 'gold = local process   azure = remote endpoint   white flare = NEW connection';
+    const lw = encodeWide(leg);
+    GDI32.SetTextColor(dc, 0x0088bbcc);
+    GDI32.TextOutW(dc, 22, clientH - 30, lw.ptr!, leg.length);
+  });
 }
 
 // ── Optional: a few harmless outbound connects so the constellation has live edges ──
@@ -566,6 +565,7 @@ function cleanup(code: number): never {
     cleaned = true;
     try {
       gpu.setBlendState(0n);
+      hud.release();
       GDI32.DeleteObject(hudFont);
       GDI32.DeleteObject(smallFont);
       gpu.comRelease(additiveBlend);
@@ -854,8 +854,8 @@ while (!win.shouldClose()) {
     break;
   }
 
-  dev.present(false);
   drawHud(fps);
+  dev.present(false);
 
   frame += 1;
   fpsFrames += 1;

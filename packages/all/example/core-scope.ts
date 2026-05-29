@@ -44,6 +44,7 @@ import { GDI32, Kernel32, Ntdll, User32 } from '../index';
 import { SystemInformationClass, STATUS_SUCCESS } from '@bun-win32/ntdll';
 import { SystemMetric } from '@bun-win32/user32';
 import * as gpu from './_gpu';
+import * as hud from './_hud';
 import { captureBackBuffer, formatGrid } from './_snapshot';
 
 // ── Layout / tuning ───────────────────────────────────────────────────────────
@@ -471,59 +472,58 @@ function block(dc: bigint, x: number, y: number, w: number, h: number, brush: bi
 }
 
 function drawHud(fps: number): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (!dc) return;
-  GDI32.SetBkMode(dc, TRANSPARENT_BK);
-  // Borderless fills: select the stock NULL_PEN so RoundRect has no outline.
-  const nullPen = GDI32.GetStockObject(NULL_PEN);
-  const prevPen = nullPen ? GDI32.SelectObject(dc, nullPen) : 0n;
+  hud.draw(g, BBW, BBH, (dc) => {
+    GDI32.SetBkMode(dc, TRANSPARENT_BK);
+    // Borderless fills: select the stock NULL_PEN so RoundRect has no outline.
+    const nullPen = GDI32.GetStockObject(NULL_PEN);
+    const prevPen = nullPen ? GDI32.SelectObject(dc, nullPen) : 0n;
 
-  const prevFont = GDI32.SelectObject(dc, titleFont);
-  out(dc, 22, 8, 'core-scope', 0x00ffffff);
-  GDI32.SelectObject(dc, hudFont);
-  out(
-    dc,
-    190,
-    14,
-    `live per-core scheduler X-ray · ${cores} logical cores · avg ${(avgBusy() * 100).toFixed(0)}% · ${fps} fps · ${g.gpuName} · NtQuerySystemInformation · ESC`,
-    0x00bfe0ff,
-  );
+    const prevFont = GDI32.SelectObject(dc, titleFont);
+    out(dc, 22, 8, 'core-scope', 0x00ffffff);
+    GDI32.SelectObject(dc, hudFont);
+    out(
+      dc,
+      190,
+      14,
+      `live per-core scheduler X-ray · ${cores} logical cores · avg ${(avgBusy() * 100).toFixed(0)}% · ${fps} fps · ${g.gpuName} · NtQuerySystemInformation · ESC`,
+      0x00bfe0ff,
+    );
 
-  // ── Top-process panel (large labeled blocks) ─────────────────────────────────
-  const panelW = 420;
-  const px = BBW - panelW - 24;
-  let py = Math.floor(BBH * 0.10);
-  out(dc, px, py, 'TOP CPU CONSUMERS  (Δ user+kernel)', 0x0080ffff);
-  py += 30;
-  const rowH = 40;
-  const maxPct = Math.max(1, topProcs.length > 0 ? topProcs[0]!.pct : 1);
-  for (let i = 0; i < topProcs.length; i += 1) {
-    const p = topProcs[i]!;
-    const y = py + i * rowH;
-    // panel backing
-    block(dc, px, y, panelW, rowH - 6, panelBrush);
-    // proportional load bar inside the block
-    const frac = Math.min(1, p.pct / maxPct);
-    const barW = Math.max(2, Math.floor((panelW - 8) * frac));
-    const hot = p.pct / Math.max(1, avgBusy() * 100 * cores);
-    block(dc, px + 4, y + 4, barW, rowH - 14, hot > 0.5 ? barHotBrush : barBrush);
-    const nm = p.name.length > 24 ? p.name.slice(0, 23) + '…' : p.name;
-    out(dc, px + 12, y + 7, nm, 0x00ffffff);
-    out(dc, px + panelW - 78, y + 7, `${p.pct.toFixed(1).padStart(5)}%`, 0x00d8ffff);
-  }
+    // ── Top-process panel (large labeled blocks) ─────────────────────────────────
+    const panelW = 420;
+    const px = BBW - panelW - 24;
+    let py = Math.floor(BBH * 0.10);
+    out(dc, px, py, 'TOP CPU CONSUMERS  (Δ user+kernel)', 0x0080ffff);
+    py += 30;
+    const rowH = 40;
+    const maxPct = Math.max(1, topProcs.length > 0 ? topProcs[0]!.pct : 1);
+    for (let i = 0; i < topProcs.length; i += 1) {
+      const p = topProcs[i]!;
+      const y = py + i * rowH;
+      // panel backing
+      block(dc, px, y, panelW, rowH - 6, panelBrush);
+      // proportional load bar inside the block
+      const frac = Math.min(1, p.pct / maxPct);
+      const barW = Math.max(2, Math.floor((panelW - 8) * frac));
+      const hot = p.pct / Math.max(1, avgBusy() * 100 * cores);
+      block(dc, px + 4, y + 4, barW, rowH - 14, hot > 0.5 ? barHotBrush : barBrush);
+      const nm = p.name.length > 24 ? p.name.slice(0, 23) + '…' : p.name;
+      out(dc, px + 12, y + 7, nm, 0x00ffffff);
+      out(dc, px + panelW - 78, y + 7, `${p.pct.toFixed(1).padStart(5)}%`, 0x00d8ffff);
+    }
 
-  // ── Legend (bottom-left, over the bar strip) ─────────────────────────────────
-  GDI32.SelectObject(dc, smallFont);
-  const ly = BBH - 26;
-  out(dc, 24, ly, 'idle', 0x00ffb060);
-  out(dc, 90, ly, 'low', 0x00b0ff80);
-  out(dc, 150, ly, 'user', 0x0030ffff);
-  out(dc, 220, ly, 'kernel/interrupt', 0x00ff60ff);
-  out(dc, 430, ly, '◀ per-core instantaneous load', 0x00c0d8ff);
+    // ── Legend (bottom-left, over the bar strip) ─────────────────────────────────
+    GDI32.SelectObject(dc, smallFont);
+    const ly = BBH - 26;
+    out(dc, 24, ly, 'idle', 0x00ffb060);
+    out(dc, 90, ly, 'low', 0x00b0ff80);
+    out(dc, 150, ly, 'user', 0x0030ffff);
+    out(dc, 220, ly, 'kernel/interrupt', 0x00ff60ff);
+    out(dc, 430, ly, '◀ per-core instantaneous load', 0x00c0d8ff);
 
-  GDI32.SelectObject(dc, prevFont);
-  if (nullPen) GDI32.SelectObject(dc, prevPen);
-  User32.ReleaseDC(win.hwnd, dc);
+    GDI32.SelectObject(dc, prevFont);
+    if (nullPen) GDI32.SelectObject(dc, prevPen);
+  });
 }
 
 // ── Self-verify: read own back buffer → staging → pixel stats ──────────────────
@@ -708,9 +708,12 @@ while (!win.shouldClose()) {
   // Unbind the SRV so the next UpdateSubresource into the waterfall is legal.
   gpu.psSet(ps, { srv: [0n] });
 
-  // Capture the GPU-rendered frame BEFORE present() (DISCARD makes the back
-  // buffer undefined afterwards). HUD text is drawn after present() and won't
-  // appear here — that's expected; the waterfall must carry the frame.
+  // Composite the GDI HUD INTO the back buffer (before present) so the text is
+  // part of the presented frame and never strobes — and shows up in captures.
+  drawHud(fps);
+
+  // Capture the GPU-rendered frame (with the composited HUD) BEFORE present()
+  // (DISCARD makes the back buffer undefined afterwards).
   const lastFrame = durationMs > 0 && now - start >= durationMs;
   if (selfShot && lastFrame) {
     const shotDir = resolve(import.meta.dir, '..', 'screenshots');
@@ -722,8 +725,6 @@ while (!win.shouldClose()) {
 
   g.present(false);
   frames += 1;
-
-  drawHud(fps);
 
   fpsFrames += 1;
   if (now - fpsTimer >= 1000) {
@@ -749,6 +750,7 @@ GDI32.DeleteObject(smallFont);
 GDI32.DeleteObject(panelBrush);
 GDI32.DeleteObject(barBrush);
 GDI32.DeleteObject(barHotBrush);
+hud.release();
 gpu.comRelease(sampler);
 gpu.comRelease(cb);
 gpu.comRelease(ps);

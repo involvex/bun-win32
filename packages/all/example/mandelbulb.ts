@@ -25,9 +25,10 @@
  * Run: bun run packages/all/example/mandelbulb.ts
  */
 
-import { GDI32, User32 } from '../index';
+import { GDI32 } from '../index';
 
 import * as gpu from './_gpu';
+import * as hud from './_hud';
 
 const WIDTH = 1280;
 const HEIGHT = 720;
@@ -334,19 +335,18 @@ function main(): void {
   let lastNow = startTime;
 
   function drawHud(): void {
-    const dc = User32.GetDC(win.hwnd);
-    if (!dc) return;
-    const prevFont = GDI32.SelectObject(dc, hudFont);
-    GDI32.SetBkMode(dc, TRANSPARENT_BK);
-    const line = `Mandelbulb · ray-marched · ${fps} fps · drag to orbit`;
-    const text = Buffer.from(`${line}\0`, 'utf16le');
-    const len = line.length;
-    GDI32.SetTextColor(dc, 0x000000);
-    GDI32.TextOutW(dc, 19, 19, text.ptr!, len);
-    GDI32.SetTextColor(dc, 0x00f0d0a0); // BGR: warm gold-white
-    GDI32.TextOutW(dc, 18, 18, text.ptr!, len);
-    GDI32.SelectObject(dc, prevFont);
-    User32.ReleaseDC(win.hwnd, dc);
+    hud.draw(g, cw, ch, (dc) => {
+      const prevFont = GDI32.SelectObject(dc, hudFont);
+      GDI32.SetBkMode(dc, TRANSPARENT_BK);
+      const line = `Mandelbulb · ray-marched · ${fps} fps · drag to orbit`;
+      const text = Buffer.from(`${line}\0`, 'utf16le');
+      const len = line.length;
+      GDI32.SetTextColor(dc, 0x000000);
+      GDI32.TextOutW(dc, 19, 19, text.ptr!, len);
+      GDI32.SetTextColor(dc, 0x00f0d0a0); // BGR: warm gold-white
+      GDI32.TextOutW(dc, 18, 18, text.ptr!, len);
+      GDI32.SelectObject(dc, prevFont);
+    });
   }
 
   while (!win.shouldClose()) {
@@ -431,8 +431,8 @@ function main(): void {
     gpu.psSet(psPost, { cb: [cbPost], srv: [hdr.srv!], samp: [samp] });
     gpu.drawFullscreenTriangle();
 
-    g.present(false);
     drawHud();
+    g.present(false);
 
     frames += 1;
     if (now - fpsWindowStart >= 500) {
@@ -445,6 +445,7 @@ function main(): void {
   }
 
   // ── Teardown ────────────────────────────────────────────────────────────────
+  hud.release();
   GDI32.DeleteObject(hudFont);
   comReleaseSafe(samp);
   comReleaseSafe(cbPost);

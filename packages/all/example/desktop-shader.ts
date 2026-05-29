@@ -35,6 +35,7 @@ import { CFunction, FFIType, read, type Pointer } from 'bun:ffi';
 import { GDI32, User32 } from '../index';
 import { SystemMetric } from '@bun-win32/user32';
 import * as gpu from './_gpu';
+import * as hud from './_hud';
 
 // ── HRESULTs ──────────────────────────────────────────────────────────────────
 const S_OK = 0;
@@ -466,19 +467,18 @@ const hudFont = GDI32.CreateFontW(-20, 0, 0, 0, 600, 0, 0, 0, 0, 0, 0, 4 /* ANTI
 const TRANSPARENT_BK = 1;
 
 function drawHud(effect: number, fps: number): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (!dc) return;
-  const prevFont = GDI32.SelectObject(dc, hudFont);
-  GDI32.SetBkMode(dc, TRANSPARENT_BK);
-  const line = `Live desktop · ${EFFECT_NAMES[effect]} · ${fps} fps · ${g.gpuName} · SPACE / 1-5 to cycle · ESC to quit`;
-  const text = encodeWide(line);
-  const len = line.length;
-  GDI32.SetTextColor(dc, 0x00000000);
-  GDI32.TextOutW(dc, 19, 19, text.ptr!, len);
-  GDI32.SetTextColor(dc, 0x00f5e6c8); // BGR: warm white-cyan
-  GDI32.TextOutW(dc, 18, 18, text.ptr!, len);
-  GDI32.SelectObject(dc, prevFont);
-  User32.ReleaseDC(win.hwnd, dc);
+  hud.draw(g, BBW, BBH, (dc) => {
+    const prevFont = GDI32.SelectObject(dc, hudFont);
+    GDI32.SetBkMode(dc, TRANSPARENT_BK);
+    const line = `Live desktop · ${EFFECT_NAMES[effect]} · ${fps} fps · ${g.gpuName} · SPACE / 1-5 to cycle · ESC to quit`;
+    const text = encodeWide(line);
+    const len = line.length;
+    GDI32.SetTextColor(dc, 0x00000000);
+    GDI32.TextOutW(dc, 19, 19, text.ptr!, len);
+    GDI32.SetTextColor(dc, 0x00f5e6c8); // BGR: warm white-cyan
+    GDI32.TextOutW(dc, 18, 18, text.ptr!, len);
+    GDI32.SelectObject(dc, prevFont);
+  });
 }
 
 // ── Main loop ───────────────────────────────────────────────────────────────────
@@ -549,11 +549,12 @@ while (!win.shouldClose()) {
     // Unbind the SRV so next capture's CopyResource into the same texture is legal.
     gpu.psSet(pixelShaders[effect]!, { srv: [0n] });
 
+    // Composite the HUD INTO the back buffer (before present) so it never strobes.
+    drawHud(effect, fps);
+
     g.present(false);
     frames += 1;
   }
-
-  drawHud(effect, fps);
 
   // FPS accounting (once per second).
   fpsFrames += 1;
@@ -570,6 +571,7 @@ while (!win.shouldClose()) {
 const elapsed = (performance.now() - start) / 1000;
 console.log(`desktop-shader: presented ${frames} frames (${captured} live desktop captures) over ${elapsed.toFixed(2)}s on ${g.driver} (${g.gpuName}).`);
 
+hud.release();
 GDI32.DeleteObject(hudFont);
 gpu.comRelease(sampler);
 gpu.comRelease(cb);

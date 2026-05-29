@@ -34,6 +34,7 @@
 
 import { GDI32, User32 } from '../index';
 import * as gpu from './_gpu';
+import * as hud from './_hud';
 
 const WIDTH = 1280;
 const HEIGHT = 720;
@@ -280,6 +281,7 @@ let cleanedUp = false;
 function cleanup(code: number): never {
   if (!cleanedUp) {
     cleanedUp = true;
+    hud.release();
     GDI32.DeleteObject(hudFont);
     gpu.comRelease(ps);
     gpu.comRelease(vs);
@@ -305,19 +307,18 @@ process.on('exit', () => {
 });
 
 function drawHud(fps: number): void {
-  const dc = User32.GetDC(win.hwnd);
-  if (!dc) return;
-  const prevFont = GDI32.SelectObject(dc, hudFont);
-  GDI32.SetBkMode(dc, TRANSPARENT_BK);
-  const line = `Volumetric clouds · ray-marched · ${fps} fps · ${g.gpuName}`;
-  const text = encode(line);
-  const len = line.length;
-  GDI32.SetTextColor(dc, 0x00203040); // BGR soft shadow
-  GDI32.TextOutW(dc, 17, 17, text.ptr!, len);
-  GDI32.SetTextColor(dc, 0x00f8f0e8); // BGR bright off-white
-  GDI32.TextOutW(dc, 16, 16, text.ptr!, len);
-  GDI32.SelectObject(dc, prevFont);
-  User32.ReleaseDC(win.hwnd, dc);
+  hud.draw(g, clientW, clientH, (dc) => {
+    const prevFont = GDI32.SelectObject(dc, hudFont);
+    GDI32.SetBkMode(dc, TRANSPARENT_BK);
+    const line = `Volumetric clouds · ray-marched · ${fps} fps · ${g.gpuName}`;
+    const text = encode(line);
+    const len = line.length;
+    GDI32.SetTextColor(dc, 0x00203040); // BGR soft shadow
+    GDI32.TextOutW(dc, 17, 17, text.ptr!, len);
+    GDI32.SetTextColor(dc, 0x00f8f0e8); // BGR bright off-white
+    GDI32.TextOutW(dc, 16, 16, text.ptr!, len);
+    GDI32.SelectObject(dc, prevFont);
+  });
 }
 
 // ── Render loop ────────────────────────────────────────────────────────────────
@@ -364,9 +365,8 @@ while (!win.shouldClose()) {
   gpu.vsSet(vs);
   gpu.psSet(ps, { cb: [cb] });
   gpu.drawFullscreenTriangle();
-  g.present(false);
-
   drawHud(fps);
+  g.present(false);
 
   frames += 1;
   if (now - fpsWindowStart >= 500) {
