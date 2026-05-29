@@ -48,10 +48,13 @@ const SELFCHECK = process.env.SELFCHECK === '1';
 const SELFSHOT = process.env.SELFSHOT === '1';
 const HD = (D / NH) | 0; // head dim
 
-// ── Window sized to fill the primary monitor (borderless) ─────────────────────
-const screenW = User32.GetSystemMetrics(SystemMetric.SM_CXSCREEN) || 1280;
-const screenH = User32.GetSystemMetrics(SystemMetric.SM_CYSCREEN) || 720;
-const win = gpu.createWindow({ title: 'nano-gpt — a transformer generating text on the GPU, in pure TypeScript', width: screenW, height: screenH, borderless: true });
+// ── A modest borderless window scaled to the monitor (not the whole desktop) ──
+const screenW = User32.GetSystemMetrics(SystemMetric.SM_CXSCREEN) || 1920;
+const screenH = User32.GetSystemMetrics(SystemMetric.SM_CYSCREEN) || 1080;
+// nano-gpt's terminal+heatmap layout reads best WIDE, so this is a wide modest window.
+const HEIGHT = Math.min(720, Math.floor(screenH * 0.5));
+const WIDTH = Math.min(Math.floor(screenW * 0.92), Math.round(HEIGHT * 2.7));
+const win = gpu.createWindow({ title: 'nano-gpt — a transformer generating text on the GPU, in pure TypeScript', width: WIDTH, height: HEIGHT, borderless: true });
 const { w: clientW, h: clientH } = win.clientSize();
 const dev = gpu.createDevice(win.hwnd, { width: clientW, height: clientH });
 
@@ -333,7 +336,7 @@ const atlasSamp = gpu.makeSampler({ filter: gpu.D3D11_FILTER_MIN_MAG_MIP_LINEAR,
 const MARGIN_X = Math.round(clientW * 0.016);
 const TITLE_H = Math.round(clientH * 0.125);                 // reserved for the GDI HUD title band
 // Right column: a big attention heatmap with the probability bars beneath it.
-const HEAT_SIZE = Math.round(clientH * 0.62);
+const HEAT_SIZE = Math.round(clientH * 0.52);
 const RIGHT_W = HEAT_SIZE;
 const HEAT_LEFT = clientW - RIGHT_W - MARGIN_X;
 const HEAT_TOP = TITLE_H + Math.round(clientH * 0.04);
@@ -352,9 +355,9 @@ const COLS = 62;
 const TEXT_BAND_W = HEAT_LEFT - Math.round(clientW * 0.022) - TEXT_LEFT;
 const CHAR_W = Math.max(18, Math.floor(TEXT_BAND_W / COLS));
 const CHAR_H = Math.round(CHAR_W * 1.65);
-const ROWS = Math.max(4, Math.floor(TEXT_H / CHAR_H));
+const ROWS = Math.min(12, Math.max(4, Math.floor(TEXT_H / CHAR_H)));
 
-const TOPK_BARS = 12;                                        // candidate prob bars
+const TOPK_BARS = 8;                                         // candidate prob bars (fewer = taller, readable rows)
 
 // glyphGrid: COLS*ROWS uint glyph-ids (0xffffffff = empty); dynamic each frame.
 const glyphGrid = gpu.makeStructuredBuffer({ stride: 4, count: COLS * ROWS, srv: true, cpuWritable: true });
@@ -500,33 +503,33 @@ float4 main(float4 fp : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
     }
   }
 
-  // ── Per-token probability bars (under the heatmap) ──
+  // ── Per-token probability bars (under the heatmap): SQUARE glyph + bar ──
   float bl = gBars.x, bt = gBars.y, bw = gBars.z, bh = gBars.w; uint topk = (uint)gAtlas.w;
   if (bh > 1.0 && px.x >= bl && px.x < bl+bw && px.y >= bt && px.y < bt+bh) {
     float rowh = bh / float(topk);
-    int bi = (int)((px.y - bt) / rowh);
-    bi = clamp(bi, 0, (int)topk-1);
+    int bi = clamp((int)((px.y - bt) / rowh), 0, (int)topk-1);
     float p = Probs[bi*2];
+    float inrow = frac((px.y - bt) / rowh);
     float fillx = (px.x - bl) / bw;
-    float2 lp = float2((px.x-bl)/(bw*0.16), frac((px.y-bt)/rowh)); // glyph label cell (left)
-    float inrow = frac((px.y - bt)/rowh);
-    if (inrow > 0.12 && inrow < 0.88) {
-      if (fillx < 0.14) {
-        // draw the candidate glyph as a phosphor label
+    // Glyph cell is SQUARE: its width (in fillx units) equals the row HEIGHT, so the
+    // candidate token is never stretched regardless of how wide the bar band is.
+    float glyphFrac = clamp(rowh / bw, 0.04, 0.30);
+    if (inrow > 0.10 && inrow < 0.90) {
+      if (fillx < glyphFrac) {
         uint gid = (uint)(Probs[bi*2+1] + 0.5);
         float ac = gAtlas.x, ar = gAtlas.y;
         float gx = (float)(gid % (uint)ac), gy = (float)(gid / (uint)ac);
-        float2 lg = saturate(float2((fillx/0.14 - 0.1)/0.8, (inrow-0.12)/0.76));
-        float2 auv = (float2(gx,gy)+lg)/float2(ac,ar);
+        float2 lg = saturate(float2(fillx / glyphFrac, (inrow - 0.10) / 0.80));
+        float2 auv = (float2(gx,gy) + lg) / float2(ac,ar);
         float cv = Atlas.SampleLevel(Smp, auv, 0).r;
         col = lerp(col, float3(0.8,1.0,0.85), saturate(cv));
       } else {
-        float t = (fillx - 0.16) / 0.84;
-        if (t <= max(p, 0.012)) {
+        float t = (fillx - glyphFrac - 0.02) / max(1.0 - glyphFrac - 0.02, 0.01);
+        if (t >= 0.0 && t <= max(p, 0.012)) {
           float3 bc = heat(0.28 + 0.66*saturate(p*1.3));
           col = lerp(col, bc*1.7, 0.94);
           col += bc * 0.4 * saturate(1.0 - (t/max(p,0.02))); // leading glow
-        } else {
+        } else if (t >= 0.0) {
           col = lerp(col, float3(0.06,0.10,0.16), 0.6); // empty track
         }
       }
@@ -777,7 +780,7 @@ function drawHud(fps: number, tokRate: number): void {
     GDI32.SetTextColor(dc, 0x00c8d8e8);
     GDI32.TextOutW(dc, HEAT_LEFT, HEAT_TOP - Math.round(clientH * 0.038), hw.ptr!, heatLbl.length);
     if (BARS_H > 1) {
-      const barLbl = 'next-token probability (top-12)';
+      const barLbl = `next-token probability (top-${TOPK_BARS})`;
       const bw = encodeWide(barLbl);
       GDI32.TextOutW(dc, BARS_LEFT, BARS_TOP - Math.round(clientH * 0.036), bw.ptr!, barLbl.length);
     }

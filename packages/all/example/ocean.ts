@@ -47,13 +47,15 @@ import { captureBackBuffer, formatGrid } from './_snapshot';
 const encodeWide = (str: string): Buffer => Buffer.from(`${str}\0`, 'utf16le');
 const TRANSPARENT_BK = 1;
 
-// ── Window FILLS the primary monitor (borderless) so the showcase capture is us ──
+// ── A modest borderless window scaled to the monitor (not the whole desktop) ──
 const SM_CXSCREEN = 0;
 const SM_CYSCREEN = 1;
 const screenW = User32.GetSystemMetrics(SM_CXSCREEN) || 1920;
 const screenH = User32.GetSystemMetrics(SM_CYSCREEN) || 1080;
+const HEIGHT = Math.min(1200, Math.floor(screenH * 0.86));
+const WIDTH = Math.min(Math.floor(screenW * 0.9), Math.round(HEIGHT * 1.6));
 
-const win = gpu.createWindow({ title: 'Ocean — Gerstner-wave 3D sea in pure TypeScript', width: screenW, height: screenH, borderless: true });
+const win = gpu.createWindow({ title: 'Ocean — Gerstner-wave 3D sea in pure TypeScript', width: WIDTH, height: HEIGHT, borderless: true });
 const { w: clientW, h: clientH } = win.clientSize();
 const g = gpu.createDevice(win.hwnd, { width: clientW, height: clientH });
 gpu3d.bindGpu3d(g);
