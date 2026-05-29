@@ -1,36 +1,49 @@
 /**
- * Voxelscape — an interactive RAYTRACED voxel world you fly through, rendered
- * entirely by Amanatides-Woo DDA ray traversal in a single fullscreen pixel
- * shader on your real GPU, in pure TypeScript. No triangles, no depth buffer,
- * no rasterized geometry — every pixel marches a ray cell-by-cell through a
- * 128x48x128 voxel grid that lives in a StructuredBuffer<uint> on the GPU.
+ * Voxelscape — a fully playable RAYTRACED voxel PHYSICS SANDBOX, rendered entirely
+ * by Amanatides-Woo DDA ray traversal in a single fullscreen pixel shader on your
+ * real GPU, in pure TypeScript. No triangles, no depth buffer, no rasterized
+ * geometry — every pixel marches a ray cell-by-cell through a 128x48x128 voxel grid
+ * in a StructuredBuffer<uint>. Terrain, creatures, projectiles and flying debris are
+ * ALL voxels in one grid, so everything shares the same lighting/shadows for free.
  *
- * The world is procedurally generated on the CPU at startup from a layered
- * value-noise heightmap: a stone base, dirt, a grass surface, sand shores, a
- * sea level filled with water, and scattered trees (trunk + leaf canopy). Each
- * voxel stores a block type; air is 0. The pixel shader casts a primary DDA ray
- * per pixel, derives the hit FACE NORMAL from the last axis it crossed, lights
- * it with a sun (Lambert + sky ambient), fires a short secondary DDA shadow ray
- * to the sun for soft contact shadows, samples neighbor occupancy for cheap
- * ambient occlusion, and fades everything into a sky gradient with a sun disc
- * via exponential distance fog. The camera is passed as four float3 basis
- * vectors (pos / forward / right / up) in a constant buffer — no matrices, so
- * the column-major HLSL trap never applies.
+ * ── Rendering ─────────────────────────────────────────────────────────────────
+ * The pixel shader casts a primary DDA ray per pixel, derives the hit FACE NORMAL,
+ * lights it with an animated day/night sun (Lambert + hemispheric ambient), fires a
+ * jittered DDA shadow ray, and computes smooth (per-corner, bilinear) Minecraft-style
+ * ambient occlusion. Water casts a real reflection ray (mirrors terrain + sky), tints
+ * by probed depth, shows the bottom through shallows, and foams at the shore. Lava and
+ * glowstone are emissive. A depth-occluded additive GLOW-POINT layer (explosions,
+ * fireballs, fire, lava, fuses, steam) blooms into the air before an ACES tonemap, plus
+ * god-rays, screen-shake, a white explosion flash, stars + a moon at night, and a
+ * Minecraft-style selection outline on the targeted block. The camera is four float3
+ * basis vectors in a constant buffer — no matrices, so the column-major HLSL trap never
+ * applies.
  *
- * Capture mode (DEMO_DURATION_MS>0): a scripted smooth fly-through orbits and
- * bobs over the terrain looking at the horizon, and a couple of timed block
- * edits drop in. The cursor is never touched. Interactive mode (no duration):
- * WASD + space/shift to move, relative mouse-look, left-click to break a block
- * and right-click to place one (a CPU DDA from screen center picks the target),
- * with a GDI HUD showing fps + controls + GPU name.
+ * ── Physics (CPU active-set cellular sim, fixed 20 Hz) ────────────────────────
+ * Falling sand/gravel, mass-based water that floods + settles, viscous lava (lava+water
+ * → obsidian/stone + steam, ignites flammables), a fire overlay that spreads + burns
+ * out, TNT fuses with CHAIN REACTIONS, and radial explosions with falloff + per-block
+ * blast resistance (obsidian immune). Explosions fling debris, knock back + panic
+ * critters, and trigger bullet-time. A swept-AABB integrator (shared by the player and
+ * all entities) gives gravity, jumping, 1-block step-up, swimming, and lava bounce.
  *
- * @bun-win32 / engine APIs: createWindow, createDevice, compile,
- * makeVertexShader/makePixelShader, makeConstantBuffer/updateConstantBuffer,
- * makeStructuredBuffer (cpuWritable SRV, initialData seeding), updateDynamicBuffer,
- * setRenderTargets/setViewport/clear/drawFullscreenTriangle, vsSet/psSet, present,
- * comRelease — plus User32 GetDC/GetCursorPos/SetCursorPos/ShowCursor/GetAsyncKeyState
- * and GDI32 CreateFontW/TextOutW for mouse-look + HUD; captureBackBuffer for the
- * gallery screenshot.
+ * ── Play (interactive; no DEMO_DURATION_MS) ──────────────────────────────────
+ * WASD move · mouse look · Space jump/swim · Shift sprint · F fly · 1-0 hotbar
+ * (dig / stone / dirt / sand / gravel / water / lava / plank / TNT / bomb) · LMB dig ·
+ * RMB place (or light a targeted TNT) · E ignite · B carpet-bomb · M meteor · C critter ·
+ * T scrub time · R new world · ESC exit. A flicker-free GDI HUD (crosshair, colored
+ * hotbar, status, toasts) composites into the frame; procedural XAudio2 SFX add footsteps,
+ * splashes, break/place, and booms. Capture mode (DEMO_DURATION_MS>0) flies a golden-hour
+ * cinematic that detonates a finale for the gallery PNG; the cursor is never touched.
+ *
+ * Debug env: VOX_CAM="x,y,z,yaw,pitch" (static cam), VOX_TOD=0..1 (time), VOX_BOOM=1
+ * (repeating detonations), VOX_HUD=1 (force HUD in capture).
+ *
+ * @bun-win32 / engine APIs: createWindow, createDevice, compile, makeVertexShader/
+ * makePixelShader, makeConstantBuffer/updateConstantBuffer, makeStructuredBuffer
+ * (cpuWritable SRV, initialData), updateDynamicBuffer, setRenderTargets/setViewport/
+ * drawFullscreenTriangle, vsSet/psSet, present, comRelease — plus User32 input +
+ * GDI32 brush/text via the _hud compositor, _audio (XAudio2 PCM), and captureBackBuffer.
  *
  * Run: bun run packages/all/example/voxelscape.ts
  */

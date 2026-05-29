@@ -83,11 +83,11 @@ check('air is not solid', isSolid(B_AIR) === false);
       for (let y = 1; y < 8; y += 1) if (x === 0 || z === 0 || x === 4 || z === 4) s.setBlock(x, y, z, B_STONE); // walls
     }
   }
-  for (let p = 0; p < 14; p += 1) {
+  for (let p = 0; p < 22; p += 1) {
     s.setBlock(2, 7, 2, B_WATER);
     for (let k = 0; k < 6; k += 1) s.stepTick(100000);
   }
-  for (let k = 0; k < 300; k += 1) s.stepTick(100000);
+  for (let k = 0; k < 600; k += 1) s.stepTick(100000);
   check('water: reaches the basin floor', s.getBlock(2, 1, 2) === B_WATER);
   check('water: spreads to a far corner', s.getBlock(3, 1, 3) === B_WATER);
 }
