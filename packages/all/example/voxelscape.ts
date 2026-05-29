@@ -679,6 +679,11 @@ const VK_LBUTTON = 0x01;
 const VK_RBUTTON = 0x02;
 const VK_F = 0x46; // toggle fly/walk
 const VK_T = 0x54; // scrub time-of-day
+const VK_E = 0x45; // ignite (light TNT / set fire)
+const VK_B = 0x42; // carpet bomb
+const VK_M = 0x4d; // meteor
+const VK_C = 0x43; // spawn critter
+const VK_R = 0x52; // regenerate world
 
 // ── Fullscreen-triangle vertex shader (SV_VertexID, no vertex buffer) ──────────
 const VS_SOURCE = `
@@ -1654,6 +1659,33 @@ function main(): void {
   let onGround = false;
   let flying = false; // interactive starts in walk mode; F toggles free-fly
   let prevF = false;
+
+  // ── Hotbar: slot 0 digs, 1-7 place materials, 8 places TNT, 9 throws bombs ─────
+  const HOTBAR: { name: string; block: number }[] = [
+    { name: 'Dig', block: -1 },
+    { name: 'Stone', block: B_STONE },
+    { name: 'Dirt', block: B_DIRT },
+    { name: 'Sand', block: B_SAND },
+    { name: 'Gravel', block: B_GRAVEL },
+    { name: 'Water', block: B_WATER },
+    { name: 'Lava', block: B_LAVA },
+    { name: 'Plank', block: B_PLANK },
+    { name: 'TNT', block: B_TNT },
+    { name: 'Bomb', block: -2 },
+  ];
+  let selectedSlot = 0;
+  let actCooldown = 0; // throttles held break/place
+  let prevE = false;
+  let prevB = false;
+  let prevM = false;
+  let prevC = false;
+  let prevR = false;
+  let toast = '';
+  let toastUntil = 0;
+  const setToast = (msg: string, now: number): void => {
+    toast = msg;
+    toastUntil = now + 2.4;
+  };
   // Solid test for body collision: world edges + floor are walls; air/water/lava pass through.
   const solidAt = (x: number, y: number, z: number): boolean => {
     if (x < 0 || z < 0 || x >= W || z >= D) return true;
@@ -1754,17 +1786,89 @@ function main(): void {
     sim.setBlock(x, y, z, t); // routes through the sim so edits wake the physics
   }
 
-  function drawHud(): void {
+  const hudRect = Buffer.alloc(16);
+  function drawHud(nowSec: number): void {
     hud.draw(g, cw, ch, (dc) => {
-      const prevFont = GDI32.SelectObject(dc, hudFont);
       GDI32.SetBkMode(dc, TRANSPARENT_BK);
-      const line = `Voxelscape · ${fps} fps · ${g.gpuName} · WASD+mouse · LMB break / RMB place`;
-      const text = Buffer.from(`${line}\0`, 'utf16le');
-      const len = line.length;
-      GDI32.SetTextColor(dc, 0x000000);
-      GDI32.TextOutW(dc, 19, 19, text.ptr!, len);
-      GDI32.SetTextColor(dc, 0x00e8f0ff);
-      GDI32.TextOutW(dc, 18, 18, text.ptr!, len);
+      const rgb = (r: number, gg: number, b: number): number => (b << 16) | (gg << 8) | r;
+      const fillRect = (x: number, y: number, w: number, h: number, color: number): void => {
+        hudRect.writeInt32LE(x, 0);
+        hudRect.writeInt32LE(y, 4);
+        hudRect.writeInt32LE(x + w, 8);
+        hudRect.writeInt32LE(y + h, 12);
+        const br = GDI32.CreateSolidBrush(color);
+        User32.FillRect(dc, hudRect.ptr!, br);
+        GDI32.DeleteObject(br);
+      };
+      const label = (s: string, x: number, y: number, color: number): void => {
+        const buf = Buffer.from(`${s}\0`, 'utf16le');
+        GDI32.SetTextColor(dc, color);
+        GDI32.TextOutW(dc, x, y, buf.ptr!, s.length);
+      };
+      const swatch = (b: number): number => {
+        switch (b) {
+          case B_STONE:
+            return rgb(120, 122, 130);
+          case B_DIRT:
+            return rgb(120, 84, 52);
+          case B_SAND:
+            return rgb(220, 205, 150);
+          case B_GRAVEL:
+            return rgb(128, 125, 118);
+          case B_WATER:
+            return rgb(40, 110, 175);
+          case B_LAVA:
+            return rgb(235, 95, 22);
+          case B_PLANK:
+            return rgb(172, 132, 80);
+          case B_TNT:
+            return rgb(200, 40, 30);
+          case -2:
+            return rgb(70, 32, 32); // bomb
+          default:
+            return rgb(64, 64, 64); // dig
+        }
+      };
+      const prevFont = GDI32.SelectObject(dc, hudFont);
+
+      // Crosshair (white cross over a dark backing for contrast).
+      const cxp = Math.floor(cw / 2);
+      const cyp = Math.floor(ch / 2);
+      fillRect(cxp - 1, cyp - 10, 3, 21, rgb(0, 0, 0));
+      fillRect(cxp - 10, cyp - 1, 21, 3, rgb(0, 0, 0));
+      fillRect(cxp, cyp - 9, 1, 19, rgb(255, 255, 255));
+      fillRect(cxp - 9, cyp, 19, 1, rgb(255, 255, 255));
+
+      // Hotbar (10 colored slots, selected one highlighted).
+      const n = HOTBAR.length;
+      const sw = 50;
+      const sgap = 6;
+      const totalW = n * sw + (n - 1) * sgap;
+      const x0 = Math.floor((cw - totalW) / 2);
+      const y0 = ch - sw - 18;
+      for (let i = 0; i < n; i += 1) {
+        const sx = x0 + i * (sw + sgap);
+        const sel = i === selectedSlot;
+        fillRect(sx - 3, y0 - 3, sw + 6, sw + 6, sel ? rgb(255, 245, 180) : rgb(26, 26, 30));
+        fillRect(sx, y0, sw, sw, swatch(HOTBAR[i]!.block));
+        label(`${(i + 1) % 10}`, sx + 4, y0 + 2, rgb(255, 255, 255));
+      }
+      const tn = HOTBAR[selectedSlot]!.name;
+      label(tn, Math.floor(cw / 2) - tn.length * 5, y0 - 26, rgb(255, 246, 205));
+
+      // Status (top-left) + controls strip (above the hotbar).
+      const tod = Math.floor(timeOfDay * 24) % 24;
+      const status = `Voxelscape · ${fps} fps · ${g.gpuName} · ${String(tod).padStart(2, '0')}:00 · ents ${entities.list.length} · awake ${sim.active.size}`;
+      label(status, 19, 19, rgb(0, 0, 0));
+      label(status, 18, 18, rgb(232, 240, 255));
+      const help = '1-0 tool · LMB dig · RMB place · E ignite · B carpet · M meteor · C critter · F fly · T time · R world';
+      label(help, 19, y0 - 49, rgb(0, 0, 0));
+      label(help, 18, y0 - 50, rgb(208, 218, 234));
+
+      // Transient event toast.
+      if (nowSec < toastUntil && toast) {
+        label(toast, Math.floor(cw / 2) - toast.length * 6, 70, rgb(255, 228, 130));
+      }
       GDI32.SelectObject(dc, prevFont);
     });
   }
@@ -1840,18 +1944,33 @@ function main(): void {
 
   // Projectiles detonate via this callback; spawn a few critters to roam the world.
   entities.onExplode = (x, y, z, power) => detonate(x, y, z, 4.0 + 1.6 * power, power);
-  for (let i = 0; i < 12; i += 1) {
-    const cx = 4 + Math.floor(Math.random() * (W - 8));
-    const cz = 4 + Math.floor(Math.random() * (D - 8));
-    let cy = SEA_LEVEL + 1;
-    for (let y = H - 1; y >= 1; y -= 1) {
-      if (isSolid(voxelAt(cx, y, cz))) {
-        cy = y + 1;
-        break;
+  function spawnCritters(n: number): void {
+    for (let i = 0; i < n; i += 1) {
+      const cx = 4 + Math.floor(Math.random() * (W - 8));
+      const cz = 4 + Math.floor(Math.random() * (D - 8));
+      let cy = SEA_LEVEL + 1;
+      for (let y = H - 1; y >= 1; y -= 1) {
+        if (isSolid(voxelAt(cx, y, cz))) {
+          cy = y + 1;
+          break;
+        }
       }
+      entities.spawnCritter(cx + 0.5, cy + 0.1, cz + 0.5);
     }
-    entities.spawnCritter(cx + 0.5, cy + 0.1, cz + 0.5);
   }
+  /** R: fresh world (new seed) — reset blocks, fluids, physics, and entities. */
+  function regenerate(): void {
+    sim.world.set(generateWorld());
+    sim.active.clear();
+    sim.fuses.clear();
+    sim.burning.clear();
+    sim.water.fill(0);
+    for (let i = 0; i < sim.world.length; i += 1) if (sim.world[i] === B_WATER) sim.water[i] = WATER_MAX;
+    entities.list.length = 0;
+    spawnCritters(12);
+    editedThisFrame = true;
+  }
+  spawnCritters(12);
 
   // Assemble up to GLOW_MAX glow points into the cbuffer (offset 128), nearest-first
   // with transient FX prioritized. Returns the count written.
@@ -2024,26 +2143,80 @@ function main(): void {
       camY = player[1] + EYE_H;
       camZ = player[2];
 
-      // ── Block edit picking from screen center ─────────────────────────────────
+      // ── Tools: hotbar select + LMB dig / RMB place + set-pieces ────────────────
       const { fwd: cf } = basis();
+      for (let k = 0; k < 9; k += 1) if (win.keyDown(0x31 + k)) selectedSlot = k; // '1'..'9' → 0..8
+      if (win.keyDown(0x30)) selectedSlot = 9; // '0' → bomb
+      const slot = HOTBAR[selectedSlot]!;
       const leftDown = (User32.GetAsyncKeyState(VK_LBUTTON) & 0x8000) !== 0;
       const rightDown = (User32.GetAsyncKeyState(VK_RBUTTON) & 0x8000) !== 0;
-      if (leftDown && !prevLeft) {
-        const pick = pickVoxel(voxels, [camX, camY, camZ], cf, 64);
-        if (pick.hit) {
-          setBlock(pick.cell[0], pick.cell[1], pick.cell[2], B_AIR);
-          editedThisFrame = true;
+      const pick = pickVoxel(voxels, [camX, camY, camZ], cf, 90);
+      actCooldown -= dt;
+
+      // LMB: dig (held, throttled). The Bomb slot lobs a bomb on the click edge.
+      if (slot.block === -2) {
+        if (leftDown && !prevLeft) {
+          entities.spawnBomb(camX + cf[0] * 1.2, camY + cf[1] * 1.2, camZ + cf[2] * 1.2, cf[0] * 24, cf[1] * 24 + 4, cf[2] * 24, 2.6);
         }
+      } else if (leftDown && actCooldown <= 0 && pick.hit) {
+        setBlock(pick.cell[0], pick.cell[1], pick.cell[2], B_AIR);
+        editedThisFrame = true;
+        actCooldown = 0.07;
       }
-      if (rightDown && !prevRight) {
-        const pick = pickVoxel(voxels, [camX, camY, camZ], cf, 64);
-        if (pick.hit) {
-          setBlock(pick.prev[0], pick.prev[1], pick.prev[2], B_STONE);
-          editedThisFrame = true;
+
+      // RMB: place the selected material at the adjacent face (or light targeted TNT).
+      if (rightDown && actCooldown <= 0 && pick.hit && slot.block >= 0) {
+        if (slot.block === B_TNT && voxelAt(pick.cell[0], pick.cell[1], pick.cell[2]) === B_TNT) {
+          sim.light(pick.cell[0], pick.cell[1], pick.cell[2]);
+        } else {
+          setBlock(pick.prev[0], pick.prev[1], pick.prev[2], slot.block);
         }
+        editedThisFrame = true;
+        actCooldown = 0.11;
       }
       prevLeft = leftDown;
       prevRight = rightDown;
+
+      // E: ignite — light a targeted TNT, or set a flammable block alight.
+      const eDown = win.keyDown(VK_E);
+      if (eDown && !prevE && pick.hit) {
+        const tb = voxelAt(pick.cell[0], pick.cell[1], pick.cell[2]);
+        if (tb === B_TNT) sim.light(pick.cell[0], pick.cell[1], pick.cell[2]);
+        else sim.ignite(pick.cell[0], pick.cell[1], pick.cell[2]);
+        editedThisFrame = true;
+      }
+      prevE = eDown;
+
+      // B: carpet bomb — rain TNT bombs over the aim point.
+      const bDown = win.keyDown(VK_B);
+      if (bDown && !prevB && pick.hit) {
+        for (let dx = -2; dx <= 2; dx += 1) {
+          for (let dz = -2; dz <= 2; dz += 1) {
+            entities.spawnBomb(pick.cell[0] + dx * 2 + 0.5, Math.min(H - 1, pick.cell[1] + 22), pick.cell[2] + dz * 2 + 0.5, (Math.random() - 0.5) * 2, 0, (Math.random() - 0.5) * 2, 0.9 + Math.random() * 0.6);
+          }
+        }
+        setToast('carpet bomb away!', elapsed);
+      }
+      prevB = bDown;
+
+      // M: meteor — a flaming projectile streaks down onto the aim point.
+      const mDown = win.keyDown(VK_M);
+      if (mDown && !prevM && pick.hit) {
+        entities.spawnMeteor(pick.cell[0] - 34, Math.min(H - 2, pick.cell[1] + 42), pick.cell[2] - 34, pick.cell[0], pick.cell[2]);
+        setToast('incoming meteor!', elapsed);
+      }
+      prevM = mDown;
+
+      // C: spawn a critter; R: regenerate the world.
+      const cDown = win.keyDown(VK_C);
+      if (cDown && !prevC && pick.hit) entities.spawnCritter(pick.cell[0] + 0.5, pick.cell[1] + 1.1, pick.cell[2] + 0.5);
+      prevC = cDown;
+      const rDown = win.keyDown(VK_R);
+      if (rDown && !prevR) {
+        regenerate();
+        setToast('new world', elapsed);
+      }
+      prevR = rDown;
     } else if (camOverride) {
       // ── Debug/verification static camera: VOX_CAM="x,y,z,yaw,pitch" ───────────
       camX = camOverride[0]!;
@@ -2158,6 +2331,9 @@ function main(): void {
     gpu.psSet(ps, { cb: [cb], srv: [field.srv!] });
     gpu.drawFullscreenTriangle();
 
+    // HUD composites into the back buffer (interactive; VOX_HUD forces it in capture).
+    if (interactive || process.env.VOX_HUD) drawHud(elapsed);
+
     // ── Capture the gallery PNG on the final frame, before present() ────────────
     const lastFrame = durationMs > 0 && now - startTime >= durationMs;
     if (lastFrame) {
@@ -2168,7 +2344,6 @@ function main(): void {
       console.log(`[shot] ok=${stats.ok} nonBlack=${stats.nonBlackFrac.toFixed(3)} meanLuma=${stats.meanLuma.toFixed(3)} -> ${stats.path}`);
     }
 
-    if (interactive) drawHud();
     g.present(false);
 
     frames += 1;
