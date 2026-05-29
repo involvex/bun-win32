@@ -53,7 +53,9 @@ import {
   drawFullscreenTriangle,
   makeConstantBuffer,
   makePixelShader,
+  makeSampler,
   makeStructuredBuffer,
+  makeTexture,
   makeVertexShader,
   psSet,
   setRenderTargets,
@@ -63,6 +65,8 @@ import {
   updateDynamicBuffer,
   vcall,
   vsSet,
+  CTX_UPDATE_SUBRESOURCE,
+  DXGI_FORMAT_B8G8R8A8_UNORM,
 } from './_gpu';
 import { captureBackBuffer, formatGrid } from './_snapshot';
 
@@ -394,10 +398,75 @@ const wsaRc = Ws2_32.WSAStartup(0x0202, wsaData.ptr!);
 if (wsaRc !== 0) console.log(`  WSAStartup failed (error ${wsaRc}) — names will show as raw IPs.`);
 
 // ── Blip structured buffer (per-frame upload) ───────────────────────────────────
-// struct Blip { float x; float y; uint kind; float pulse; float beam; float pad0,pad1,pad2; } = 32 bytes.
+// struct Blip { float x; float y; uint kind; float pulse; float beam; float callout; float pad1,pad2; } = 32 bytes.
+//   callout = 1.0 for the connections we also draw a hostname label for (shader adds
+//   a tasteful tracking ring so the eye connects the blip to its text).
 const BLIP_STRIDE = 32;
 const blipBuf = makeStructuredBuffer({ stride: BLIP_STRIDE, count: MAX_BLIPS, srv: true, cpuWritable: true });
 const blipData = Buffer.alloc(BLIP_STRIDE * MAX_BLIPS);
+
+// ── Label/HUD overlay texture (real GDI text baked INTO the hero frame) ──────────
+// We render the scope's title, the color-coded legend, and a staggered set of
+// resolved-hostname labels (with leader lines back to their blips) into a top-down
+// BGRA DIB section using GDI, then upload those bytes into a B8G8R8A8 texture each
+// frame and composite it in the pixel shader. Because it lives in the back buffer,
+// the captured PNG itself shows a fully *labeled*, alive radar — not just dots.
+const OVR_W = clientW;
+const OVR_H = clientH;
+const ovrTex = makeTexture({ w: OVR_W, h: OVR_H, format: DXGI_FORMAT_B8G8R8A8_UNORM, srv: true });
+const ovrSampler = makeSampler();
+// BITMAPINFOHEADER (40 bytes) + top-down (negative height) 32bpp BGRA DIB.
+const bmi = Buffer.alloc(40);
+bmi.writeUInt32LE(40, 0); // biSize
+bmi.writeInt32LE(OVR_W, 4); // biWidth
+bmi.writeInt32LE(-OVR_H, 8); // biHeight (negative => top-down rows)
+bmi.writeUInt16LE(1, 12); // biPlanes
+bmi.writeUInt16LE(32, 14); // biBitCount
+bmi.writeUInt32LE(0, 16); // biCompression = BI_RGB
+const ovrBitsPtrBuf = Buffer.alloc(8); // receives the DIB pixel pointer
+const ovrMemDC = GDI32.CreateCompatibleDC(0n);
+const ovrDib = GDI32.CreateDIBSection(ovrMemDC, bmi.ptr!, 0 /* DIB_RGB_COLORS */, ovrBitsPtrBuf.ptr!, 0n, 0);
+GDI32.SelectObject(ovrMemDC, ovrDib);
+const ovrBitsPtr = ovrBitsPtrBuf.readBigUInt64LE(0);
+const OVR_ROW_PITCH = OVR_W * 4;
+GDI32.SetBkMode(ovrMemDC, 1 /* TRANSPARENT */);
+GDI32.SetTextAlign(ovrMemDC, 0 /* TA_LEFT | TA_TOP */);
+
+// Fonts baked into the overlay (DIB) — separate handles from the live-window HUD.
+const ovrTitleFont = GDI32.CreateFontW(-24, 0, 0, 0, 800, 0, 0, 0, 0, 0, 0, 4, 0, encodeWide('Consolas').ptr!);
+const ovrLabelFont = GDI32.CreateFontW(-16, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 4, 0, encodeWide('Consolas').ptr!);
+const ovrSmallFont = GDI32.CreateFontW(-13, 0, 0, 0, 500, 0, 0, 0, 0, 0, 0, 4, 0, encodeWide('Consolas').ptr!);
+
+// Clear the whole DIB to black (BitBlt BLACKNESS writes 0x00000000 BGRA). GDI text
+// does not touch the alpha byte of a 32bpp DIB, so the shader composites the overlay
+// by LUMINANCE (max RGB) rather than alpha — text pops, the black field stays clear.
+const BLACKNESS = 0x00000042;
+function clearOverlay(): void {
+  GDI32.BitBlt(ovrMemDC, 0, 0, OVR_W, OVR_H, 0n, 0, 0, BLACKNESS);
+}
+
+// GDI text helper into the overlay DIB at (x,y) with a BGR color.
+function ovrText(x: number, y: number, text: string, bgr: number): void {
+  GDI32.SetTextColor(ovrMemDC, bgr);
+  const w = encodeWide(text);
+  GDI32.TextOutW(ovrMemDC, x, y, w.ptr!, text.length);
+}
+// Monospace Consolas advance is ~0.55em; good enough for layout without GetTextExtent.
+function textWidthPx(text: string, emPx: number): number {
+  return Math.ceil(text.length * emPx * 0.55);
+}
+
+// Upload the GDI-drawn DIB into the overlay texture for this frame.
+function uploadOverlay(): void {
+  GDI32.GdiFlush();
+  vcall(
+    gpu.context,
+    CTX_UPDATE_SUBRESOURCE,
+    [FFIType.u64, FFIType.u32, FFIType.ptr, FFIType.u64, FFIType.u32, FFIType.u32],
+    [ovrTex.tex, 0, null, ovrBitsPtr, OVR_ROW_PITCH, 0],
+    FFIType.void,
+  );
+}
 
 // ── Constant buffer ──────────────────────────────────────────────────────────────
 // cbuffer Radar : float time; float sweepAngle; uint connCount; float aspect;
@@ -423,8 +492,10 @@ cbuffer Radar : register(b0) {
   float uTime; float uSweep; uint uCount; float uAspect;
   float2 uRes; float uScopeR; float uPad;
 };
-struct Blip { float x; float y; uint kind; float pulse; float beam; float p0; float p1; float p2; };
+struct Blip { float x; float y; uint kind; float pulse; float beam; float callout; float p1; float p2; };
 StructuredBuffer<Blip> Blips : register(t0);
+Texture2D    Overlay : register(t1);   // GDI-baked title / legend / hostname labels
+SamplerState Samp    : register(s0);
 
 static const float PI = 3.14159265;
 
@@ -438,7 +509,7 @@ float3 kindColor(uint k) {
 // per-state brightness weight (TIME_WAIT reads dimmer, ESTABLISHED/UDP pop)
 float kindWeight(uint k) {
   if (k == 2u) return 0.55;   // TIME_WAIT — intentionally dim
-  if (k == 1u) return 1.05;   // SYN
+  if (k == 1u) return 1.10;   // SYN
   return 1.0;
 }
 
@@ -452,51 +523,53 @@ float4 main(float4 fragPos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
 
   // ── deep scope background: near-black outside, dark teal disc inside ──
   float3 col = float3(0.004, 0.010, 0.013);
-  col += float3(0.002, 0.011, 0.014) * inside * (1.0 - r / uScopeR);   // faint radial fill
+  col += float3(0.003, 0.016, 0.020) * inside * (1.0 - r / uScopeR);   // faint radial fill
   // faint phosphor speckle so the disc reads as a CRT, not flat paint
   float spk = frac(sin(dot(floor(fragPos.xy / 2.0), float2(12.9898, 78.233))) * 43758.5453);
-  col += float3(0.0, 0.010, 0.008) * inside * spk;
+  col += float3(0.0, 0.012, 0.010) * inside * spk;
 
   // ── concentric range rings (thin, crisp) ──────────────────────────────────
   float ring = 0.0;
   [unroll]
   for (int i = 1; i <= 4; i++) {
     float rr = uScopeR * (float(i) / 4.0);
-    ring += 0.045 / (abs(r - rr) * 420.0 + 1.0);
+    ring += 0.052 / (abs(r - rr) * 420.0 + 1.0);
   }
-  ring += 0.180 / (abs(r - uScopeR) * 220.0 + 1.0);     // bright outer rim
+  ring += 0.220 / (abs(r - uScopeR) * 200.0 + 1.0);     // bright outer rim
   col += float3(0.18, 1.10, 0.90) * ring;
 
   // ── cross-hair, 30-deg bearing ticks + 45-deg spokes ───────────────────────
   if (r < uScopeR) {
     float cross = 0.0;
-    cross += 0.010 / (abs(p.y) * 320.0 + 1.0);
-    cross += 0.010 / (abs(p.x) * 320.0 + 1.0);
+    cross += 0.011 / (abs(p.y) * 320.0 + 1.0);
+    cross += 0.011 / (abs(p.x) * 320.0 + 1.0);
     float spoke = abs(frac(ang / (PI / 4.0) + 0.5) - 0.5);
-    cross += 0.007 / (spoke * 90.0 + 1.0) * smoothstep(0.0, 0.12, r);
-    col += float3(0.10, 0.50, 0.45) * cross * inside;
+    cross += 0.008 / (spoke * 90.0 + 1.0) * smoothstep(0.0, 0.12, r);
+    col += float3(0.10, 0.52, 0.47) * cross * inside;
 
     // bearing tick marks every 30 deg, hugging the outer rim
     float tick = abs(frac(ang / (PI / 6.0) + 0.5) - 0.5);
     float tickBand = smoothstep(uScopeR * 0.86, uScopeR * 0.96, r) * inside;
-    col += float3(0.16, 0.95, 0.80) * (0.020 / (tick * 220.0 + 1.0)) * tickBand;
+    col += float3(0.16, 0.98, 0.82) * (0.024 / (tick * 220.0 + 1.0)) * tickBand;
   }
 
-  // ── rotating sweep wedge with a bright leading edge + long afterglow ────────
+  // ── rotating sweep: bold comet head + long phosphor afterglow ───────────────
   if (r < uScopeR) {
     float d = uSweep - ang;                          // signed lead
     d = d - floor(d / (2.0 * PI)) * (2.0 * PI);      // 0..2PI behind the beam
-    float trail = exp(-d * 1.7);                     // longer sodium-green afterglow
-    float edge  = smoothstep(0.085, 0.0, d) * 2.0;   // crisp bright leading line
+    float trail = exp(-d * 1.45);                    // long sodium-green afterglow
+    float trail2 = exp(-d * 5.0);                    // bright inner comet tail
+    float edge  = smoothstep(0.075, 0.0, d) * 2.4;   // crisp bright leading line
     float radialFade = smoothstep(0.0, uScopeR * 0.16, r); // dim at the hub
-    float sweep = (trail * 1.05 + edge) * radialFade * inside;
+    float sweep = (trail * 0.85 + trail2 * 0.9 + edge) * radialFade * inside;
     col += float3(0.12, 1.00, 0.52) * sweep;
-    // bright sweep tip sparkle riding the rim
-    col += float3(0.35, 1.0, 0.65) * edge * smoothstep(uScopeR * 0.7, uScopeR, r) * inside;
+    // bright sweep tip sparkle riding the rim (the comet head)
+    col += float3(0.45, 1.0, 0.70) * edge * smoothstep(uScopeR * 0.55, uScopeR, r) * inside;
   }
 
   // ── center hub glow (tight, so it reads as a pinpoint, not a flood) ──────────
-  col += float3(0.12, 1.00, 0.58) * exp(-r * r * 900.0) * 1.1;
+  col += float3(0.12, 1.00, 0.58) * exp(-r * r * 900.0) * 1.25;
+  col += float3(0.10, 0.90, 0.55) * exp(-r * r * 90.0) * 0.10;  // soft hub bloom
 
   // ── blips ──────────────────────────────────────────────────────────────────
   for (uint b = 0u; b < uCount; b++) {
@@ -508,28 +581,50 @@ float4 main(float4 fragPos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
 
     // sharp luminous core + a contained soft halo; the sweep beam flares each blip
     float core = exp(-dist * dist * 5200.0);                 // tight hot point
-    float halo = exp(-dist * dist * 380.0);                  // bounded soft glow
+    float halo = exp(-dist * dist * 360.0);                  // bounded soft glow
     float beamFlare = bl.beam;
-    col += bc * w * (core * (2.4 + beamFlare * 4.5) + halo * (0.45 + beamFlare * 1.6));
+    col += bc * w * (core * (2.8 + beamFlare * 5.0) + halo * (0.55 + beamFlare * 1.8));
     // white-hot center so bright blips bloom toward white before tonemap
-    col += float3(0.9, 1.0, 0.95) * core * (0.8 + beamFlare * 1.6) * w;
+    col += float3(0.9, 1.0, 0.95) * core * (0.95 + beamFlare * 1.8) * w;
+
+    // tracking ring on called-out (labeled) connections so the eye links blip↔text
+    if (bl.callout > 0.5) {
+      float rr0 = 0.034;
+      float cring = exp(-pow((dist - rr0) * 95.0, 2.0));
+      col += bc * cring * (0.9 + beamFlare * 0.8);
+      // a faint rotating reticle gap so the ring reads as an active "target lock"
+      float ca = atan2(p.y - bp.y, p.x - bp.x);
+      float gap = abs(frac((ca + uTime * 1.6) / (PI * 0.5)) - 0.5);
+      col += bc * cring * smoothstep(0.10, 0.30, gap) * 0.6;
+    }
 
     // expanding pulse ring for brand-new connections (fades over its first second)
     if (bl.pulse > 0.0) {
-      float pr = bl.pulse * 0.16;
-      float rr = exp(-pow((dist - pr) * 70.0, 2.0));
-      col += bc * rr * (1.0 - bl.pulse) * 1.6;
+      float pr = bl.pulse * 0.18;
+      float rr = exp(-pow((dist - pr) * 60.0, 2.0));
+      col += bc * rr * (1.0 - bl.pulse) * 2.0;
     }
   }
 
   // ── tonemap + gamma + scanline-CRT vignette ──────────────────────────────────
   col = col / (col + 0.62);
   // soft horizontal scanlines for CRT feel (very subtle)
-  float scan = 0.96 + 0.04 * sin(fragPos.y * 2.4);
+  float scan = 0.95 + 0.05 * sin(fragPos.y * 2.4);
   col *= scan;
-  float vig = smoothstep(1.45, 0.15, r);
-  col *= lerp(0.42, 1.0, vig);
+  float vig = smoothstep(1.55, 0.10, r);
+  col *= lerp(0.40, 1.0, vig);
   col = pow(saturate(col), 1.0 / 2.2);
+
+  // ── composite the GDI-baked label overlay (title, legend, hostnames, leaders) ─
+  // Drawn AFTER tonemap so text stays crisp & legible. The DIB is cleared to black
+  // and text is bright, so luminance is the mask; we screen the colored text on top.
+  float2 ouv = fragPos.xy / uRes;
+  float4 ot = Overlay.Sample(Samp, ouv);
+  float olum = max(ot.r, max(ot.g, ot.b));
+  // screen blend: keeps the scope visible behind faint pixels, full color on glyphs
+  col = 1.0 - (1.0 - col) * (1.0 - ot.rgb * smoothstep(0.04, 0.5, olum));
+  col += ot.rgb * olum * 0.25;  // a touch of phosphor glow around the text
+
   return float4(col, 1.0);
 }
 `;
@@ -589,6 +684,113 @@ function drawHud(fps: number, tcpN: number, udpN: number, resolved: number): voi
   User32.ReleaseDC(win.hwnd, dc);
 }
 
+// ── Overlay (baked-into-frame) labels ────────────────────────────────────────────
+// Colors are 0x00BBGGRR (GDI COLORREF). Brighter than the HUD so they survive the
+// shader's luminance-masked screen composite.
+const OVR_TITLE = 0x0090ff90; // bright green
+const OVR_DIM = 0x0080c090;
+const OVR_LEGEND: [string, number, number][] = [
+  ['ESTABLISHED', 0x0080ff66, KIND_ESTABLISHED],
+  ['SYN/HANDSHAKE', 0x0044d0ff, KIND_SYN],
+  ['TIME_WAIT', 0x006a6aff, KIND_WAIT],
+  ['UDP', 0x00ffe874, KIND_UDP],
+];
+function legendBgr(kind: number): number {
+  for (const [, c, k] of OVR_LEGEND) if (k === kind) return c;
+  return 0x00d0d0e0;
+}
+
+interface LabelTarget {
+  sx: number; // blip screen px
+  sy: number;
+  name: string; // hostname or dotted IP
+  port: number;
+  kind: number;
+  significance: number; // higher = more worth labeling
+}
+
+// Draw the full overlay (title bar, legend, count, and N staggered hostname labels
+// with leader lines back to their blips) into the DIB, then upload it as a texture.
+function drawOverlay(targets: LabelTarget[], tcpN: number, udpN: number, resolved: number, fps: number): void {
+  clearOverlay();
+
+  // ── Title (top-left) ──────────────────────────────────────────────────────────
+  GDI32.SelectObject(ovrMemDC, ovrTitleFont);
+  ovrText(20, 12, 'NET RADAR', OVR_TITLE);
+  GDI32.SelectObject(ovrMemDC, ovrSmallFont);
+  ovrText(22, 46, 'live TCP/UDP socket scope · GPU/HLSL · real reverse-DNS', OVR_DIM);
+  const sub = `${liveConns.size} sockets   ${tcpN} TCP / ${udpN} UDP   ${resolved} named   ${fps} fps`;
+  ovrText(22, 64, sub, 0x00b0ffc8);
+
+  // ── Legend (top-right) with filled color swatches ──────────────────────────────
+  GDI32.SelectObject(ovrMemDC, ovrSmallFont);
+  let lx = OVR_W - 210;
+  let ly = 16;
+  for (const [label, color] of OVR_LEGEND) {
+    const brush = GDI32.CreateSolidBrush(color);
+    const old = GDI32.SelectObject(ovrMemDC, brush);
+    GDI32.PatBlt(ovrMemDC, lx, ly + 2, 12, 12, 0x00f00021 /* PATCOPY */);
+    GDI32.SelectObject(ovrMemDC, old);
+    GDI32.DeleteObject(brush);
+    ovrText(lx + 20, ly, label, color);
+    ly += 19;
+  }
+
+  // ── Hostname callouts to the margins (classic radar legend layout) ──────────────
+  // Each labeled host is anchored to a clean stack of slots down the left or right
+  // gutter (so the text never lands on a bright blip or overlaps a neighbour), with
+  // a thin elbow leader line tracing back to its blip on the scope.
+  GDI32.SelectObject(ovrMemDC, ovrLabelFont);
+  const EM = 16;
+  const ROWH = 28;
+  const TOP_Y = 104; // below the title block
+  const slotsPerSide = Math.floor((OVR_H - TOP_Y - 24) / ROWH);
+
+  // Split targets by which gutter their blip is nearer, keep the strongest few each.
+  const sorted = [...targets].sort((a, b) => b.significance - a.significance);
+  const leftCol = sorted.filter((t) => t.sx < OVR_W * 0.5).slice(0, Math.min(5, slotsPerSide));
+  const rightCol = sorted.filter((t) => t.sx >= OVR_W * 0.5).slice(0, Math.min(5, slotsPerSide));
+  // Within each gutter, order top→bottom by the blip's own Y so leaders don't cross.
+  leftCol.sort((a, b) => a.sy - b.sy);
+  rightCol.sort((a, b) => a.sy - b.sy);
+
+  const drawColumn = (col: LabelTarget[], onRight: boolean): void => {
+    let slotY = TOP_Y;
+    for (const t of col) {
+      const text = `${t.name}:${t.port}`;
+      const wpx = textWidthPx(text, EM);
+      const lxp = onRight ? OVR_W - wpx - 22 : 22;
+      const lyp = slotY;
+      slotY += ROWH;
+      const lineColor = legendBgr(t.kind);
+
+      // A small dim tick beside the text so the gutter reads as a key column.
+      const swatch = GDI32.CreateSolidBrush(lineColor);
+      const oldB = GDI32.SelectObject(ovrMemDC, swatch);
+      GDI32.PatBlt(ovrMemDC, onRight ? OVR_W - 12 : 4, lyp + 3, 6, 12, 0x00f00021 /* PATCOPY */);
+      GDI32.SelectObject(ovrMemDC, oldB);
+      GDI32.DeleteObject(swatch);
+
+      // Elbow leader: blip → vertical drop to the slot's mid-line → into the gutter.
+      const pen = GDI32.CreatePen(0 /* PS_SOLID */, 1, (lineColor & 0x00787878) | 0x00282828);
+      const oldPen = GDI32.SelectObject(ovrMemDC, pen);
+      const gutterX = onRight ? OVR_W - 18 : 18;
+      const midY = lyp + 9;
+      GDI32.MoveToEx(ovrMemDC, t.sx, t.sy, null);
+      GDI32.LineTo(ovrMemDC, gutterX, t.sy);
+      GDI32.LineTo(ovrMemDC, gutterX, midY);
+      GDI32.SelectObject(ovrMemDC, oldPen);
+      GDI32.DeleteObject(pen);
+
+      ovrText(lxp, lyp, text, lineColor);
+    }
+  };
+  drawColumn(leftCol, false);
+  drawColumn(rightCol, true);
+
+  uploadOverlay();
+}
+
 // ── Kick off live outbound connections so the scope is never empty ──────────────
 const seedHosts = [
   'https://one.one.one.one/',
@@ -640,6 +842,14 @@ function cleanup(code: number): never {
     try {
       GDI32.DeleteObject(hudFont);
       GDI32.DeleteObject(smallFont);
+      GDI32.DeleteObject(ovrTitleFont);
+      GDI32.DeleteObject(ovrLabelFont);
+      GDI32.DeleteObject(ovrSmallFont);
+      GDI32.DeleteObject(ovrDib);
+      GDI32.DeleteDC(ovrMemDC);
+      comRelease(ovrSampler);
+      comRelease(ovrTex.srv ?? 0n);
+      comRelease(ovrTex.tex);
       comRelease(blipBuf.srv ?? 0n);
       comRelease(blipBuf.buffer);
       comRelease(cb);
@@ -674,7 +884,7 @@ seedConnections();
 // ── Render loop ──────────────────────────────────────────────────────────────────
 const start = performance.now();
 const durationMs = process.env.DEMO_DURATION_MS ? Number(process.env.DEMO_DURATION_MS) : 0;
-const nullSrv = Buffer.alloc(8);
+const nullSrv = Buffer.alloc(16); // two null SRV slots to unbind (t0 blip + t1 overlay)
 
 let frame = 0;
 let fps = 0;
@@ -720,8 +930,17 @@ while (!win.shouldClose()) {
   const scopeR = 0.94;
 
   // ── Build the blip buffer for this frame ──────────────────────────────────────
+  // Also collect a candidate label per UNIQUE remote host (we callout the most
+  // significant N — preferring named, established, beam-lit connections).
   let count = 0;
   let resolvedCount = 0;
+  // aspect-space (x,y) → back-buffer pixel coords (matches the PS's mapping).
+  const toScreenX = (bx: number): number => (bx / aspect * 0.5 + 0.5) * clientW;
+  const toScreenY = (by: number): number => (by * 0.5 + 0.5) * clientH;
+  interface Cand extends LabelTarget {
+    blipIndex: number;
+  }
+  const candByHost = new Map<number, Cand>();
   for (const conn of liveConns.values()) {
     if (count >= MAX_BLIPS) break;
     const bearing = bearingForAddr(conn.remoteAddr) + jitterForPort(conn.remoteAddr, conn.remotePort);
@@ -745,15 +964,42 @@ while (!win.shouldClose()) {
     blipData.writeUInt32LE(conn.kind >>> 0, o + 8);
     blipData.writeFloatLE(pulse, o + 12);
     blipData.writeFloatLE(beam, o + 16);
-    blipData.writeFloatLE(0, o + 20);
+    blipData.writeFloatLE(0, o + 20); // callout flag — set later for labeled hosts
     blipData.writeFloatLE(0, o + 24);
     blipData.writeFloatLE(0, o + 28);
-    count += 1;
 
     const dns = dnsCache.get(conn.remoteAddr);
     if (dns?.host) resolvedCount += 1;
+
+    // One label candidate per remote host (keep the most significant socket to it).
+    const named = dns?.host ? 1 : 0;
+    const stateBonus = conn.kind === KIND_ESTABLISHED ? 3 : conn.kind === KIND_SYN ? 2 : conn.kind === KIND_UDP ? 1 : 0;
+    const significance = named * 100 + stateBonus * 10 + beam * 5 + radNorm;
+    const prev = candByHost.get(conn.remoteAddr);
+    if (!prev || significance > prev.significance) {
+      candByHost.set(conn.remoteAddr, {
+        blipIndex: count,
+        sx: Math.round(toScreenX(x)),
+        sy: Math.round(toScreenY(y)),
+        name: dns?.host ?? ipFromU32(conn.remoteAddr),
+        port: conn.remotePort,
+        kind: conn.kind,
+        significance,
+      });
+    }
+
+    count += 1;
+  }
+
+  // Pick the top label candidates and flag their blips for a callout ring.
+  const labelTargets = [...candByHost.values()].sort((a, b) => b.significance - a.significance).slice(0, 10);
+  for (const t of labelTargets) {
+    blipData.writeFloatLE(1, t.blipIndex * BLIP_STRIDE + 20); // callout = 1.0
   }
   updateDynamicBuffer(blipBuf.buffer, blipData);
+
+  // Bake the overlay (title / legend / hostname labels + leaders) into a texture.
+  drawOverlay(labelTargets, lastTcpN, lastUdpN, resolvedCount, fps);
 
   // ── Constant buffer (built immediately before the draw that consumes it) ──────
   cbData.writeFloatLE(time, 0);
@@ -770,13 +1016,14 @@ while (!win.shouldClose()) {
   setRenderTargets([gpu.backBufferRTV]);
   setViewport(clientW, clientH);
   clear(gpu.backBufferRTV, [0, 0, 0, 1]);
-  // The whole scope (rings, sweep, blips with accumulating glow) is composited
-  // inside the single fullscreen PS, so the blits write opaque — no blend needed.
+  // The whole scope (rings, sweep, blips with accumulating glow) plus the baked
+  // label overlay (t1) is composited inside the single fullscreen PS, so the blits
+  // write opaque — no blend needed. t0 = blip buffer, t1 = GDI label texture.
   vsSet(vs);
-  psSet(ps, { cb: [cb], srv: [blipBuf.srv!] });
+  psSet(ps, { cb: [cb], srv: [blipBuf.srv!, ovrTex.srv!], samp: [ovrSampler] });
   drawFullscreenTriangle();
-  // Unbind the SRV so the structured buffer can be Map-discarded next frame.
-  vcall(gpu.context, 8 /* PSSetShaderResources */, [FFIType.u32, FFIType.u32, FFIType.ptr], [0, 1, nullSrv.ptr!], FFIType.void);
+  // Unbind both SRVs so the structured buffer can be Map-discarded next frame.
+  vcall(gpu.context, 8 /* PSSetShaderResources */, [FFIType.u32, FFIType.u32, FFIType.ptr], [0, 2, nullSrv.ptr!], FFIType.void);
   setRenderTargets([]);
 
   // One-time console dump of the parsed connection table (after PTR lookups settle).

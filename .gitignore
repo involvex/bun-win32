@@ -65,5 +65,9 @@ packages/all/screenshots/*
 !packages/all/screenshots/net-radar.png
 !packages/all/screenshots/cloth.png
 !packages/all/screenshots/cam-filter.png
+!packages/all/screenshots/cam-filter-thermal.png
+!packages/all/screenshots/cam-filter-sobel.png
+!packages/all/screenshots/cam-filter-ascii.png
+!packages/all/screenshots/cam-filter-kaleidoscope.png
 packages/all/replay-*.gif
 packages/all/bun-win32-wallpaper.png

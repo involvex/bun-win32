@@ -46,7 +46,7 @@ Not effects on a triangle: an actual emulated game console, a neural network tha
 
 <table>
 <tr>
-<td width="50%"><img src="https://raw.githubusercontent.com/ObscuritySRL/bun-win32/main/packages/all/screenshots/gameboy.png" alt="gameboy"><br><b>gameboy</b> — a complete <b>Game Boy (DMG)</b> emulated in pure TypeScript: full SM83 CPU + scanline PPU, GPU-rendered through D3D11, running the MIT <code>dmg-acid2</code> PPU acceptance test (the face renders correctly). Keyboard + XInput gamepad. <code>bun run gameboy</code></td>
+<td width="50%"><img src="https://raw.githubusercontent.com/ObscuritySRL/bun-win32/main/packages/all/screenshots/gameboy.png" alt="gameboy"><br><b>gameboy</b> — a complete <b>Game Boy (DMG)</b> emulated in pure TypeScript: full SM83 CPU + scanline PPU + 4-channel APU audio, GPU-rendered through D3D11. <code>bun run gameboy</code> plays a real homebrew game — <i>Libbet and the Magic Floor</i> (zlib) — and it also passes the <code>dmg-acid2</code> PPU test (<code>GB_ROM=acid2</code>). Keyboard + XInput gamepad.</td>
 <td width="50%"><img src="https://raw.githubusercontent.com/ObscuritySRL/bun-win32/main/packages/all/screenshots/neural-descent.png" alt="neural-descent"><br><b>neural-descent</b> — a real <b>neural network that trains itself live on the GPU</b>: forward pass, backprop and an Adam optimizer all hand-written D3D11 compute shaders. Watch the <code>NEURAL NET</code> half snap into focus to match the <code>TARGET</code> as the loss falls. <code>bun run neural-descent</code></td>
 </tr>
 <tr>

@@ -37,9 +37,11 @@ import { FFIType } from 'bun:ffi';
 
 import { GDI32, User32, Xinput1_4 } from '../index';
 
+import * as audio from './_audio';
 import * as gpu from './_gpu';
 import { captureBackBuffer, formatGrid } from './_snapshot';
 import { loadAcid2 } from './gameboy-rom';
+import { loadLibbet } from './gameboy-game-rom';
 
 const GB_W = 160;
 const GB_H = 144;
@@ -68,6 +70,481 @@ const DMG_PALETTE: ReadonlyArray<readonly [number, number, number]> = [
   [0x34, 0x68, 0x56], // 2
   [0x08, 0x18, 0x20], // 3 — darkest
 ];
+
+// ════════════════════════════════════════════════════════════════════════════
+// APU — the 4 DMG sound channels (square1+sweep, square2, wave RAM, noise)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// A cycle-accurate-enough DMG APU. The CPU feeds it T-cycles; it advances each
+// channel's frequency timer, runs the 512 Hz frame sequencer (length @256 Hz,
+// sweep @128 Hz, envelope @64 Hz), and resamples the analog-domain mix down to
+// the host sample rate, emitting interleaved stereo Int16 into a ring the demo
+// drains to XAudio2 every frame. Registers NR10-NR52 + wave RAM (FF30-FF3F) are
+// written through GameBoy.ioWrite, which forwards here.
+
+const DUTY_TABLE: ReadonlyArray<ReadonlyArray<number>> = [
+  [0, 0, 0, 0, 0, 0, 0, 1], // 12.5%
+  [1, 0, 0, 0, 0, 0, 0, 1], // 25%
+  [1, 0, 0, 0, 0, 1, 1, 1], // 50%
+  [0, 1, 1, 1, 1, 1, 1, 0], // 75%
+];
+
+const GB_CPU_HZ = 4194304;
+
+class Apu {
+  private readonly sampleRate: number;
+  // Fractional resampler: emit one stereo sample every CPU_HZ/sampleRate cycles.
+  private readonly cyclesPerSample: number;
+  private sampleClock = 0;
+
+  // Frame sequencer: ticks at 512 Hz (every 8192 CPU cycles).
+  private frameSeqCounter = 0;
+  private frameSeqStep = 0;
+
+  // Output ring — interleaved L,R Int16. Drained by the demo each video frame.
+  private readonly out: Int16Array;
+  private outWrite = 0;
+  private outCount = 0;
+
+  // ── NR50/NR51/NR52 master ──────────────────────────────────────────────────
+  private nr50 = 0;
+  private nr51 = 0;
+  private enabled = false;
+
+  // ── Channel 1: square + sweep ────────────────────────────────────────────
+  private c1On = false;
+  private c1Duty = 0;
+  private c1FreqTimer = 0;
+  private c1DutyPos = 0;
+  private c1Freq = 0; // 11-bit period value
+  private c1LenEnable = false;
+  private c1LenCounter = 0;
+  private c1EnvVol = 0;
+  private c1EnvInit = 0;
+  private c1EnvDir = 0;
+  private c1EnvPeriod = 0;
+  private c1EnvTimer = 0;
+  private c1SweepPeriod = 0;
+  private c1SweepDir = 0;
+  private c1SweepShift = 0;
+  private c1SweepTimer = 0;
+  private c1SweepEnable = false;
+  private c1SweepShadow = 0;
+
+  // ── Channel 2: square ──────────────────────────────────────────────────────
+  private c2On = false;
+  private c2Duty = 0;
+  private c2FreqTimer = 0;
+  private c2DutyPos = 0;
+  private c2Freq = 0;
+  private c2LenEnable = false;
+  private c2LenCounter = 0;
+  private c2EnvVol = 0;
+  private c2EnvInit = 0;
+  private c2EnvDir = 0;
+  private c2EnvPeriod = 0;
+  private c2EnvTimer = 0;
+
+  // ── Channel 3: wave RAM ────────────────────────────────────────────────────
+  private c3On = false;
+  private c3DacOn = false;
+  private c3FreqTimer = 0;
+  private c3Pos = 0;
+  private c3Freq = 0;
+  private c3LenEnable = false;
+  private c3LenCounter = 0;
+  private c3Volume = 0; // 0..3 (shift code)
+  private readonly waveRam = new Uint8Array(16);
+  private c3Sample = 0;
+
+  // ── Channel 4: noise ───────────────────────────────────────────────────────
+  private c4On = false;
+  private c4FreqTimer = 0;
+  private c4Lfsr = 0x7fff;
+  private c4WidthMode = false;
+  private c4DivCode = 0;
+  private c4ClockShift = 0;
+  private c4LenEnable = false;
+  private c4LenCounter = 0;
+  private c4EnvVol = 0;
+  private c4EnvInit = 0;
+  private c4EnvDir = 0;
+  private c4EnvPeriod = 0;
+  private c4EnvTimer = 0;
+
+  constructor(sampleRate: number) {
+    this.sampleRate = sampleRate;
+    this.cyclesPerSample = GB_CPU_HZ / sampleRate;
+    // ~0.3 s of stereo headroom in the ring.
+    this.out = new Int16Array(2 * Math.ceil(sampleRate * 0.3));
+  }
+
+  /** Forward a write to a sound register (reg = address - 0xFF00, 0x10..0x3F). */
+  writeReg(reg: number, value: number): void {
+    if (reg >= 0x30 && reg <= 0x3f) {
+      this.waveRam[reg - 0x30] = value & 0xff;
+      return;
+    }
+    if (!this.enabled && reg !== 0x26) {
+      // While powered off, only NR52 is writable (length still loadable on CGB,
+      // but DMG ignores everything — keep it simple and ignore).
+      return;
+    }
+    switch (reg) {
+      // ── Channel 1 ──
+      case 0x10: // NR10 sweep
+        this.c1SweepPeriod = (value >> 4) & 0x07;
+        this.c1SweepDir = (value >> 3) & 0x01;
+        this.c1SweepShift = value & 0x07;
+        break;
+      case 0x11: // NR11 duty + length
+        this.c1Duty = (value >> 6) & 0x03;
+        this.c1LenCounter = 64 - (value & 0x3f);
+        break;
+      case 0x12: // NR12 envelope
+        this.c1EnvInit = (value >> 4) & 0x0f;
+        this.c1EnvDir = (value >> 3) & 0x01;
+        this.c1EnvPeriod = value & 0x07;
+        if ((value & 0xf8) === 0) this.c1On = false; // DAC off
+        break;
+      case 0x13: // NR13 freq lo
+        this.c1Freq = (this.c1Freq & 0x700) | (value & 0xff);
+        break;
+      case 0x14: // NR14 freq hi + trigger + length-enable
+        this.c1Freq = (this.c1Freq & 0xff) | ((value & 0x07) << 8);
+        this.c1LenEnable = (value & 0x40) !== 0;
+        if (value & 0x80) this.triggerC1();
+        break;
+      // ── Channel 2 ──
+      case 0x16:
+        this.c2Duty = (value >> 6) & 0x03;
+        this.c2LenCounter = 64 - (value & 0x3f);
+        break;
+      case 0x17:
+        this.c2EnvInit = (value >> 4) & 0x0f;
+        this.c2EnvDir = (value >> 3) & 0x01;
+        this.c2EnvPeriod = value & 0x07;
+        if ((value & 0xf8) === 0) this.c2On = false;
+        break;
+      case 0x18:
+        this.c2Freq = (this.c2Freq & 0x700) | (value & 0xff);
+        break;
+      case 0x19:
+        this.c2Freq = (this.c2Freq & 0xff) | ((value & 0x07) << 8);
+        this.c2LenEnable = (value & 0x40) !== 0;
+        if (value & 0x80) this.triggerC2();
+        break;
+      // ── Channel 3 ──
+      case 0x1a: // NR30 DAC power
+        this.c3DacOn = (value & 0x80) !== 0;
+        if (!this.c3DacOn) this.c3On = false;
+        break;
+      case 0x1b: // NR31 length
+        this.c3LenCounter = 256 - (value & 0xff);
+        break;
+      case 0x1c: // NR32 volume
+        this.c3Volume = (value >> 5) & 0x03;
+        break;
+      case 0x1d: // NR33 freq lo
+        this.c3Freq = (this.c3Freq & 0x700) | (value & 0xff);
+        break;
+      case 0x1e: // NR34 freq hi + trigger
+        this.c3Freq = (this.c3Freq & 0xff) | ((value & 0x07) << 8);
+        this.c3LenEnable = (value & 0x40) !== 0;
+        if (value & 0x80) this.triggerC3();
+        break;
+      // ── Channel 4 ──
+      case 0x20: // NR41 length
+        this.c4LenCounter = 64 - (value & 0x3f);
+        break;
+      case 0x21: // NR42 envelope
+        this.c4EnvInit = (value >> 4) & 0x0f;
+        this.c4EnvDir = (value >> 3) & 0x01;
+        this.c4EnvPeriod = value & 0x07;
+        if ((value & 0xf8) === 0) this.c4On = false;
+        break;
+      case 0x22: // NR43 noise params
+        this.c4ClockShift = (value >> 4) & 0x0f;
+        this.c4WidthMode = (value & 0x08) !== 0;
+        this.c4DivCode = value & 0x07;
+        break;
+      case 0x23: // NR44 trigger + length-enable
+        this.c4LenEnable = (value & 0x40) !== 0;
+        if (value & 0x80) this.triggerC4();
+        break;
+      // ── Master ──
+      case 0x24: // NR50
+        this.nr50 = value;
+        break;
+      case 0x25: // NR51 panning
+        this.nr51 = value;
+        break;
+      case 0x26: { // NR52 power
+        const on = (value & 0x80) !== 0;
+        if (!on && this.enabled) {
+          // Power-off clears every channel register/state.
+          this.c1On = this.c2On = this.c3On = this.c4On = false;
+          this.nr50 = 0;
+          this.nr51 = 0;
+        }
+        this.enabled = on;
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  /** NR52 read: bit7 power + per-channel "on" status in bits 0..3. */
+  readNr52(): number {
+    let v = this.enabled ? 0x80 : 0x00;
+    v |= 0x70; // unused bits read as 1
+    if (this.c1On) v |= 0x01;
+    if (this.c2On) v |= 0x02;
+    if (this.c3On) v |= 0x04;
+    if (this.c4On) v |= 0x08;
+    return v;
+  }
+
+  private triggerC1(): void {
+    this.c1On = true;
+    if (this.c1LenCounter === 0) this.c1LenCounter = 64;
+    this.c1FreqTimer = (2048 - this.c1Freq) * 4;
+    this.c1EnvTimer = this.c1EnvPeriod;
+    this.c1EnvVol = this.c1EnvInit;
+    this.c1SweepShadow = this.c1Freq;
+    this.c1SweepTimer = this.c1SweepPeriod !== 0 ? this.c1SweepPeriod : 8;
+    this.c1SweepEnable = this.c1SweepPeriod !== 0 || this.c1SweepShift !== 0;
+    if (this.c1SweepShift !== 0) this.sweepCalc();
+    if (this.c1EnvInit === 0 && this.c1EnvDir === 0) this.c1On = false; // DAC off
+  }
+  private triggerC2(): void {
+    this.c2On = true;
+    if (this.c2LenCounter === 0) this.c2LenCounter = 64;
+    this.c2FreqTimer = (2048 - this.c2Freq) * 4;
+    this.c2EnvTimer = this.c2EnvPeriod;
+    this.c2EnvVol = this.c2EnvInit;
+    if (this.c2EnvInit === 0 && this.c2EnvDir === 0) this.c2On = false;
+  }
+  private triggerC3(): void {
+    this.c3On = this.c3DacOn;
+    if (this.c3LenCounter === 0) this.c3LenCounter = 256;
+    this.c3FreqTimer = (2048 - this.c3Freq) * 2;
+    this.c3Pos = 0;
+  }
+  private triggerC4(): void {
+    this.c4On = true;
+    if (this.c4LenCounter === 0) this.c4LenCounter = 64;
+    this.c4Lfsr = 0x7fff;
+    this.c4FreqTimer = this.noisePeriod();
+    this.c4EnvTimer = this.c4EnvPeriod;
+    this.c4EnvVol = this.c4EnvInit;
+    if (this.c4EnvInit === 0 && this.c4EnvDir === 0) this.c4On = false;
+  }
+
+  private noisePeriod(): number {
+    const div = this.c4DivCode === 0 ? 8 : this.c4DivCode * 16;
+    return div << this.c4ClockShift;
+  }
+
+  private sweepCalc(): number {
+    let next = this.c1SweepShadow >> this.c1SweepShift;
+    next = this.c1SweepDir ? this.c1SweepShadow - next : this.c1SweepShadow + next;
+    if (next > 2047) this.c1On = false; // overflow disables the channel
+    return next;
+  }
+
+  // ── Frame sequencer steps ──────────────────────────────────────────────────
+  private stepLength(): void {
+    if (this.c1LenEnable && this.c1LenCounter > 0 && --this.c1LenCounter === 0) this.c1On = false;
+    if (this.c2LenEnable && this.c2LenCounter > 0 && --this.c2LenCounter === 0) this.c2On = false;
+    if (this.c3LenEnable && this.c3LenCounter > 0 && --this.c3LenCounter === 0) this.c3On = false;
+    if (this.c4LenEnable && this.c4LenCounter > 0 && --this.c4LenCounter === 0) this.c4On = false;
+  }
+  private stepSweep(): void {
+    if (this.c1SweepTimer > 0) this.c1SweepTimer -= 1;
+    if (this.c1SweepTimer === 0) {
+      this.c1SweepTimer = this.c1SweepPeriod !== 0 ? this.c1SweepPeriod : 8;
+      if (this.c1SweepEnable && this.c1SweepPeriod !== 0) {
+        const next = this.sweepCalc();
+        if (next <= 2047 && this.c1SweepShift !== 0) {
+          this.c1SweepShadow = next;
+          this.c1Freq = next;
+          this.sweepCalc(); // overflow re-check
+        }
+      }
+    }
+  }
+  private stepEnvelope(): void {
+    // Channel 1
+    if (this.c1EnvPeriod !== 0) {
+      if (this.c1EnvTimer > 0) this.c1EnvTimer -= 1;
+      if (this.c1EnvTimer === 0) {
+        this.c1EnvTimer = this.c1EnvPeriod;
+        if (this.c1EnvDir && this.c1EnvVol < 15) this.c1EnvVol += 1;
+        else if (!this.c1EnvDir && this.c1EnvVol > 0) this.c1EnvVol -= 1;
+      }
+    }
+    // Channel 2
+    if (this.c2EnvPeriod !== 0) {
+      if (this.c2EnvTimer > 0) this.c2EnvTimer -= 1;
+      if (this.c2EnvTimer === 0) {
+        this.c2EnvTimer = this.c2EnvPeriod;
+        if (this.c2EnvDir && this.c2EnvVol < 15) this.c2EnvVol += 1;
+        else if (!this.c2EnvDir && this.c2EnvVol > 0) this.c2EnvVol -= 1;
+      }
+    }
+    // Channel 4
+    if (this.c4EnvPeriod !== 0) {
+      if (this.c4EnvTimer > 0) this.c4EnvTimer -= 1;
+      if (this.c4EnvTimer === 0) {
+        this.c4EnvTimer = this.c4EnvPeriod;
+        if (this.c4EnvDir && this.c4EnvVol < 15) this.c4EnvVol += 1;
+        else if (!this.c4EnvDir && this.c4EnvVol > 0) this.c4EnvVol -= 1;
+      }
+    }
+  }
+
+  private frameSeqTick(): void {
+    // 8-step sequence: length on 0/2/4/6, sweep on 2/6, envelope on 7.
+    switch (this.frameSeqStep) {
+      case 0: this.stepLength(); break;
+      case 2: this.stepLength(); this.stepSweep(); break;
+      case 4: this.stepLength(); break;
+      case 6: this.stepLength(); this.stepSweep(); break;
+      case 7: this.stepEnvelope(); break;
+      default: break;
+    }
+    this.frameSeqStep = (this.frameSeqStep + 1) & 0x07;
+  }
+
+  // ── Per-cycle channel timers ───────────────────────────────────────────────
+  private clockChannels(cycles: number): void {
+    // Square 1
+    this.c1FreqTimer -= cycles;
+    while (this.c1FreqTimer <= 0) {
+      this.c1FreqTimer += (2048 - this.c1Freq) * 4 || 4;
+      this.c1DutyPos = (this.c1DutyPos + 1) & 0x07;
+    }
+    // Square 2
+    this.c2FreqTimer -= cycles;
+    while (this.c2FreqTimer <= 0) {
+      this.c2FreqTimer += (2048 - this.c2Freq) * 4 || 4;
+      this.c2DutyPos = (this.c2DutyPos + 1) & 0x07;
+    }
+    // Wave
+    this.c3FreqTimer -= cycles;
+    while (this.c3FreqTimer <= 0) {
+      this.c3FreqTimer += (2048 - this.c3Freq) * 2 || 2;
+      this.c3Pos = (this.c3Pos + 1) & 0x1f;
+      const byte = this.waveRam[this.c3Pos >> 1]!;
+      this.c3Sample = (this.c3Pos & 1) ? (byte & 0x0f) : (byte >> 4);
+    }
+    // Noise
+    this.c4FreqTimer -= cycles;
+    while (this.c4FreqTimer <= 0) {
+      this.c4FreqTimer += this.noisePeriod() || 8;
+      const xor = (this.c4Lfsr & 1) ^ ((this.c4Lfsr >> 1) & 1);
+      this.c4Lfsr = (this.c4Lfsr >> 1) | (xor << 14);
+      if (this.c4WidthMode) {
+        this.c4Lfsr = (this.c4Lfsr & ~0x40) | (xor << 6);
+      }
+    }
+  }
+
+  /** Current analog amplitude of each channel (0..15), before the DAC. */
+  private c1Out(): number {
+    if (!this.c1On) return 0;
+    return DUTY_TABLE[this.c1Duty]![this.c1DutyPos]! ? this.c1EnvVol : 0;
+  }
+  private c2Out(): number {
+    if (!this.c2On) return 0;
+    return DUTY_TABLE[this.c2Duty]![this.c2DutyPos]! ? this.c2EnvVol : 0;
+  }
+  private c3Out(): number {
+    if (!this.c3On || !this.c3DacOn) return 0;
+    const shift = [4, 0, 1, 2][this.c3Volume]!;
+    return this.c3Sample >> shift;
+  }
+  private c4Out(): number {
+    if (!this.c4On) return 0;
+    return (this.c4Lfsr & 1) === 0 ? this.c4EnvVol : 0;
+  }
+
+  /**
+   * Advance the APU by `cycles` T-cycles, emitting resampled stereo samples into
+   * the ring. Call once per CPU instruction (same cadence as the timers/PPU).
+   */
+  step(cycles: number): void {
+    // Frame sequencer @512 Hz.
+    this.frameSeqCounter += cycles;
+    while (this.frameSeqCounter >= 8192) {
+      this.frameSeqCounter -= 8192;
+      this.frameSeqTick();
+    }
+
+    this.clockChannels(cycles);
+
+    // Resample to the host rate.
+    this.sampleClock += cycles;
+    while (this.sampleClock >= this.cyclesPerSample) {
+      this.sampleClock -= this.cyclesPerSample;
+      this.emitSample();
+    }
+  }
+
+  private emitSample(): void {
+    if (this.outCount + 2 > this.out.length) {
+      // Ring full — drop the sample (consumer is behind; avoids unbounded growth).
+      return;
+    }
+    let left = 0;
+    let right = 0;
+    if (this.enabled) {
+      // Each channel's DAC maps 0..15 to a normalized -1..1; here we keep small
+      // integers and scale at the end. Pan via NR51, master volume via NR50.
+      const ch = [this.c1Out(), this.c2Out(), this.c3Out(), this.c4Out()];
+      const nr51 = this.nr51;
+      for (let i = 0; i < 4; i += 1) {
+        const v = ch[i]!;
+        if (nr51 & (0x10 << i)) left += v; // bits 4..7 = left enables
+        if (nr51 & (0x01 << i)) right += v; // bits 0..3 = right enables
+      }
+      const lVol = ((this.nr50 >> 4) & 0x07) + 1;
+      const rVol = (this.nr50 & 0x07) + 1;
+      left *= lVol;
+      right *= rVol;
+    }
+    // 4 channels * 15 * volume(8) = 480 max per side. Scale to ~0.7 of int16.
+    const scale = 22000 / 480;
+    let l = Math.round(left * scale);
+    let r = Math.round(right * scale);
+    if (l > 32767) l = 32767; else if (l < -32768) l = -32768;
+    if (r > 32767) r = 32767; else if (r < -32768) r = -32768;
+    const w = this.outWrite;
+    this.out[w] = l;
+    this.out[w + 1] = r;
+    this.outWrite = (w + 2) % this.out.length;
+    this.outCount += 2;
+  }
+
+  /** Drain up to `maxFrames` stereo frames into a fresh Int16Array (interleaved). */
+  drain(maxFrames: number): Int16Array {
+    const want = Math.min(maxFrames * 2, this.outCount);
+    const block = new Int16Array(want);
+    let read = (this.outWrite - this.outCount + this.out.length * 2) % this.out.length;
+    for (let i = 0; i < want; i += 1) {
+      block[i] = this.out[read]!;
+      read = (read + 1) % this.out.length;
+    }
+    this.outCount -= want;
+    return block;
+  }
+
+  get pending(): number {
+    return this.outCount >> 1;
+  }
+}
 
 class GameBoy {
   // ── CPU registers ────────────────────────────────────────────────────────
@@ -109,6 +586,9 @@ class GameBoy {
   private divCounter = 0; // internal 16-bit counter; DIV is its high byte
   private timaCounter = 0;
 
+  // ── Audio ──────────────────────────────────────────────────────────────────
+  readonly apu: Apu | null;
+
   // ── PPU state ──────────────────────────────────────────────────────────────
   private ppuDot = 0; // dots elapsed within the current scanline (0..456)
   // Final RGBA8 framebuffer, top-down, 160x144 — uploaded to the GPU each frame.
@@ -140,8 +620,9 @@ class GameBoy {
   private static readonly WY = 0x4a;
   private static readonly WX = 0x4b;
 
-  constructor(rom: Uint8Array) {
+  constructor(rom: Uint8Array, apu: Apu | null = null) {
     this.rom = rom;
+    this.apu = apu;
     this.mbcType = rom[0x147] ?? 0;
     // ROM bank mask from the header ROM-size byte (0x148): banks = 2 << size.
     const sizeCode = rom[0x148] ?? 0;
@@ -245,6 +726,7 @@ class GameBoy {
     if (addr < 0xff80) {
       const reg = addr - 0xff00;
       if (reg === GameBoy.P1) return this.readJoypad();
+      if (reg === 0x26 && this.apu) return this.apu.readNr52(); // NR52 channel status
       return this.io[reg]!;
     }
     if (addr < 0xffff) return this.hram[addr - 0xff80]!;
@@ -326,6 +808,12 @@ class GameBoy {
   }
 
   private ioWrite(reg: number, value: number): void {
+    // Sound registers (NR10-NR52 + wave RAM) are mirrored into the APU.
+    if (reg >= 0x10 && reg <= 0x3f) {
+      this.io[reg] = value;
+      if (this.apu) this.apu.writeReg(reg, value);
+      return;
+    }
     switch (reg) {
       case GameBoy.P1:
         // Only the two select bits are writable.
@@ -1177,6 +1665,7 @@ class GameBoy {
       const cycles = this.step();
       this.stepTimers(cycles);
       this.stepPpu(cycles);
+      if (this.apu) this.apu.step(cycles);
       budget -= cycles;
 
       if (enableImeAfter) {
@@ -1188,6 +1677,7 @@ class GameBoy {
       if (intCycles > 0) {
         this.stepTimers(intCycles);
         this.stepPpu(intCycles);
+        if (this.apu) this.apu.step(intCycles);
         budget -= intCycles;
       }
 
@@ -1242,21 +1732,27 @@ float4 main(float4 fragPos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
   float2 gbUv = local / drawSize;
   float3 c = Screen.Sample(Smp, gbUv).rgb;
 
-  // Per-GB-pixel coordinates for a subtle LCD grid.
+  // Per-GB-pixel coordinates for a subtle dot-matrix LCD grid.
   float2 gpix = gbUv * gbRes;
   float2 fpart = frac(gpix);
-  // Soft pixel grid: darken the last fraction of each cell.
-  float gridX = smoothstep(0.0, 0.12, fpart.x) * smoothstep(0.0, 0.12, 1.0 - fpart.x);
-  float gridY = smoothstep(0.0, 0.12, fpart.y) * smoothstep(0.0, 0.12, 1.0 - fpart.y);
-  float grid = lerp(0.82, 1.0, gridX * gridY);
+  // Thin, gentle grid lines: only the outer ~7% of each cell edge is dimmed, and
+  // only by a few percent, so the grid reads as an LCD lattice rather than a
+  // checkerboard that fights the game's 1-pixel dithered fills.
+  float lineW = 0.07;
+  float gridX = smoothstep(0.0, lineW, fpart.x) * smoothstep(0.0, lineW, 1.0 - fpart.x);
+  float gridY = smoothstep(0.0, lineW, fpart.y) * smoothstep(0.0, lineW, 1.0 - fpart.y);
+  float grid = lerp(0.93, 1.0, gridX * gridY);
   // Only show the grid when scaled up enough to read it.
   grid = lerp(1.0, grid, saturate((scale - 2.0) / 2.0));
 
   c *= grid;
 
-  // Subtle warm DMG tint + slight contrast for that washed-LCD feel.
-  c = pow(saturate(c), 0.95);
-  c *= float3(1.02, 1.04, 0.96);
+  // Authentic DMG look: nudge toward the green LCD primaries, lift the deep
+  // shade slightly (real DMG black is a dark olive, never pure black), and add
+  // a touch of contrast for that crisp-yet-washed reflective-LCD feel.
+  c = pow(saturate(c), 0.92);
+  c = lerp(float3(0.03, 0.07, 0.04), float3(0.94, 1.0, 0.86), c); // remap into DMG gamut
+  c *= float3(0.99, 1.03, 0.93);
 
   // Thin inner border / screen edge highlight.
   float edge = min(min(local.x, local.y), min(drawSize.x - local.x, drawSize.y - local.y));
@@ -1273,9 +1769,14 @@ function comReleaseSafe(ptr: bigint | undefined): void {
 }
 
 function main(): void {
-  const rom = loadAcid2();
+  // ROM selection: the default boots the bundled homebrew game (Libbet and the
+  // Magic Floor, zlib-licensed); GB_ROM=acid2 boots the dmg-acid2 PPU test instead.
+  const romChoice = (process.env.GB_ROM ?? 'game').toLowerCase();
+  const playingGame = romChoice === 'game' || romChoice === 'libbet';
+  const rom = playingGame ? loadLibbet() : loadAcid2();
+  const romTitle = playingGame ? 'Libbet and the Magic Floor (zlib · pinobatch)' : 'dmg-acid2';
 
-  const win = gpu.createWindow({ title: 'Game Boy — dmg-acid2 (pure-TS emulator)', width: WIN_W, height: WIN_H, borderless: false });
+  const win = gpu.createWindow({ title: `Game Boy — ${romTitle} (pure-TS emulator)`, width: WIN_W, height: WIN_H, borderless: false });
   const { w: cw, h: ch } = win.clientSize();
   const g = gpu.createDevice(win.hwnd, { width: cw, height: ch });
 
@@ -1310,25 +1811,81 @@ function main(): void {
   // XInput state buffer (16 bytes) reused each frame.
   const xinputBuf = Buffer.alloc(16);
 
-  const gb = new GameBoy(rom);
+  // ── Audio: real DMG APU → 48 kHz stereo PCM via XAudio2 ────────────────────
+  // Degrades silently when no endpoint is present (createPcmOutput is a no-op).
+  const AUDIO_RATE = 48000;
+  const pcm = audio.createPcmOutput({ sampleRate: AUDIO_RATE, channels: 2 });
+  const apu = new Apu(AUDIO_RATE);
+  if (pcm.available) {
+    pcm.setVolume(0.6);
+    pcm.start();
+  }
+
+  const gb = new GameBoy(rom, apu);
 
   const hudFont = GDI32.CreateFontW(-17, 0, 0, 0, 600, 0, 0, 0, 0, 0, 0, 4 /* ANTIALIASED_QUALITY */, 0, Buffer.from('Consolas\0', 'utf16le').ptr!);
 
-  console.log('Game Boy (DMG) — pure-TypeScript SM83 emulator running dmg-acid2.');
+  console.log(`Game Boy (DMG) — pure-TypeScript SM83 emulator + APU running ${romTitle}.`);
   console.log(`  ${g.driver} · ${g.gpuName}`);
-  console.log(`  ROM: dmg-acid2.gb (${rom.length} bytes, MBC type 0x${(rom[0x147] ?? 0).toString(16).padStart(2, '0')})`);
+  console.log(`  ROM: ${playingGame ? 'libbet.gb' : 'dmg-acid2.gb'} (${rom.length} bytes, MBC type 0x${(rom[0x147] ?? 0).toString(16).padStart(2, '0')})`);
+  console.log(`  Audio: ${pcm.available ? `XAudio2 @ ${AUDIO_RATE} Hz stereo (4-channel DMG APU)` : 'no endpoint — silent'}`);
   console.log('  Arrows = D-pad · Z=A · X=B · Enter=Start · RShift=Select · ESC to exit.');
 
   const startTime = performance.now();
   const durationMs = process.env.DEMO_DURATION_MS ? Number(process.env.DEMO_DURATION_MS) : 0;
   let frames = 0;
   let emuFrames = 0;
+  let audioBlocks = 0;
+  let audioPeak = 0;
   let fps = 0;
   let fpsWindowStart = startTime;
   let captured = false;
 
-  function pollInput(): void {
-    // Keyboard (interactive only — capture mode is fully scripted/non-interactive).
+  // Scripted timeline (capture/headless mode): walk the title screen into actual
+  // gameplay. Each entry holds buttons for [fromMs, toMs). Pulses of Start get
+  // past the title/menu; directional rolls put Libbet mid-floor for the shot.
+  type Btns = { right: boolean; left: boolean; up: boolean; down: boolean; a: boolean; bBtn: boolean; select: boolean; start: boolean };
+  const NONE: Btns = { right: false, left: false, up: false, down: false, a: false, bBtn: false, select: false, start: false };
+  function scripted(ms: number): Btns {
+    if (!playingGame) return NONE;
+    // Press Start in short pulses (release between so the game sees edges) to get
+    // through the intro/title into a floor, then roll around the magic floor so
+    // the capture lands on lively, in-progress gameplay (tracks left, % climbing).
+    // Wall-clock timeline; in capture mode the emulator runs at a small turbo so
+    // these windows clear the (real-time-slow) logo + copyright + story screens
+    // quickly, then play the floor. Tap Start across the first ~2.4 s (each pulse
+    // is an edge the menu/story screens consume) to reach a live floor.
+    const pulse = (lo: number, hi: number) => ms >= lo && ms < hi;
+    if (pulse(200, 320) || pulse(520, 640) || pulse(840, 960) ||
+        pulse(1160, 1280) || pulse(1480, 1600) || pulse(1800, 1920) ||
+        pulse(2120, 2240) || pulse(2440, 2560)) {
+      return { ...NONE, start: true };
+    }
+    // Then roll a tour of the magic floor — each move leaves a track and bumps
+    // the % counter, so the captured frame shows lively, in-progress gameplay.
+    if (pulse(2900, 3080)) return { ...NONE, right: true };
+    if (pulse(3260, 3440)) return { ...NONE, down: true };
+    if (pulse(3620, 3800)) return { ...NONE, right: true };
+    if (pulse(3980, 4160)) return { ...NONE, down: true };
+    if (pulse(4340, 4520)) return { ...NONE, left: true };
+    if (pulse(4700, 4880)) return { ...NONE, down: true };
+    if (pulse(5060, 5240)) return { ...NONE, left: true };
+    if (pulse(5420, 5600)) return { ...NONE, up: true };
+    if (pulse(5780, 5960)) return { ...NONE, left: true };
+    if (pulse(6140, 6320)) return { ...NONE, up: true };
+    if (pulse(6500, 6680)) return { ...NONE, right: true };
+    if (pulse(6860, 7040)) return { ...NONE, down: true };
+    if (pulse(7220, 7400)) return { ...NONE, right: true };
+    return NONE;
+  }
+
+  function pollInput(scriptMs: number): void {
+    // Capture mode: fully scripted, no live keyboard/pad polling.
+    if (durationMs > 0) {
+      gb.setButtons(scripted(scriptMs));
+      return;
+    }
+    // Keyboard (interactive only).
     let right = win.keyDown(VK_RIGHT);
     let left = win.keyDown(VK_LEFT);
     let up = win.keyDown(VK_UP);
@@ -1375,7 +1932,9 @@ function main(): void {
     if (!dc) return;
     const prevFont = GDI32.SelectObject(dc, hudFont);
     GDI32.SetBkMode(dc, TRANSPARENT_BK);
-    const line = `Game Boy · dmg-acid2 PPU test · pure-TS SM83 · ${fps} fps`;
+    const what = playingGame ? 'Libbet & the Magic Floor' : 'dmg-acid2 PPU test';
+    const snd = pcm.available ? ' · APU♪' : '';
+    const line = `Game Boy · ${what} · pure-TS SM83${snd} · ${fps} fps`;
     const text = Buffer.from(`${line}\0`, 'utf16le');
     GDI32.SetTextColor(dc, 0x00102018);
     GDI32.TextOutW(dc, 13, 11, text.ptr!, line.length);
@@ -1406,18 +1965,50 @@ function main(): void {
     gpu.drawFullscreenTriangle();
   }
 
+  // Pace the emulator to the authentic DMG refresh (~59.7 Hz) so audio runs at
+  // real time and the picture is smooth. In capture mode we run a small turbo
+  // multiplier so the scripted timeline can clear the (slow, real-time) intro
+  // sequence AND play a stretch of the floor within the short capture budget;
+  // audio still streams (the queue throttle drops anything XAudio2 can't take).
+  const GB_FRAME_MS = 1000 / 59.7;
+  const TURBO = durationMs > 0 && playingGame ? 4 : 1;
+  let nextDue = startTime;
+
   while (!win.shouldClose()) {
     win.pump();
     if (win.shouldClose()) break;
 
     const now = performance.now();
-    pollInput();
+    pollInput(now - startTime);
 
-    // Run one emulated frame and upload the result.
-    gb.runFrame();
-    emuFrames += 1;
+    // Advance the emulator for every refresh interval that has elapsed (catching
+    // up at most a few frames). At capture time, force one final step so the shot
+    // always reflects the freshest game state even if the clock hasn't ticked.
+    let ran = 0;
+    const forceStep = durationMs > 0 && now - startTime >= durationMs && !captured && emuFrames === 0;
+    while ((now >= nextDue && ran < 4 * TURBO) || (forceStep && ran === 0)) {
+      gb.runFrame();
+      emuFrames += 1;
+      if (ran % TURBO === TURBO - 1) nextDue += GB_FRAME_MS;
+      ran += 1;
+
+      // Feed freshly-generated audio to XAudio2, keeping the queue short so the
+      // sound stays in lockstep with the picture (target < 4 outstanding buffers).
+      if (pcm.available && pcm.queued() < 4) {
+        const block = gb.apu!.drain(AUDIO_RATE); // up to one frame's worth
+        if (block.length > 0) {
+          pcm.submit(block);
+          audioBlocks += 1;
+          if (process.env.GB_AUDIO_DEBUG) {
+            let peak = 0;
+            for (let i = 0; i < block.length; i += 1) { const v = Math.abs(block[i]!); if (v > peak) peak = v; }
+            if (peak > audioPeak) audioPeak = peak;
+          }
+        }
+      }
+    }
+
     uploadFrame();
-
     renderToBackBuffer();
 
     // Capture mode: on the last frame, grab the gallery PNG before present().
@@ -1430,6 +2021,7 @@ function main(): void {
       const stats = captureBackBuffer(g, resolve(shotDir, 'gameboy.png'), { gridW: 48, gridH: 22 });
       console.log(formatGrid(stats));
       console.log(`[shot] ok=${stats.ok} nonBlack=${stats.nonBlackFrac.toFixed(3)} meanLuma=${stats.meanLuma.toFixed(3)} -> ${stats.path}`);
+      console.log(`[audio] available=${pcm.available} queued=${pcm.available ? pcm.queued() : 0} blocksSubmitted=${audioBlocks} apuPending=${gb.apu!.pending}${process.env.GB_AUDIO_DEBUG ? ` peakAmp=${audioPeak}` : ''}`);
       g.present(false);
       break;
     }
@@ -1448,6 +2040,7 @@ function main(): void {
   console.log(`Done. emulated frames=${emuFrames}, ~${fps} fps · ${g.gpuName}`);
 
   // ── Teardown ─────────────────────────────────────────────────────────────
+  pcm.close();
   GDI32.DeleteObject(hudFont);
   comReleaseSafe(samp);
   comReleaseSafe(cb);

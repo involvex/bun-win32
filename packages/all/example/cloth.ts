@@ -141,8 +141,8 @@ const SIM_CB_SIZE = 64;
 const simCb = gpu.makeConstantBuffer(SIM_CB_SIZE);
 const simData = Buffer.alloc(SIM_CB_SIZE);
 
-// Render CB (VS+PS): float4x4 viewProj (64) + float4 params (quadSize, gridW, gridH, time)
-//   + float4 camRight(xyz) + float4 camUp(xyz) = 64 + 16 + 16 + 16 = 112.
+// Render CB (VS+PS): float4x4 viewProj (64) + float4 params (-, gridW, gridH, time)
+//   + float4 camPos(xyz) + float4 lightDir(xyz) = 64 + 16 + 16 + 16 = 112.
 const REND_CB_SIZE = 112;
 const rendCb = gpu.makeConstantBuffer(REND_CB_SIZE);
 const rendData = Buffer.alloc(REND_CB_SIZE);
@@ -191,14 +191,24 @@ void main(uint3 id : SV_DispatchThreadID) {
   // gentle steady downwind push (+x) keeps it streaming; reach grows from mast→edge but
   // never to zero in the middle, so the whole span flutters.
   float3 g = float3(0, gP1.y, 0);
-  float reach = 0.15 + 0.85 * u;                     // mast (0.15) → fly edge (1.0)
+  // Reach grows from the mast then EASES back near the very fly edge so the free
+  // trailing column is not over-driven into folding over on itself (the knot).
+  float reach = 0.15 + 0.95 * u - 0.30 * u * u;      // mast 0.15 → peak ~0.95 → edge 0.80
   // Steady downwind drift (mostly +x), modest.
   float3 drift = normalize(gWind.xyz + 1e-5) * gWind.w * 0.45 * reach;
-  // Dominant out-of-plane travelling flutter — the visible ripple of a flag.
-  float wave = sin(t * 6.0 - u * 10.0 + vv * 2.5) + 0.6 * sin(t * 3.5 - u * 5.0 - vv * 4.0);
-  float3 flutter = float3(0, 0, 1) * wave * gWind.w * reach * 1.3;
-  // A little vertical undulation so folds are not perfectly horizontal bands.
-  flutter.y += sin(t * 4.5 - u * 7.0 + vv * 5.0) * gWind.w * reach * 0.35;
+  // Dominant out-of-plane travelling flutter — the visible ripple of a flag. The phase
+  // shears with HEIGHT (vv) so the top and bottom of any vertical slice swing on
+  // different beats: the trailing edge FANS into broad diagonal folds instead of all
+  // the free nodes lurching in z together and cinching into a knot.
+  float wave = sin(t * 5.2 - u * 9.0 + vv * 6.0)
+             + 0.6 * sin(t * 3.2 - u * 4.5 - vv * 9.0)
+             + 0.35 * sin(t * 7.5 - u * 14.0 + vv * 3.0);
+  float3 flutter = float3(0, 0, 1) * wave * gWind.w * reach * 0.92;
+  // Vertical undulation: folds tilt and the fly edge breathes open top-to-bottom.
+  flutter.y += sin(t * 4.5 - u * 7.0 + vv * 7.0) * gWind.w * reach * 0.30;
+  // Gentle outward "fan": push the free edge's top up and bottom down a touch so the
+  // trailing edge stays broad and tall rather than pinching toward the mid-line.
+  flutter.y += (vv - 0.5) * gWind.w * reach * reach * 0.55;
   float3 a = g + drift + flutter;
 
   // Verlet integration with velocity damping.
@@ -285,94 +295,157 @@ void main(uint3 id : SV_DispatchThreadID) {
 }
 `;
 
-// ── HLSL: RENDER VS — expand each node into a small camera-facing additive quad ───
-// 6 verts per node (two triangles). The shader fetches the node from the position SRV
-// by (vid / 6), reads neighbours to estimate the surface normal + stretch for shading,
-// then offsets the quad corners along camera right/up and projects by gViewProj.
+// ── HLSL: RENDER VS — triangulate the solved lattice into a real lit surface ──────
+// 6 verts per GRID CELL (two triangles), no vertex/index buffer: the VS derives the
+// cell (gx,gy) and corner from SV_VertexID, fetches the four solved corner positions
+// straight from the position SRV, and computes a SMOOTH per-vertex normal by central
+// finite differences of the corner's neighbours. World position, normal, the surface
+// stretch, and a fabric UV all flow to the PS for genuine directional + rim lighting.
 const VS_SRC = `
 cbuffer Rend : register(b0) {
   float4x4 gViewProj;
-  float4   gParams;   // x=quadSize, y=gridW, z=gridH, w=time
-  float4   gCamRight; // xyz
-  float4   gCamUp;    // xyz
+  float4   gParams;   // x=(unused), y=gridW, z=gridH, w=time
+  float4   gCamPos;   // xyz=camera world pos
+  float4   gLightDir; // xyz=normalized light direction (toward scene)
 };
 StructuredBuffer<float4> Pos : register(t0);
 
 struct VSOut {
-  float4 pos   : SV_Position;
-  float3 color : COLOR0;
-  float2 uv    : TEXCOORD0;
+  float4 pos     : SV_Position;
+  float3 wpos    : TEXCOORD0;
+  float3 nrm     : TEXCOORD1;
+  float2 uv      : TEXCOORD2;
+  float  stretch : TEXCOORD3;
 };
 
+static const uint GW = ${GRID_W};
+static const uint GH = ${GRID_H};
+static const float REST = ${REST.toFixed(5)};
+
+float3 fetch(uint x, uint y) {
+  x = min(x, GW - 1u);
+  y = min(y, GH - 1u);
+  return Pos[y * GW + x].xyz;
+}
+
+// Smooth normal at lattice node (x,y) from central differences of its neighbours.
+float3 nodeNormal(uint x, uint y) {
+  float3 dx = fetch(x + 1u, y) - fetch(max(x, 1u) - 1u, y);
+  float3 dy = fetch(x, y + 1u) - fetch(x, max(y, 1u) - 1u);
+  return normalize(cross(dx, dy) + float3(0, 0, 1e-5));
+}
+
 VSOut main(uint vid : SV_VertexID) {
-  uint node = vid / 6;
-  uint corner = vid % 6;
+  uint cell   = vid / 6u;            // which grid quad
+  uint corner = vid % 6u;            // which of the 6 triangle verts
+  uint cellsW = GW - 1u;
+  uint cx = cell % cellsW;           // cell column 0..GW-2
+  uint cy = cell / cellsW;           // cell row    0..GH-2
 
-  uint gw = (uint)gParams.y;
-  uint gh = (uint)gParams.z;
-  uint gx = node % gw;
-  uint gy = node / gw;
+  // Two triangles: (0,0)(1,0)(1,1) and (0,0)(1,1)(0,1).
+  uint2 off;
+  if      (corner == 0u) off = uint2(0u, 0u);
+  else if (corner == 1u) off = uint2(1u, 0u);
+  else if (corner == 2u) off = uint2(1u, 1u);
+  else if (corner == 3u) off = uint2(0u, 0u);
+  else if (corner == 4u) off = uint2(1u, 1u);
+  else                   off = uint2(0u, 1u);
 
-  float3 p = Pos[node].xyz;
+  uint gx = cx + off.x;
+  uint gy = cy + off.y;
 
-  // Estimate the local surface stretch from horizontal + vertical edge lengths vs rest.
-  float rest = ${REST.toFixed(5)};
-  float3 px1 = (gx < gw - 1) ? Pos[node + 1].xyz  : p;
-  float3 py1 = (gy < gh - 1) ? Pos[node + gw].xyz : p;
-  float lenX = length(px1 - p);
-  float lenY = length(py1 - p);
-  float stretch = saturate((max(lenX, lenY) / rest - 1.0) * 1.6);
+  float3 p   = fetch(gx, gy);
+  float3 nrm = nodeNormal(gx, gy);
 
-  // Surface normal (cross of the two edges) for a soft directional sheen.
-  float3 nrm = normalize(cross(px1 - p, py1 - p) + float3(0, 0, 1e-4));
-
-  // Quad corner offsets (two triangles: 0,1,2 and 0,2,3).
-  float2 q;
-  if      (corner == 0) q = float2(-1, -1);
-  else if (corner == 1) q = float2( 1, -1);
-  else if (corner == 2) q = float2( 1,  1);
-  else if (corner == 3) q = float2(-1, -1);
-  else if (corner == 4) q = float2( 1,  1);
-  else                  q = float2(-1,  1);
-
-  float s = gParams.x;
-  float3 world = p + gCamRight.xyz * (q.x * s) + gCamUp.xyz * (q.y * s);
+  // Local stretch (taut vs slack) from the cell's edge lengths vs rest.
+  float lenX = length(fetch(gx + 1u, gy) - fetch(gx, gy));
+  float lenY = length(fetch(gx, gy + 1u) - fetch(gx, gy));
+  float stretch = saturate((max(lenX, lenY) / REST - 1.0) * 1.4);
 
   VSOut o;
-  o.pos = mul(gViewProj, float4(world, 1.0));
-  o.uv = q; // -1..1 across the quad
-
-  // Fabric palette: a teal→magenta banner. Hue shifts with height (gy) and warms where
-  // the cloth is stretched; a sheen term from the normal vs a fixed light adds shimmer.
-  float h = (float)gy / (gParams.z - 1.0);                 // 0 top → 1 bottom
-  float3 colTop = float3(0.10, 0.55, 0.95);                // cool teal-blue
-  float3 colBot = float3(0.95, 0.20, 0.55);                // warm magenta
-  float3 base = lerp(colTop, colBot, h);
-  // Stretched (taut) regions glow hot gold; slack regions stay saturated.
-  base = lerp(base, float3(1.0, 0.85, 0.45), stretch * 0.7);
-  float sheen = pow(saturate(dot(nrm, normalize(float3(0.4, 0.7, 0.6)))), 3.0);
-  float3 col = base * (0.6 + 0.8 * sheen) + 0.12;
-
-  o.color = col;
+  o.pos     = mul(gViewProj, float4(p, 1.0));
+  o.wpos    = p;
+  o.nrm     = nrm;
+  o.uv      = float2((float)gx / (GW - 1.0), (float)gy / (GH - 1.0)); // 0..1 over the flag
+  o.stretch = stretch;
   return o;
 }
 `;
 
-// ── HLSL: RENDER PS — soft round additive sprite, edges feather to zero ──────────
-const PS_POINTS_SRC = `
+// ── HLSL: RENDER PS — silk banner material, directional + rim light, sheen ────────
+// A two-sided lit fabric: the geometric normal is flipped toward the eye so both
+// faces shade, a key directional light gives form, a warm rim picks out the silhouette
+// of every fold, and a tight specular highlight reads as silk sheen. The cloth carries
+// a woven base colour plus crisp vertical accent stripes (a banner motif) and a subtle
+// diagonal weave, all in UV space so the rippling folds are unmistakably fabric.
+const PS_SURFACE_SRC = `
+cbuffer Rend : register(b0) {
+  float4x4 gViewProj;
+  float4   gParams;   // w=time
+  float4   gCamPos;
+  float4   gLightDir;
+};
+
 struct VSOut {
-  float4 pos   : SV_Position;
-  float3 color : COLOR0;
-  float2 uv    : TEXCOORD0;
+  float4 pos     : SV_Position;
+  float3 wpos    : TEXCOORD0;
+  float3 nrm     : TEXCOORD1;
+  float2 uv      : TEXCOORD2;
+  float  stretch : TEXCOORD3;
 };
 
 float4 main(VSOut i) : SV_Target {
-  float r = length(i.uv);                 // 0 at center → ~1.41 at corners
-  float a = saturate(1.0 - r);            // round falloff, hard zero past the inscribed circle
-  a = pow(a, 1.6);
-  // Quads overlap heavily with the larger size; keep each faint so the additive sum
-  // forms a smooth, evenly-lit fabric sheet rather than blowing out into a white blob.
-  return float4(i.color * a * 0.10, a);
+  float3 V = normalize(gCamPos.xyz - i.wpos);     // toward eye
+  float3 N = normalize(i.nrm);
+  if (dot(N, V) < 0.0) N = -N;                    // two-sided: face the camera
+  float3 L = normalize(-gLightDir.xyz);           // toward the light
+  float3 H = normalize(L + V);
+
+  // ── Fabric material ──────────────────────────────────────────────────────────
+  // Vertical banner gradient (top cool → bottom warm) gives the cloth depth.
+  float3 colTop = float3(0.05, 0.32, 0.95);       // deep azure
+  float3 colMid = float3(0.70, 0.08, 0.62);       // royal magenta
+  float3 colBot = float3(1.00, 0.42, 0.06);       // sunset amber
+  float v = i.uv.y;
+  float3 base = (v < 0.5) ? lerp(colTop, colMid, v * 2.0) : lerp(colMid, colBot, (v - 0.5) * 2.0);
+
+  // Crisp vertical accent stripes streaming with the flag (a banner motif).
+  float stripe = abs(frac(i.uv.x * 9.0) - 0.5) * 2.0;     // 0 at stripe centre
+  float stripeMask = smoothstep(0.18, 0.0, stripe);       // bright bands
+  base = lerp(base, base * 0.32 + float3(0.9, 0.85, 0.7) * 0.18, stripeMask * 0.7);
+
+  // Fine diagonal weave so the fabric never looks like flat plastic.
+  float weave = 0.5 + 0.5 * sin((i.uv.x + i.uv.y) * 380.0);
+  weave *= 0.5 + 0.5 * sin((i.uv.x - i.uv.y) * 360.0);
+  base *= 0.90 + 0.10 * weave;
+
+  // Taut regions warm toward hot gold; slack regions stay saturated.
+  base = lerp(base, float3(1.0, 0.82, 0.42), i.stretch * 0.5);
+
+  // ── Lighting ───────────────────────────────────────────────────────────────
+  float ndl = saturate(dot(N, L));
+  float wrap = saturate((dot(N, L) + 0.30) / 1.30);        // soft wrap for cloth
+  float3 ambient = float3(0.10, 0.13, 0.22) * (0.7 + 0.3 * v);
+  float3 diffuse = base * (wrap * 0.55 + ndl * 0.38);
+
+  // Silk sheen: a tight, slightly-warm highlight plus a coloured satin lobe. Both are
+  // kept narrow and the satin lobe is tinted by the fabric colour so taut sheen stays
+  // saturated instead of washing the banner to white.
+  float specT = pow(saturate(dot(N, H)), 120.0) * 0.55;
+  float3 spec = float3(1.0, 0.95, 0.85) * specT;
+  float3 satin = base * pow(saturate(dot(N, H)), 22.0) * 0.30;
+
+  // Warm rim light traces every fold's silhouette.
+  float rim = pow(1.0 - saturate(dot(N, V)), 3.0);
+  float3 rimCol = float3(1.0, 0.66, 0.40) * rim * 0.85;
+
+  // Subtle translucency: light bleeding through the thin cloth from behind.
+  float back = pow(saturate(dot(-N, L)), 2.0) * 0.22;
+  float3 trans = base * back;
+
+  float3 col = ambient * base + diffuse + spec + satin + rimCol + trans;
+
+  return float4(col, 1.0);
 }
 `;
 
@@ -401,17 +474,20 @@ float3 bloom(float2 uv) {
 float4 main(float4 fp : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
   float3 hdr = sampleHdr(uv);
   float3 bl  = bloom(uv);
-  float3 brightOnly = max(bl - 0.30.xxx, 0.0.xxx);
-  float3 col = hdr + brightOnly * 1.25;
+  // Only the brightest sheen/rim highlights bloom — keeps the fabric crisp.
+  float3 brightOnly = max(bl - 0.85.xxx, 0.0.xxx);
+  float3 col = hdr + brightOnly * 0.7;
 
   col *= gP.z; // exposure
 
   // Gentle vignette to seat the banner in the frame.
   float2 q = uv - 0.5;
   float vig = smoothstep(1.05, 0.20, dot(q, q) * 1.7);
-  col *= lerp(0.55, 1.0, vig);
+  col *= lerp(0.62, 1.0, vig);
 
-  col = col / (col + 1.0.xxx);          // Reinhard tonemap
+  // Filmic ACES-ish tonemap for richer contrast than plain Reinhard.
+  float3 x = col * 0.85;
+  col = saturate((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14));
   col = pow(col, (1.0 / 2.2).xxx);      // gamma
   return float4(col, 1.0);
 }
@@ -432,16 +508,19 @@ VSOut main(uint vid : SV_VertexID) {
 const csIntegrateCode = gpu.compile(CS_INTEGRATE, 'main', 'cs_5_0');
 const csSolveCode = gpu.compile(CS_SOLVE, 'main', 'cs_5_0');
 const vsCode = gpu.compile(VS_SRC, 'main', 'vs_5_0');
-const psPointsCode = gpu.compile(PS_POINTS_SRC, 'main', 'ps_5_0');
+const psSurfaceCode = gpu.compile(PS_SURFACE_SRC, 'main', 'ps_5_0');
 const vsFullscreenCode = gpu.compile(VS_FULLSCREEN_SRC, 'main', 'vs_5_0');
 const psPostCode = gpu.compile(PS_POST_SRC, 'main', 'ps_5_0');
 
 const csIntegrate = gpu.makeComputeShader(csIntegrateCode);
 const csSolve = gpu.makeComputeShader(csSolveCode);
-const vsPoints = gpu.makeVertexShader(vsCode);
-const psPoints = gpu.makePixelShader(psPointsCode);
+const vsSurface = gpu.makeVertexShader(vsCode);
+const psSurface = gpu.makePixelShader(psSurfaceCode);
 const vsFullscreen = gpu.makeVertexShader(vsFullscreenCode);
 const psPost = gpu.makePixelShader(psPostCode);
+
+// Cells (= quads) in the lattice; each expands to 2 triangles = 6 verts in the VS.
+const CELL_COUNT = (GRID_W - 1) * (GRID_H - 1);
 
 // ── Camera math (row-major; uploaded TRANSPOSED so HLSL column-major reads recover it) ─
 type V3 = [number, number, number];
@@ -526,13 +605,13 @@ function cleanup(code: number): never {
       gpu.comRelease(hdr.tex);
       gpu.comRelease(psPost);
       gpu.comRelease(vsFullscreen);
-      gpu.comRelease(psPoints);
-      gpu.comRelease(vsPoints);
+      gpu.comRelease(psSurface);
+      gpu.comRelease(vsSurface);
       gpu.comRelease(csSolve);
       gpu.comRelease(csIntegrate);
       gpu.blobRelease(psPostCode.blob);
       gpu.blobRelease(vsFullscreenCode.blob);
-      gpu.blobRelease(psPointsCode.blob);
+      gpu.blobRelease(psSurfaceCode.blob);
       gpu.blobRelease(vsCode.blob);
       gpu.blobRelease(csSolveCode.blob);
       gpu.blobRelease(csIntegrateCode.blob);
@@ -583,7 +662,7 @@ const SIM_DT = 0.0065;
 let simTime = 0;
 // The capture frame is chosen by SIM TIME (not wall clock) so the gallery PNG always
 // shows the same well-developed, mid-flap pose regardless of how fast the machine runs.
-const CAPTURE_SIM_TIME = process.env.CLOTH_CAPTURE_T ? Number(process.env.CLOTH_CAPTURE_T) : 1.6;
+const CAPTURE_SIM_TIME = process.env.CLOTH_CAPTURE_T ? Number(process.env.CLOTH_CAPTURE_T) : 3.6;
 
 const aspect = clientW / clientH;
 const proj = perspective((46 * Math.PI) / 180, aspect, 0.1, 200);
@@ -604,7 +683,7 @@ while (!win.shouldClose()) {
   // visible ripple comes from the out-of-plane travelling wave in the shader.
   const windZ = Math.sin(t * 0.6) * 0.35;
   const windDir: V3 = [1.0, 0.0, windZ];
-  const windStrength = 7.0;
+  const windStrength = 5.6;
   // Collision sphere parked behind the flag's mid-span so passing folds drape over it.
   const sphereCenter: V3 = [CLOTH_W * 0.20, -CLOTH_H * 0.02 + Math.sin(t * 0.7) * 0.3, -SPHERE_R * 0.9 + Math.cos(t * 0.5) * 0.5];
 
@@ -615,7 +694,7 @@ while (!win.shouldClose()) {
   simData.writeFloatLE(GRID_H, 12);
   simData.writeFloatLE(REST, 16);
   simData.writeFloatLE(-4.2, 20); // gravity (y) — light, so the flag flies rather than droops
-  simData.writeFloatLE(0.986, 24); // damping (a touch firmer so flaps settle, not ring)
+  simData.writeFloatLE(0.990, 24); // damping (a touch firmer so flaps settle, not ring)
   simData.writeFloatLE(1.0, 28); // stiffness
   simData.writeFloatLE(windDir[0], 32);
   simData.writeFloatLE(windDir[1], 36);
@@ -644,22 +723,26 @@ while (!win.shouldClose()) {
     scratchBuf = tmp;
   }
 
-  // ── 3. Camera + render the cloth as additive quads into the HDR target ──
+  // ── 3. Camera + render the cloth as a lit triangulated surface into the HDR target ──
   // Frame the streaming flag's broad face from a slight front-quarter angle (so the
   // travelling folds read in 3D) and orbit gently. The flag spans the mast at x≈-6.4
   // out to a free edge billowing near x≈+5; centering near the mid-span keeps it framed.
-  const yaw = -0.26 + Math.sin(t * 0.25) * 0.3; // near-front, gentle orbit
-  const camDist = CLOTH_W * 1.36; // fits the full mast→fly span with the fabric large
-  const camHeight = CLOTH_H * 0.03 + Math.sin(t * 0.2) * CLOTH_H * 0.04;
-  // Aim slightly downwind of the mast so the billowing body of the flag is centered.
-  const center: V3 = [CLOTH_W * 0.16, -CLOTH_H * 0.03, 0];
+  const yaw = -0.30 + Math.sin(t * 0.22) * 0.20; // near-front, gentle orbit
+  const camDist = CLOTH_W * 1.10; // closer so the silk fills the wide frame
+  const camHeight = CLOTH_H * 0.02 + Math.sin(t * 0.2) * CLOTH_H * 0.03;
+  // Aim at the billowing visual centroid (downwind + a little low) so the fabric is
+  // centred and large in frame rather than hugging the left third.
+  const center: V3 = [CLOTH_W * 0.20, -CLOTH_H * 0.12, 0];
   const eye: V3 = [center[0] + Math.sin(yaw) * camDist, camHeight, center[2] - Math.cos(yaw) * camDist];
   const view = lookAt(eye, center, [0, 1, 0]);
   const viewProj = mul4(proj, view);
 
-  // Camera right/up axes (from the view matrix rows) for the camera-facing quads.
-  const camRight: V3 = [view[0]!, view[1]!, view[2]!];
-  const camUp: V3 = [view[4]!, view[5]!, view[6]!];
+  // Key light: a warm sun from the upper-left-front, raking across the folds.
+  let ldx = -0.45;
+  let ldy = -0.55;
+  let ldz = 0.70;
+  const ll = Math.hypot(ldx, ldy, ldz);
+  ldx /= ll; ldy /= ll; ldz /= ll;
 
   // Upload viewProj TRANSPOSED (column-major HLSL read recovers the row-major matrix).
   for (let row = 0; row < 4; row += 1) {
@@ -667,41 +750,40 @@ while (!win.shouldClose()) {
       rendData.writeFloatLE(viewProj[col * 4 + row]!, (row * 4 + col) * 4);
     }
   }
-  rendData.writeFloatLE(REST * 2.2, 64); // quadSize (>2× spacing → quads overlap into a solid sheet, bridging stretch gaps)
+  rendData.writeFloatLE(0, 64);
   rendData.writeFloatLE(GRID_W, 68);
   rendData.writeFloatLE(GRID_H, 72);
   rendData.writeFloatLE(t, 76);
-  rendData.writeFloatLE(camRight[0], 80);
-  rendData.writeFloatLE(camRight[1], 84);
-  rendData.writeFloatLE(camRight[2], 88);
+  rendData.writeFloatLE(eye[0], 80); // camPos
+  rendData.writeFloatLE(eye[1], 84);
+  rendData.writeFloatLE(eye[2], 88);
   rendData.writeFloatLE(0, 92);
-  rendData.writeFloatLE(camUp[0], 96);
-  rendData.writeFloatLE(camUp[1], 100);
-  rendData.writeFloatLE(camUp[2], 104);
+  rendData.writeFloatLE(ldx, 96); // light direction (toward scene)
+  rendData.writeFloatLE(ldy, 100);
+  rendData.writeFloatLE(ldz, 104);
   rendData.writeFloatLE(0, 108);
   gpu.updateConstantBuffer(rendCb, rendData);
 
   gpu.setRenderTargets([hdr.rtv!]);
   gpu.setViewport(clientW, clientH);
   gpu.clear(hdr.rtv!, [0.012, 0.016, 0.03, 1]);
-  gpu.setBlendState(additiveBlend);
+  gpu.setBlendState(0n); // OPAQUE — the cloth is a solid lit surface
   vcall(dev.context, CTX_RS_SET_STATE, [FFIType.u64], [noCullState], FFIType.void); // double-sided cloth
   gpu.vsSetShaderResources([posBuf.srv!]);
-  gpu.vsSet(vsPoints, [rendCb]);
-  gpu.psSet(psPoints);
-  // 6 verts per node, no IA — the VS expands each particle into a camera-facing quad.
+  gpu.vsSet(vsSurface, [rendCb]);
+  gpu.psSet(psSurface, { cb: [rendCb] });
+  // 6 verts per grid cell, no IA — the VS triangulates the lattice from the SRV.
   vcall(dev.context, gpu.CTX_IA_SET_PRIMITIVE_TOPOLOGY, [FFIType.u32], [4 /* TRIANGLELIST */], FFIType.void);
-  vcall(dev.context, gpu.CTX_DRAW, [FFIType.u32, FFIType.u32], [NODE_COUNT * 6, 0], FFIType.void);
+  vcall(dev.context, gpu.CTX_DRAW, [FFIType.u32, FFIType.u32], [CELL_COUNT * 6, 0], FFIType.void);
 
   // Unbind VS SRV + HDR RTV before reusing HDR as a PS SRV.
   gpu.vsSetShaderResources([0n]);
-  gpu.setBlendState(0n);
   gpu.setRenderTargets(rtvArrEmpty);
 
   // ── 4. Bloom + tonemap to the back buffer ──
   postData.writeFloatLE(1 / clientW, 0);
   postData.writeFloatLE(1 / clientH, 4);
-  postData.writeFloatLE(1.25, 8); // exposure
+  postData.writeFloatLE(1.35, 8); // exposure
   postData.writeFloatLE(t, 12);
   gpu.updateConstantBuffer(postCb, postData);
 

@@ -174,15 +174,17 @@ SamplerState Smp : register(s0);
 
 float luminance(float3 c){ return dot(c, float3(0.299, 0.587, 0.114)); }
 
-// Predator thermal palette: dark blue -> magenta -> red -> orange -> yellow -> white.
+// Predator thermal palette: cool purple darks -> magenta -> red -> orange ->
+// yellow -> incandescent white. Tuned for crisp hot highlights on bright UI and
+// deep, readable cool darks so windows/text survive as heat structure.
 float3 thermal(float t){
   t = saturate(t);
-  float3 c0 = float3(0.02,0.02,0.10);
-  float3 c1 = float3(0.20,0.00,0.45);
-  float3 c2 = float3(0.75,0.05,0.30);
-  float3 c3 = float3(1.00,0.35,0.00);
-  float3 c4 = float3(1.00,0.85,0.10);
-  float3 c5 = float3(1.00,1.00,0.95);
+  float3 c0 = float3(0.04,0.02,0.16);   // cool indigo black
+  float3 c1 = float3(0.28,0.02,0.55);   // violet
+  float3 c2 = float3(0.78,0.04,0.42);   // magenta-red
+  float3 c3 = float3(1.00,0.30,0.04);   // hot orange
+  float3 c4 = float3(1.00,0.82,0.12);   // amber-yellow
+  float3 c5 = float3(1.00,1.00,0.96);   // incandescent white
   float3 c;
   if      (t < 0.2) c = lerp(c0,c1, t/0.2);
   else if (t < 0.4) c = lerp(c1,c2,(t-0.2)/0.2);
@@ -193,71 +195,142 @@ float3 thermal(float t){
 }
 
 float3 filterThermal(float2 uv){
-  float3 c = Src.Sample(Smp, uv).rgb;
-  float l = luminance(c);
-  // slight scan shimmer so it reads as a live sensor
-  l += 0.03 * sin(uv.y * iRes.y * 0.6 + iTime * 6.0);
-  return thermal(l);
+  float2 px = 1.0 / iRes;
+  // 3x3 box-soften the luma so the heat ramp reads smooth, not noisy per-pixel.
+  float l = 0.0;
+  [unroll] for (int j=-1;j<=1;j++)
+    [unroll] for (int i=-1;i<=1;i++)
+      l += luminance(Src.Sample(Smp, uv + float2(i,j)*px).rgb);
+  l /= 9.0;
+  // gentle contrast curve so darks stay cool and bright UI pops hot
+  l = saturate(pow(l, 0.85) * 1.06);
+  // faint sensor scan shimmer so it reads as a live heat camera
+  l += 0.018 * sin(uv.y * iRes.y * 0.5 + iTime * 5.0);
+  float3 col = thermal(l);
+  // gentle bloom: pull a soft wide-tap average of the HOT regions and add it back
+  // so bright UI elements glow like real incandescence.
+  float hot = 0.0;
+  [unroll] for (int k=0;k<8;k++){
+    float ang = 6.2831853 * (float)k / 8.0;
+    float2 o = float2(cos(ang), sin(ang)) * px * 3.0;
+    float lh = luminance(Src.Sample(Smp, uv + o).rgb);
+    hot += smoothstep(0.55, 0.95, lh);
+  }
+  hot /= 8.0;
+  col += hot * float3(0.55, 0.30, 0.05);     // warm halo around hot spots
+  return saturate(col);
 }
 
 float3 filterEdge(float2 uv){
   float2 px = 1.0 / iRes;
   float gx = 0, gy = 0;
-  // Sobel over luma
+  // explicit Sobel kernels over luma
   [unroll] for (int j=-1;j<=1;j++){
     [unroll] for (int i=-1;i<=1;i++){
       float l = luminance(Src.Sample(Smp, uv + float2(i,j)*px).rgb);
-      float sx = (i==0)? -2.0*((j==0)?0:0) : i*((j==0)?2.0:1.0);
-      // explicit Sobel kernels
       float kx = (float)i * ((j==0)?2.0:1.0);
       float ky = (float)j * ((i==0)?2.0:1.0);
       gx += l * kx;
       gy += l * ky;
     }
   }
-  float edge = saturate(sqrt(gx*gx + gy*gy) * 1.4);
-  // toon-quantized base color underneath the neon edges
+  float mag = sqrt(gx*gx + gy*gy);
+  // crisp neon core + a soft outer glow so edges bloom against the dark toon base
+  float edge = saturate(mag * 1.8);
+  float glow = saturate(mag * 0.9);
+  // toon-quantized, darkened base color so the neon outlines dominate
   float3 base = Src.Sample(Smp, uv).rgb;
   base = floor(base * 4.0 + 0.5) / 4.0;
-  float3 neon = lerp(float3(0.0,0.9,1.0), float3(1.0,0.2,0.9), uv.y);
-  return lerp(base * 0.25, neon, edge);
+  // neon hue cycles across the screen + slow time drift (cyan -> magenta -> lime)
+  float h = uv.x * 0.6 + uv.y * 0.4 + iTime * 0.05;
+  float3 neon = 0.5 + 0.5 * cos(6.2831853 * (h + float3(0.0, 0.33, 0.66)));
+  neon = lerp(float3(0.0,0.95,1.0), neon, 0.6);   // bias toward electric cyan
+  float3 col = base * 0.18;                         // dark toon backdrop
+  col += neon * glow * 0.35;                        // outer halo
+  col = lerp(col, neon * 1.2, edge);                // bright core line
+  return saturate(col);
 }
 
 float3 filterAscii(float2 uv){
-  float2 cell = float2(10.0, 14.0);            // glyph cell size in pixels
+  float2 cell = float2(11.0, 16.0);            // glyph cell size in pixels (readable)
   float2 grid = floor(iRes / cell);
   float2 cellUv = floor(uv * grid) / grid;     // top-left of the cell, in uv
-  float3 csrc = Src.Sample(Smp, cellUv + 0.5/grid).rgb;
+  // average the whole cell (not a single tap) so thin dark-theme text still
+  // contributes luma to the glyph it lands in.
+  float3 csrc = float3(0,0,0);
+  [unroll] for (int sy=0;sy<3;sy++)
+    [unroll] for (int sx=0;sx<3;sx++)
+      csrc += Src.Sample(Smp, cellUv + float2(sx+0.5,sy+0.5)/(grid*3.0)).rgb;
+  csrc /= 9.0;
   float l = luminance(csrc);
-  // position inside the cell, 0..1
+  // strong response curve: dark editor themes have low luma, lift it hard so the
+  // layout reads as a bright phosphor terminal.
+  float lg = saturate(pow(l, 0.55) * 1.9);
+  // position inside the cell, centered -1..1
   float2 f = frac(uv * grid);
-  // build a procedural glyph whose "ink" coverage tracks luma (denser = brighter)
   float2 p = (f - 0.5) * 2.0;
+  // build a procedural glyph whose "ink" coverage tracks luma (denser = brighter)
+  // ramp: . - x + # @  — distinct silhouettes per luma band
   float ink = 0.0;
-  // ramp: space . : - = + * # %
-  if (l > 0.08) ink = max(ink, 1.0 - smoothstep(0.0, 0.12, length(p)));            // dot
-  if (l > 0.25) ink = max(ink, 1.0 - smoothstep(0.04, 0.10, abs(p.y)));            // dash
-  if (l > 0.42) ink = max(ink, 1.0 - smoothstep(0.04, 0.10, abs(abs(p.x)-abs(p.y))));// cross
-  if (l > 0.60) ink = max(ink, 1.0 - smoothstep(0.06, 0.12, min(abs(p.x),abs(p.y))));// plus
-  if (l > 0.78) ink = max(ink, step(max(abs(p.x),abs(p.y)), 0.8));                 // block
-  float3 phosphor = lerp(float3(0.0,0.25,0.0), float3(0.4,1.0,0.4), l);
-  return phosphor * ink;
+  if (lg > 0.05) ink = max(ink, 1.0 - smoothstep(0.12, 0.34, length(p)));              // .
+  if (lg > 0.18) ink = max(ink, (1.0 - smoothstep(0.06,0.18,abs(p.y))) * step(abs(p.x),0.72)); // -
+  if (lg > 0.32) ink = max(ink, 1.0 - smoothstep(0.05,0.16,abs(abs(p.x)-abs(p.y))));   // x
+  if (lg > 0.46) ink = max(ink, (1.0-smoothstep(0.05,0.16,min(abs(p.x),abs(p.y)))) * step(max(abs(p.x),abs(p.y)),0.78)); // +
+  if (lg > 0.62) ink = max(ink, step(max(abs(p.x),abs(p.y)),0.66) * (1.0-step(max(abs(p.x),abs(p.y)),0.34))); // # ring
+  if (lg > 0.80) ink = max(ink, step(max(abs(p.x),abs(p.y)),0.80));                     // @ block
+  ink = saturate(ink);
+  // tint glyphs with the cell's own chroma so the desktop layout stays legible,
+  // blended toward a bright amber-green CRT phosphor.
+  float3 srcTint = csrc / max(l, 0.001);                   // chroma of the cell
+  float3 phosphor = lerp(float3(0.55,1.0,0.45), srcTint, 0.55);
+  phosphor *= (0.55 + 0.7 * lg);
+  // glyph ink, plus a faint ambient cell wash so dark regions still show structure
+  float3 col = phosphor * ink;
+  col += float3(0.0,0.06,0.02) * smoothstep(0.02, 0.5, lg);  // dim green "page" glow
+  // faint scanline so it reads as a CRT, but keep it bright overall
+  col *= 0.9 + 0.1 * sin(uv.y * iRes.y * 3.14159 / cell.y);
+  return saturate(col * 1.15);
 }
 
+// 2D rotation helper
+float2 rot2(float2 v, float a){ float s=sin(a),c=cos(a); return float2(c*v.x - s*v.y, s*v.x + c*v.y); }
+
 float3 filterKaleido(float2 uv){
-  float2 c = uv - 0.5;
+  // square-aspect centered coords so the mandala is circular, not stretched
+  float aspect = iRes.x / iRes.y;
+  float2 c = (uv - 0.5) * float2(aspect, 1.0);
   float r = length(c);
   float a = atan2(c.y, c.x);
-  float seg = 6.2831853 / 8.0;
-  a = abs(((a + iTime*0.25) % seg) - seg*0.5);   // mirror into a wedge, slowly rotate
-  float2 k = float2(cos(a), sin(a)) * r;
-  float2 suv = saturate(k * 1.6 + 0.5);
-  float3 col = Src.Sample(Smp, suv).rgb;
-  // jewel-tone boost + soft vignette
-  col = pow(col, 0.8);
-  col *= 1.0 + 0.6*float3(sin(a*4.0+iTime), sin(a*4.0+iTime+2.0), sin(a*4.0+iTime+4.0));
-  col *= smoothstep(0.75, 0.15, r);
-  return saturate(col);
+  // 8-fold mirror symmetry with soft seams
+  const float N = 8.0;
+  float seg = 6.2831853 / N;
+  float aw = a + iTime * 0.14;             // slow rotation
+  aw = (aw % seg + seg) % seg;             // wrap into a wedge
+  aw = abs(aw - seg * 0.5);                // mirror across wedge center
+  // Reconstruct a mirrored 2D coordinate from (radius, mirrored angle) and sample
+  // a RECTANGULAR window of the live desktop, so each petal is filled with a
+  // recognizable chunk of UI (panels/windows/colour blocks) — not a thin ray.
+  // Radius walks a fixed band of the screen; sampling biased to the busy left half.
+  float2 dir = float2(cos(aw), sin(aw));
+  float2 q = dir * (0.20 + r * 0.85);      // map wedge → desktop region
+  float2 suv  = q * float2(0.72, 0.72) + float2(0.34, 0.38);
+  float2 suv2 = rot2(q, 0.6 + iTime * 0.1) * 0.55 + float2(0.55, 0.45);
+  float3 col  = Src.Sample(Smp, frac(suv)).rgb;
+  float3 col2 = Src.Sample(Smp, frac(suv2)).rgb;
+  col = lerp(col, col2, 0.4);
+  // lift the dark desktop, then a gentle jewel-tone wash keyed to the petal angle
+  // (subtle, so the underlying desktop colours stay readable).
+  col = pow(saturate(col), 0.62) * 1.45;
+  float3 jewel = 0.78 + 0.32 * cos(aw * N + r * 6.0 + iTime + float3(0.0, 2.1, 4.2));
+  col *= lerp(float3(1,1,1), jewel, 0.5);
+  // soft radial seams between petals (kept subtle so petals don't go black)
+  float seam = smoothstep(0.0, 0.06, aw) * smoothstep(0.0, 0.06, seg*0.5 - aw);
+  col *= 0.78 + 0.22 * seam;
+  // small soft center jewel (not a giant blowout) + gentle vignette that keeps the
+  // mandala filling the frame (corners only dim, never hard-black).
+  col += smoothstep(0.10, 0.0, r) * float3(0.5, 0.55, 0.7);
+  col *= 0.18 + 0.82 * smoothstep(1.25, 0.04, r);
+  return saturate(col * 1.35);
 }
 
 float3 apply(float id, float2 uv){
@@ -308,6 +381,8 @@ function drawHud(filterId: number, fps: number): void {
 
 // ── Filter timeline ────────────────────────────────────────────────────────────
 const FILTER_NAMES = ['THERMAL', 'SOBEL EDGE / TOON', 'ASCII', 'KALEIDOSCOPE'];
+const FILTER_SLUGS = ['thermal', 'sobel', 'ascii', 'kaleidoscope'];
+const SHOT_ALL = process.env.CAM_SHOT_ALL === '1';
 const FILTER_THERMAL = 0;
 const FILTER_EDGE = 1;
 // The hero / capture filter: the most LEGIBLE pass, so the still frame reads
@@ -442,8 +517,71 @@ function switchTo(id: number, now: number): void {
   fadeStart = now;
 }
 
-// ── Main loop ──────────────────────────────────────────────────────────────────
+// Shared cbuffer staging (iRes(2 f32), iTime, fadeMix, filterA, filterB, pad(2)).
 const cbBuf = Buffer.alloc(48);
+
+// ── Render one fully-resolved filter pass to the back buffer ────────────────────
+// (no fade, no cross-blend — filterA == filterB, fadeMix = 1). Used by both the
+// capture-all reel and as the shared draw primitive.
+function renderFilterPass(id: number, tSec: number): void {
+  cbBuf.writeFloatLE(srcW || CW, 0);
+  cbBuf.writeFloatLE(srcH || CH, 4);
+  cbBuf.writeFloatLE(tSec, 8);
+  cbBuf.writeFloatLE(1.0, 12); // fadeMix fully resolved to filterA
+  cbBuf.writeFloatLE(id, 16); // filterA
+  cbBuf.writeFloatLE(id, 20); // filterB (same, so lerp is a no-op)
+  cbBuf.writeFloatLE(0, 24);
+  cbBuf.writeFloatLE(0, 28);
+  gpu.updateConstantBuffer(cb, cbBuf);
+
+  gpu.setRenderTargets([g.backBufferRTV]);
+  gpu.setViewport(CW, CH);
+  gpu.clear(g.backBufferRTV, [0.01, 0.01, 0.02, 1]);
+  gpu.vsSet(vs);
+  gpu.psSet(ps, { cb: [cb], srv: [srcTex!.srv!], samp: [sampler] });
+  gpu.drawFullscreenTriangle();
+}
+
+// ── Capture-all mode: shoot every effect over the SAME live desktop, one PNG each ─
+// Runs only when CAM_SHOT_ALL=1 in capture mode. Re-acquires a fresh duplicated
+// frame before each effect so the source is genuinely live, then renders that
+// effect fully resolved and snapshots the back buffer before present.
+if (SHOT_ALL && durationMs > 0) {
+  const shotDir = resolve(import.meta.dir, '..', 'screenshots');
+  mkdirSync(shotDir, { recursive: true });
+
+  // Make sure the feed is genuinely live before the reel: drain timeouts until a
+  // real desktop frame lands (the first AcquireNextFrame calls are metadata-only).
+  for (let i = 0; i < 240; i += 1) {
+    win.pump();
+    if (grabDesktopFrame() && srcW > 1 && srcH > 1) break;
+  }
+
+  for (let id = 0; id < 4; id += 1) {
+    // Re-acquire a couple of fresh frames so each effect sees current desktop pixels.
+    for (let i = 0; i < 8; i += 1) {
+      win.pump();
+      grabDesktopFrame();
+    }
+    activeFilter = id;
+    prevFilter = id;
+    fadeStart = -1;
+    const tSec = (performance.now() - start) / 1000;
+    renderFilterPass(id, tSec);
+
+    const out = resolve(shotDir, `cam-filter-${FILTER_SLUGS[id]}.png`);
+    const stats = captureBackBuffer(g, out, { gridW: 48, gridH: 22 });
+    console.log(`\n── ${FILTER_NAMES[id]} ──`);
+    console.log(formatGrid(stats));
+    console.log(`[shot] filter=${FILTER_NAMES[id]} slug=${FILTER_SLUGS[id]} ok=${stats.ok} nonBlack=${stats.nonBlackFrac.toFixed(3)} meanLuma=${stats.meanLuma.toFixed(3)} -> ${stats.path}`);
+    g.present(false);
+    drawHud(id, fps);
+  }
+  GDI32.DeleteObject(hudFont);
+  cleanup(0);
+}
+
+// ── Main loop ──────────────────────────────────────────────────────────────────
 while (!win.shouldClose()) {
   win.pump();
   if (win.shouldClose()) break;

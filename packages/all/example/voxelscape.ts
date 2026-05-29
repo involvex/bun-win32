@@ -115,29 +115,86 @@ uint sampleVoxel(int x, int y, int z) {
   return Voxels[x + z * WX + y * WX * WZ];
 }
 
+// Hash helpers for procedural grass / leaf / cloud variation.
+float hash21(float2 p) {
+  p = frac(p * float2(123.34, 456.21));
+  p += dot(p, p + 45.32);
+  return frac(p.x * p.y);
+}
+float vnoise2(float2 p) {
+  float2 i = floor(p);
+  float2 f = frac(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = hash21(i);
+  float b = hash21(i + float2(1, 0));
+  float c = hash21(i + float2(0, 1));
+  float d = hash21(i + float2(1, 1));
+  return lerp(lerp(a, b, f.x), lerp(c, d, f.x), f.y);
+}
+float fbm2(float2 p) {
+  float v = 0.0, a = 0.5;
+  [unroll] for (int i = 0; i < 4; i++) { v += a * vnoise2(p); p *= 2.02; a *= 0.5; }
+  return v;
+}
+
 // Per-block base albedo. Keep in sync with the TS B_* constants.
+// cell lets us add tasteful per-voxel color variation (grass tufts, leaf hue, flowers).
 float3 blockColor(uint t, float3 cell) {
-  if (t == 1u) return float3(0.36, 0.62, 0.22);      // grass
-  if (t == 2u) return float3(0.46, 0.32, 0.20);      // dirt
-  if (t == 3u) return float3(0.42, 0.43, 0.46);      // stone
-  if (t == 4u) return float3(0.82, 0.74, 0.50);      // sand
-  if (t == 5u) return float3(0.13, 0.34, 0.55);      // water
-  if (t == 6u) return float3(0.34, 0.22, 0.12);      // wood
-  if (t == 7u) return float3(0.18, 0.46, 0.18);      // leaf
+  if (t == 1u) {                                     // grass: lush, with subtle hue drift + rare flowers
+    float h = hash21(cell.xz * 0.7 + cell.y * 0.13);
+    float3 g = lerp(float3(0.30, 0.58, 0.20), float3(0.46, 0.70, 0.26), fbm2(cell.xz * 0.35));
+    g = lerp(g, float3(0.52, 0.66, 0.22), 0.25 * h);          // dry-grass tint
+    if (h > 0.965) g = lerp(g, float3(0.92, 0.82, 0.30), 0.7); // yellow flower speck
+    else if (h < 0.022) g = lerp(g, float3(0.86, 0.40, 0.60), 0.6); // pink flower speck
+    return g;
+  }
+  if (t == 2u) return float3(0.46, 0.32, 0.20) * (0.92 + 0.16 * hash21(cell.xz + cell.y)); // dirt
+  if (t == 3u) {                                     // stone: cool grey with mossy/strata variation
+    float s = fbm2(cell.xz * 0.5 + cell.y * 0.2);
+    return lerp(float3(0.36, 0.37, 0.41), float3(0.50, 0.51, 0.54), s);
+  }
+  if (t == 4u) return lerp(float3(0.78, 0.70, 0.46), float3(0.90, 0.83, 0.60), fbm2(cell.xz * 0.6)); // sand
+  if (t == 5u) return float3(0.05, 0.18, 0.30);      // water (mostly overridden by surface shading)
+  if (t == 6u) return float3(0.32, 0.21, 0.12) * (0.9 + 0.2 * hash21(cell.xz + cell.y * 3.0)); // wood
+  if (t == 7u) {                                     // leaves: dappled canopy greens
+    float h = hash21(cell.xz * 1.3 + cell.y * 0.7);
+    return lerp(float3(0.13, 0.40, 0.13), float3(0.26, 0.56, 0.20), h);
+  }
   if (t == 8u) return float3(0.92, 0.95, 1.00);      // snow
   return float3(0.5, 0.5, 0.5);
 }
 
-// Sky / atmosphere: horizon-to-zenith gradient with a sun disc + glow.
+// Drifting cumulus clouds painted into the upper sky.
+float clouds(float3 rd) {
+  if (rd.y < 0.015) return 0.0;
+  float2 cp = rd.xz / max(rd.y, 0.04);               // project onto a high plane
+  cp += float2(iTime * 0.012, iTime * 0.006);
+  float c = fbm2(cp * 1.1);
+  c = smoothstep(0.46, 0.86, c);
+  return c * saturate(rd.y * 2.2);                    // fade near horizon
+}
+
+// Sky / atmosphere: warm golden-hour gradient with a soft sun, glow and clouds.
 float3 skyColor(float3 rd, float3 sun) {
   float up = saturate(rd.y * 0.5 + 0.5);
-  float3 horizon = float3(0.66, 0.78, 0.92);
-  float3 zenith  = float3(0.13, 0.34, 0.78);
-  float3 col = lerp(horizon, zenith, pow(up, 0.7));
+  // Warm hazy band near the horizon grading up into a deep blue zenith.
+  float3 horizon = float3(0.92, 0.80, 0.62);
+  float3 mid     = float3(0.50, 0.66, 0.86);
+  float3 zenith  = float3(0.14, 0.32, 0.66);
+  float3 col = lerp(horizon, mid, pow(saturate(rd.y * 1.4 + 0.06), 0.5));
+  col = lerp(col, zenith, pow(up, 1.4));
   float sd = saturate(dot(rd, sun));
-  col += float3(1.0, 0.95, 0.78) * pow(sd, 900.0) * 14.0;         // tight sun disc
-  col += float3(1.0, 0.88, 0.60) * pow(sd, 6.0) * 0.45;           // warm glow
-  col = lerp(col, float3(0.80, 0.86, 0.93), pow(1.0 - up, 10.0) * 0.4); // slim horizon haze
+  // Warm scatter halo around the sun, biased to the horizon. Keep it from blowing
+  // out the whole upper sky by using tighter exponents and modest gains.
+  col += float3(1.0, 0.55, 0.26) * pow(sd, 5.0) * 0.40;
+  col += float3(1.0, 0.78, 0.46) * pow(sd, 40.0) * 0.70;
+  col += float3(1.0, 0.94, 0.82) * pow(sd, 2200.0) * 16.0;        // bright sun disc
+  // Clouds, lit warm on the sun-facing side.
+  float cl = clouds(rd);
+  float3 cloudCol = lerp(float3(0.78, 0.80, 0.86), float3(1.0, 0.88, 0.70), saturate(sd * 1.3));
+  col = lerp(col, cloudCol, cl * 0.85);
+  // Thicken the warm haze right at the horizon line.
+  col = lerp(col, float3(0.95, 0.86, 0.72), pow(1.0 - up, 8.0) * 0.45);
   return col;
 }
 
@@ -182,10 +239,15 @@ bool traceVoxels(float3 ro, float3 rd, int maxSteps, bool skipWater,
   return false;
 }
 
-// Short DDA shadow ray toward the sun (any solid block = occluded).
+// Longer DDA shadow ray toward the sun for soft, far-reaching shadows. Returns
+// a visibility factor; distant occluders cast a slightly softer (lighter) shadow
+// so shadows feel penumbral rather than hard-edged.
 float shadowRay(float3 ro, float3 rd) {
   int3 c; float3 n; uint b; float tt;
-  if (traceVoxels(ro, rd, 48, true, c, n, b, tt)) return 0.25;  // soft, not pitch black
+  if (traceVoxels(ro, rd, 96, true, c, n, b, tt)) {
+    // Farther occluders -> softer shadow (cheap fake penumbra).
+    return lerp(0.12, 0.42, saturate(tt / 40.0));
+  }
   return 1.0;
 }
 
@@ -210,8 +272,8 @@ float ambientOcc(int3 cell, float3 n, float3 hitPos) {
   float corner = sampleVoxel(cc.x, cc.y, cc.z) != 0u ? 1.0 : 0.0;
   float occ = (side1 + side2 + corner);
   // Weight by how close we are to that corner.
-  float edge = saturate((abs(u) + abs(v)) * 1.4);
-  float ao = 1.0 - 0.42 * occ / 3.0 * edge;
+  float edge = saturate((abs(u) + abs(v)) * 1.5);
+  float ao = 1.0 - 0.55 * occ / 3.0 * edge;
   return saturate(ao);
 }
 
@@ -224,6 +286,8 @@ float4 main(float4 fragPos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
   float3 ro = iCamPos;
   float3 sun = normalize(iSunDir);
 
+  // Warm directional sun color + cool-ish sky fill, golden-hour graded.
+  float3 sunCol = float3(1.55, 1.16, 0.78);
   float3 sky = skyColor(rd, sun);
 
   int3 cell; float3 n; uint block; float t;
@@ -236,46 +300,98 @@ float4 main(float4 fragPos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
 
     // Subtle per-voxel value variation so faces don't look perfectly flat.
     float vh = frac(sin(dot(float3(cell), float3(12.9898, 78.233, 37.719))) * 43758.5453);
-    albedo *= 0.90 + 0.12 * vh;
+    albedo *= 0.93 + 0.10 * vh;
 
     // Lighting.
     float ndl = saturate(dot(n, sun));
     float sh = (ndl > 0.0) ? shadowRay(hitPos + n * 0.002, sun) : 0.0;
     float ao = ambientOcc(cell, n, hitPos);
 
-    // Hemispheric sky ambient (warmer toward up-faces, cool toward down-faces).
-    float3 skyAmbCol = lerp(float3(0.20, 0.22, 0.27), float3(0.42, 0.50, 0.62), saturate(n.y * 0.5 + 0.5));
-    float3 sunCol = float3(1.18, 1.08, 0.88);
-    float3 lit = albedo * (skyAmbCol + sunCol * 1.55 * ndl * sh) * ao;
+    // Hemispheric sky ambient (warm sky tint on up-faces, cool bounce on down).
+    float3 skyAmbCol = lerp(float3(0.16, 0.18, 0.24), float3(0.46, 0.54, 0.66), saturate(n.y * 0.5 + 0.5));
+    // Warm bounce/back-fill from the ground toward the sun on side faces.
+    float bounce = saturate(dot(n, normalize(float3(-sun.x, 0.15, -sun.z)))) * 0.18;
+    float3 lit = albedo * (skyAmbCol + sunCol * 1.7 * ndl * sh + bounce * float3(0.40, 0.34, 0.24)) * ao;
 
-    // Crude specular sparkle on water + snow.
-    if (block == 5u || block == 8u) {
-      float3 h = normalize(sun - rd);
-      float spec = pow(saturate(dot(n, h)), block == 5u ? 80.0 : 28.0);
-      lit += float3(1.0, 0.97, 0.88) * spec * (block == 5u ? 0.9 : 0.4) * sh;
-    }
-    // Water gets a translucent fresnel tint to read as a surface.
     if (block == 5u) {
-      float fres = pow(saturate(1.0 + dot(rd, n)), 4.0);
-      lit = lerp(lit, sky * 0.6 + float3(0.10, 0.22, 0.34), 0.18 + 0.5 * fres);
+      // ── Water surface: fresnel sky reflection + slight transparency + ripples.
+      // Animate a gentle normal perturbation from two crossed wave fields.
+      float2 wp = (hitPos.xz) * 0.7;
+      float wob = sin(wp.x * 1.3 + iTime * 1.6) * 0.5 + sin(wp.y * 1.7 - iTime * 1.2) * 0.5
+                + fbm2(wp * 0.5 + iTime * 0.05) * 0.6;
+      float3 wn = normalize(float3(cos(wp.x + iTime) * 0.12, 1.0, sin(wp.y - iTime * 0.8) * 0.12));
+      float3 refl = reflect(rd, wn);
+      float3 reflCol = skyColor(refl, sun);
+      float fres = pow(saturate(1.0 - dot(-rd, wn)), 5.0);
+      fres = lerp(0.04, 0.92, fres);
+      // Shallow refraction: peek at what is roughly under the water for depth color.
+      float3 deep = float3(0.03, 0.14, 0.26);
+      float3 shallow = float3(0.07, 0.40, 0.50);
+      float3 body = lerp(shallow, deep, saturate(t * 0.010));
+      body *= (0.55 + 0.55 * sh) * ao;
+      lit = lerp(body, reflCol, fres);
+      // Sharp sun glint riding the wobbled normal.
+      float3 hh = normalize(sun - rd);
+      float spec = pow(saturate(dot(wn, hh)), 200.0);
+      lit += sunCol * spec * 1.8 * sh;
+      // Sun-streak: a long shimmering reflection road toward the sun.
+      float road = pow(saturate(dot(refl, sun)), 30.0);
+      lit += float3(1.0, 0.82, 0.55) * road * 0.7;
+      // Sparkle from the ripple field.
+      lit += float3(0.9, 0.95, 1.0) * smoothstep(0.82, 1.0, wob * 0.5 + 0.5) * 0.10;
+    } else {
+      // Crisp specular highlight on snow only.
+      if (block == 8u) {
+        float3 h = normalize(sun - rd);
+        float spec = pow(saturate(dot(n, h)), 28.0);
+        lit += float3(1.0, 0.97, 0.88) * spec * 0.45 * sh;
+      }
     }
 
     col = lit;
 
-    // Exponential distance fog into the sky for aerial depth — gentle so the
-    // foreground voxels stay crisp and only the far hills soften into haze.
-    float fog = 1.0 - exp(-t * 0.0022);
-    col = lerp(col, sky, saturate(fog * fog));
+    // ── Atmospheric aerial perspective: warm haze accumulates with distance and
+    // brightens toward the sun (in-scattering), so far hills melt into golden air.
+    // Kept gentle so foreground voxels stay crisp; only the deep distance softens.
+    float fog = 1.0 - exp(-max(0.0, t - 14.0) * 0.0085);
+    float sunAmt = saturate(dot(rd, sun));
+    float3 hazeCol = lerp(sky, float3(1.0, 0.80, 0.55), pow(sunAmt, 4.0) * 0.35);
+    col = lerp(col, hazeCol, saturate(fog));
   }
 
-  // Tonemap + gamma so the highlights (sun glints, lit faces) stay clean.
-  col = col / (col + 0.85);
-  col = pow(saturate(col), 1.0 / 2.2);
+  // ── Volumetric god-rays: march a few cheap samples along the eye ray and add
+  // glow where the path toward the sun is unoccluded (sunlight in the haze).
+  // Tight angular falloff so it only blooms right around the sun, not the whole frame.
+  {
+    float sunAmt = saturate(dot(rd, sun));
+    float godStrength = pow(sunAmt, 9.0);
+    if (godStrength > 0.002) {
+      float acc = 0.0;
+      float dither = hash21(fragPos.xy);
+      [unroll] for (int gi = 0; gi < 6; gi++) {
+        float gt = (float(gi) + dither) * 5.0 + 1.0;
+        float3 sp = ro + rd * gt;
+        int3 sc; float3 sn; uint sb; float st;
+        // Is this sample point lit by the sun? short shadow probe.
+        if (!traceVoxels(sp, sun, 22, true, sc, sn, sb, st)) acc += 1.0;
+      }
+      acc /= 6.0;
+      col += float3(1.0, 0.70, 0.40) * acc * godStrength * 0.30;
+    }
+  }
 
-  // Mild vignette.
+  // ── Filmic tonemap (ACES-ish) so highlights glow without hard clipping.
+  float exposure = 0.95;
+  float3 x = col * exposure;
+  col = saturate((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14));
+  col = pow(col, 1.0 / 2.2);
+
+  // Soft warm vignette frames the vista.
   float2 q = fragPos.xy / res;
-  float vig = pow(16.0 * q.x * q.y * (1.0 - q.x) * (1.0 - q.y), 0.18);
-  col *= lerp(0.78, 1.04, vig);
+  float vig = pow(16.0 * q.x * q.y * (1.0 - q.x) * (1.0 - q.y), 0.20);
+  col *= lerp(0.80, 1.05, vig);
+  // Whisper of warm grade in the shadows.
+  col = lerp(col, col * float3(1.04, 1.0, 0.94), 0.5);
 
   return float4(col, 1.0);
 }
@@ -284,6 +400,10 @@ float4 main(float4 fragPos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
 // ── CPU world generation ────────────────────────────────────────────────────
 function idx(x: number, y: number, z: number): number {
   return x + z * W + y * W * D;
+}
+
+function lerp01(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
 }
 
 /** Smooth value noise from a hashed integer lattice with bilinear interpolation. */
@@ -318,32 +438,55 @@ function generateWorld(): Uint32Array {
   const n1 = makeNoise2D(1337);
   const n2 = makeNoise2D(4242);
   const n3 = makeNoise2D(9001);
+  const nRidge = makeNoise2D(5150);
+  const nWarp = makeNoise2D(2718);
 
   const height = new Int32Array(W * D);
 
   for (let z = 0; z < D; z += 1) {
     for (let x = 0; x < W; x += 1) {
+      // Domain-warp the sample point a touch so ridges meander naturally.
+      const wx = x + (nWarp(x / 40, z / 40) - 0.5) * 22;
+      const wz = z + (nWarp(z / 40 + 5, x / 40 + 5) - 0.5) * 22;
+
       // Fractal value-noise heightmap (multi-octave).
       let e = 0;
-      e += n1(x / 38, z / 38) * 1.0;
-      e += n2(x / 17, z / 17) * 0.5;
-      e += n3(x / 8.5, z / 8.5) * 0.25;
+      e += n1(wx / 44, wz / 44) * 1.0;
+      e += n2(wx / 19, wz / 19) * 0.5;
+      e += n3(wx / 9, wz / 9) * 0.25;
       e /= 1.75; // 0..1
 
-      // Ridged hill shaping pushes a few peaks above the snow line.
-      e = Math.pow(e, 1.35);
-      let h = Math.floor(6 + e * (H - 12));
+      // Ridged term carves dramatic cliffs and crests for taller, sharper hills.
+      const r = 1 - Math.abs(nRidge(wx / 30, wz / 30) * 2 - 1);
+      e = e * 0.7 + r * r * 0.45;
+
+      // Shape: gentle valleys, dramatic peaks above the snow line.
+      e = Math.pow(Math.max(0, Math.min(1, e)), 1.45);
+      let h = Math.floor(5 + e * (H - 8));
       h = Math.max(2, Math.min(H - 2, h));
+
+      // ── Winding river carved through the basin. A meandering channel follows a
+      // warped sine; cells near its centerline get gouged down below sea level.
+      const riverCenter = D * 0.5 + Math.sin(x / 26) * 16 + (nWarp(x / 30, 7) - 0.5) * 24;
+      const riverDist = Math.abs(z - riverCenter);
+      const riverWidth = 7 + nWarp(x / 18, 13) * 5;
+      if (riverDist < riverWidth) {
+        const carve = (1 - riverDist / riverWidth); // 0..1, deepest at center
+        const bed = SEA_LEVEL - 3 - Math.floor(carve * 4);
+        if (h > bed) h = bed;
+        h = Math.max(2, h);
+      }
+
       height[x + z * W] = h;
 
       for (let y = 0; y <= h; y += 1) {
         let block: number;
         if (y === h) {
-          if (h >= H - 9) block = B_SNOW;
-          else if (h <= SEA_LEVEL + 1) block = B_SAND;
+          if (h >= H - 8) block = B_SNOW;
+          else if (h <= SEA_LEVEL + 1) block = B_SAND;            // beaches/banks
           else block = B_GRASS;
         } else if (y >= h - 3) {
-          block = h <= SEA_LEVEL + 1 ? B_SAND : B_DIRT;
+          block = h <= SEA_LEVEL + 2 ? B_SAND : B_DIRT;
         } else {
           block = B_STONE;
         }
@@ -357,32 +500,34 @@ function generateWorld(): Uint32Array {
     }
   }
 
-  // Scatter a handful of trees on grass above the shoreline.
-  let treeSeed = 13579;
+  // Scatter trees on grass above the shoreline, with varied canopy shapes/sizes.
+  let treeSeed = 24680;
   const rng = (): number => {
     treeSeed = (treeSeed * 1103515245 + 12345) & 0x7fffffff;
     return treeSeed / 0x7fffffff;
   };
-  const treeCount = 90;
+  const treeCount = 150;
   for (let tIter = 0; tIter < treeCount; tIter += 1) {
-    const tx = 4 + Math.floor(rng() * (W - 8));
-    const tz = 4 + Math.floor(rng() * (D - 8));
+    const tx = 3 + Math.floor(rng() * (W - 6));
+    const tz = 3 + Math.floor(rng() * (D - 6));
     const gh = height[tx + tz * W]!;
-    if (gh <= SEA_LEVEL + 1 || gh >= H - 11) continue;
+    if (gh <= SEA_LEVEL + 1 || gh >= H - 10) continue;
     if (voxels[idx(tx, gh, tz)] !== B_GRASS) continue;
-    const trunk = 4 + Math.floor(rng() * 3);
+    // Skip if right next to water so trees hug the meadows, not the banks.
+    const trunk = 4 + Math.floor(rng() * 4);
     for (let y = 1; y <= trunk; y += 1) {
       const yy = gh + y;
       if (yy < H) voxels[idx(tx, yy, tz)] = B_WOOD;
     }
-    // Leaf canopy: a rounded blob centered above the trunk top.
+    // Leaf canopy: a rounded blob centered above the trunk top, size varies.
     const top = gh + trunk;
-    const r = 2;
-    for (let dy = -1; dy <= 2; dy += 1) {
-      const ry = dy <= 0 ? r : r - dy + 1;
+    const r = 2 + Math.floor(rng() * 2); // 2..3
+    for (let dy = -1; dy <= 3; dy += 1) {
+      const ry = dy <= 0 ? r : Math.max(1, r - dy + 1);
+      const rr = ry * ry + (rng() > 0.5 ? 1 : 0);
       for (let dz = -ry; dz <= ry; dz += 1) {
         for (let dx = -ry; dx <= ry; dx += 1) {
-          if (dx * dx + dz * dz > ry * ry + 1) continue;
+          if (dx * dx + dz * dz > rr) continue;
           const lx = tx + dx;
           const ly = top + dy;
           const lz = tz + dz;
@@ -486,10 +631,11 @@ function main(): void {
   let camZ = -10;
   let yaw = 0.0; // around +Y; 0 looks toward +Z
   let pitch = -0.28;
-  // Sun fairly high and toward +x/-z so the orbiting camera sweeps through it.
+  // Low golden-hour sun sitting just above the horizon so the hero shot frames it
+  // over the water with long shadows, warm haze, and god-rays.
   const sun: [number, number, number] = (() => {
-    const elev = 0.62; // radians above horizon
-    const azim = 2.3;  // compass-ish heading
+    const elev = 0.28; // radians above horizon (low golden-hour, but clearly a disc)
+    const azim = 2.55; // compass-ish heading
     return [Math.cos(elev) * Math.sin(azim), Math.sin(elev), Math.cos(elev) * Math.cos(azim)];
   })();
 
@@ -521,9 +667,6 @@ function main(): void {
   let fps = 0;
   let fpsWindowStart = startTime;
   let lastNow = startTime;
-
-  // Scripted edits already applied (capture mode), to avoid re-uploading every frame.
-  const editsDone = new Set<number>();
 
   function basis(): { fwd: [number, number, number]; right: [number, number, number]; up: [number, number, number] } {
     const cp = Math.cos(pitch);
@@ -627,45 +770,29 @@ function main(): void {
       prevRight = rightDown;
     } else {
       // ── Scripted cinematic fly-through (capture mode) ─────────────────────────
+      // The shot is timed so the FINAL frame frames the low sun over the river: we
+      // glide low across the meadow, descending and turning to face into the light.
       const tt = elapsed;
-      const orbitR = 46;
+      const total = Math.max(0.001, durationMs / 1000);
+      const u = Math.min(1, tt / total); // 0..1 over the whole take
+      const ease = u * u * (3 - 2 * u);
       const cx = W * 0.5;
       const cz = D * 0.5;
-      const ang = 0.35 + tt * 0.28;
-      camX = cx + Math.cos(ang) * orbitR;
-      camZ = cz + Math.sin(ang) * orbitR - 8;
-      camY = SEA_LEVEL + 22 + Math.sin(tt * 0.8) * 3.0;
-      // Look from the camera toward the world center, slightly down at the terrain.
-      const dx = cx - camX;
-      const dz = cz - camZ;
-      yaw = Math.atan2(dx, dz);
-      pitch = -0.30 + Math.sin(tt * 0.5) * 0.05;
-
-      // Scripted block edits on a timer: drop a small stone pillar near the center.
-      if (tt > 1.2 && !editsDone.has(0)) {
-        editsDone.add(0);
-        const bx = Math.floor(cx) + 6;
-        const bz = Math.floor(cz);
-        // find ground
-        let gy = H - 1;
-        while (gy > 0 && voxels[idx(bx, gy, bz)] === B_AIR) gy -= 1;
-        for (let y = 1; y <= 8; y += 1) setBlock(bx, gy + y, bz, B_SNOW);
-        reuploadField();
-      }
-      if (tt > 2.6 && !editsDone.has(1)) {
-        editsDone.add(1);
-        const bx = Math.floor(cx) - 8;
-        const bz = Math.floor(cz) + 5;
-        let gy = H - 1;
-        while (gy > 0 && voxels[idx(bx, gy, bz)] === B_AIR) gy -= 1;
-        for (let dyx = -2; dyx <= 2; dyx += 1) {
-          for (let dzx = -2; dzx <= 2; dzx += 1) {
-            if (dyx * dyx + dzx * dzx > 5) continue;
-            setBlock(bx + dyx, gy + 1, bz + dzx, B_WOOD);
-          }
-        }
-        reuploadField();
-      }
+      // Sun azimuth: aim the hero frame down that bearing so the sun sits on the
+      // horizon over the water for the finale.
+      const sunYaw = Math.atan2(sun[0], sun[2]);
+      // Position the camera up-sun of the river basin, looking back toward the sun
+      // so the river leads the eye to the sun on the horizon. Keep it fairly close
+      // and low so foreground blocks read crisply and the sky/sun fill the top.
+      const back = 36 - ease * 6;        // distance behind the basin, eases in a bit
+      camX = cx - Math.sin(sunYaw) * back + Math.sin(tt * 0.22) * 3;
+      camZ = cz - Math.cos(sunYaw) * back + Math.sin(tt * 0.16) * 3;
+      // Glide down from a survey altitude to a relaxed elevated vista height.
+      camY = SEA_LEVEL + 18 - ease * 5 + Math.sin(tt * 0.55) * 0.8;
+      // Hold the heading on the sun, with a slow drift earlier to feel alive.
+      yaw = sunYaw + (1 - ease) * -0.28;
+      // Tilt down to survey terrain, levelling toward the horizon so sky + sun show.
+      pitch = lerp01(-0.34, -0.11, ease) + Math.sin(tt * 0.5) * 0.012;
     }
 
     // ── Build the constant buffer immediately before the consuming call ─────────
