@@ -488,6 +488,7 @@ const VK_SHIFT = 0x10;
 const VK_LBUTTON = 0x01;
 const VK_RBUTTON = 0x02;
 const VK_F = 0x46; // toggle fly/walk
+const VK_T = 0x54; // scrub time-of-day
 
 // ── Fullscreen-triangle vertex shader (SV_VertexID, no vertex buffer) ──────────
 const VS_SOURCE = `
@@ -629,27 +630,46 @@ float clouds(float3 rd) {
   return c * saturate(rd.y * 2.2);                    // fade near horizon
 }
 
-// Sky / atmosphere: warm golden-hour gradient with a soft sun, glow and clouds.
+// Sparse twinkling starfield for the night sky (projected onto a high plane).
+float stars(float3 rd) {
+  if (rd.y < 0.03) return 0.0;
+  float2 sp = (rd.xz / max(rd.y, 0.06)) * 7.0;
+  float2 c = floor(sp);
+  float h = hash21(c);
+  float star = step(0.9935, h);
+  float tw = 0.55 + 0.45 * sin(iTime * 3.0 + h * 130.0);
+  return star * tw * saturate(rd.y * 3.0);
+}
+
+// Sky / atmosphere: a full day→dusk→night→dawn cycle driven by the sun's height.
 float3 skyColor(float3 rd, float3 sun) {
   float up = saturate(rd.y * 0.5 + 0.5);
-  // Warm hazy band near the horizon grading up into a deep blue zenith.
-  float3 horizon = float3(0.92, 0.80, 0.62);
-  float3 mid     = float3(0.50, 0.66, 0.86);
-  float3 zenith  = float3(0.14, 0.32, 0.66);
-  float3 col = lerp(horizon, mid, pow(saturate(rd.y * 1.4 + 0.06), 0.5));
-  col = lerp(col, zenith, pow(up, 1.4));
+  float day = saturate(sun.y * 2.4 + 0.14); // 1 = full day, 0 = deep night
   float sd = saturate(dot(rd, sun));
-  // Warm scatter halo around the sun, biased to the horizon. Keep it from blowing
-  // out the whole upper sky by using tighter exponents and modest gains.
-  col += float3(1.0, 0.55, 0.26) * pow(sd, 5.0) * 0.40;
-  col += float3(1.0, 0.78, 0.46) * pow(sd, 40.0) * 0.70;
-  col += float3(1.0, 0.94, 0.82) * pow(sd, 2200.0) * 16.0;        // bright sun disc
-  // Clouds, lit warm on the sun-facing side.
+
+  // ── Day sky: warm horizon → blue zenith, with scatter halo + sun disc ──────
+  float3 dayCol = lerp(float3(0.92, 0.80, 0.62), float3(0.50, 0.66, 0.86), pow(saturate(rd.y * 1.4 + 0.06), 0.5));
+  dayCol = lerp(dayCol, float3(0.14, 0.32, 0.66), pow(up, 1.4));
+  dayCol += float3(1.0, 0.55, 0.26) * pow(sd, 5.0) * 0.40;
+  dayCol += float3(1.0, 0.78, 0.46) * pow(sd, 40.0) * 0.70;
+  dayCol += float3(1.0, 0.94, 0.82) * pow(sd, 2200.0) * 16.0 * saturate(sun.y * 5.0); // disc only when sun is up
   float cl = clouds(rd);
   float3 cloudCol = lerp(float3(0.78, 0.80, 0.86), float3(1.0, 0.88, 0.70), saturate(sd * 1.3));
-  col = lerp(col, cloudCol, cl * 0.85);
-  // Thicken the warm haze right at the horizon line.
-  col = lerp(col, float3(0.95, 0.86, 0.72), pow(1.0 - up, 8.0) * 0.45);
+  dayCol = lerp(dayCol, cloudCol, cl * 0.85);
+  dayCol = lerp(dayCol, float3(0.95, 0.86, 0.72), pow(1.0 - up, 8.0) * 0.45);
+
+  // ── Night sky: deep navy + stars + a soft moon opposite the sun ────────────
+  float3 nightCol = lerp(float3(0.09, 0.10, 0.17), float3(0.012, 0.02, 0.055), pow(up, 1.1));
+  nightCol += float3(1.0, 1.0, 0.96) * stars(rd) * (1.0 - day);
+  float3 moonDir = normalize(float3(-sun.x, 0.5, -sun.z));
+  float md = saturate(dot(rd, moonDir));
+  nightCol += float3(0.85, 0.88, 1.0) * pow(md, 900.0) * 3.0;  // moon disc
+  nightCol += float3(0.40, 0.46, 0.62) * pow(md, 50.0) * 0.18; // moon halo
+
+  float3 col = lerp(nightCol, dayCol, day);
+  // Warm dusk/dawn band hugging the sun when it sits near the horizon.
+  float dusk = saturate(1.0 - abs(sun.y) * 3.5);
+  col += float3(0.95, 0.45, 0.22) * pow(sd, 7.0) * dusk * (1.0 - day) * 0.6;
   return col;
 }
 
@@ -754,9 +774,10 @@ float4 main(float4 fragPos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
   float3 rd = normalize(p.x * iRight + p.y * iUp + iFov * iForward);
   float3 ro = iCamPos;
   float3 sun = normalize(iSunDir);
+  float day = saturate(sun.y * 2.4 + 0.14); // 1 = full day, 0 = deep night
 
-  // Warm directional sun color + cool-ish sky fill, golden-hour graded.
-  float3 sunCol = float3(1.55, 1.16, 0.78);
+  // Warm sun by day fading to cool moonlight at night.
+  float3 sunCol = lerp(float3(0.20, 0.26, 0.46), float3(1.55, 1.16, 0.78), day);
   float3 sky = skyColor(rd, sun);
 
   int3 cell; float3 n; uint block; float t;
@@ -783,7 +804,9 @@ float4 main(float4 fragPos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
     float ao = smoothAO(cell, n, hitPos);
 
     // Cooler, dimmer hemispheric sky ambient so the warm sun defines form (less wash).
+    // Dims toward a cool moonlit fill at night so lava/fire/explosions pop.
     float3 skyAmbCol = lerp(float3(0.09, 0.11, 0.16), float3(0.32, 0.39, 0.52), saturate(n.y * 0.5 + 0.5));
+    skyAmbCol *= lerp(0.34, 1.0, day);
     // Warm bounce/back-fill from the sunlit ground onto side faces.
     float bounce = saturate(dot(n, normalize(float3(-sun.x, 0.12, -sun.z)))) * 0.14;
     float3 lit = albedo * face * (skyAmbCol + sunCol * 2.05 * ndl * sh + bounce * float3(0.40, 0.34, 0.24)) * ao;
@@ -1446,13 +1469,18 @@ function main(): void {
     if (y >= H) return false;
     return isSolid(voxelAt(x, y, z));
   };
-  // Low golden-hour sun sitting just above the horizon so the hero shot frames it
-  // over the water with long shadows, warm haze, and god-rays.
-  const sun: [number, number, number] = (() => {
-    const elev = 0.28; // radians above horizon (low golden-hour, but clearly a disc)
-    const azim = 2.55; // compass-ish heading
-    return [Math.cos(elev) * Math.sin(azim), Math.sin(elev), Math.cos(elev) * Math.cos(azim)];
-  })();
+  // Sun direction, recomputed every frame from timeOfDay (animated day/night cycle).
+  const sun: [number, number, number] = [0, 0, 0];
+  /** Map time-of-day (0..1) → sun direction. 0.25 ≈ dawn, 0.5 ≈ noon, 0.75 ≈ dusk, ~0/1 ≈ night. */
+  function computeSun(tod: number): void {
+    const phase = tod * Math.PI * 2;
+    const elev = Math.sin(phase - Math.PI / 2) * 1.15; // radians; <0 ⇒ sun below horizon (night)
+    const azim = 2.15 + tod * 0.9; // heading drifts slowly across the day
+    const ce = Math.cos(elev);
+    sun[0] = ce * Math.sin(azim);
+    sun[1] = Math.sin(elev);
+    sun[2] = ce * Math.cos(azim);
+  }
 
   const durationMs = process.env.DEMO_DURATION_MS ? Number(process.env.DEMO_DURATION_MS) : 0;
   const interactive = durationMs === 0;
@@ -1540,7 +1568,8 @@ function main(): void {
   let shake = 0;
   let flash = 0;
   let nextBoom = 0.4; // VOX_BOOM repeating-detonation timer (capture-mode verification)
-  let timeOfDay = 0.3; // golden hour (Task: day/night animates this)
+  // Time of day (0..1). Capture mode pins it to a low golden-hour sun unless VOX_TOD is set.
+  let timeOfDay = process.env.VOX_TOD ? Number(process.env.VOX_TOD) : 0.28;
   interface GlowFx {
     x: number;
     y: number;
@@ -1668,6 +1697,14 @@ function main(): void {
       glowFx[i]!.life -= dt;
       if (glowFx[i]!.life <= 0) glowFx.splice(i, 1);
     }
+
+    // ── Day/night progression (interactive animates; capture pins golden hour) ──
+    if (interactive) {
+      timeOfDay += dt / 180; // a full day every ~3 minutes
+      if (win.keyDown(VK_T)) timeOfDay += dt * 0.12; // hold T to scrub fast
+      if (timeOfDay >= 1) timeOfDay -= 1;
+    }
+    computeSun(timeOfDay);
 
     if (interactive) {
       // ── Relative mouse-look via GetCursorPos diff against the recenter point ──
