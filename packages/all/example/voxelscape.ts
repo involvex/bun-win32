@@ -1886,6 +1886,7 @@ function main(): void {
   let flash = 0;
   let slowmo = 0; // bullet-time: seconds of remaining slow motion
   let nextBoom = 0.4; // VOX_BOOM repeating-detonation timer (capture-mode verification)
+  let cinematicBoomed = false; // one-shot finale detonation for the gallery shot
   // Time of day (0..1). Capture mode pins it to a low golden-hour sun unless VOX_TOD is set.
   let timeOfDay = process.env.VOX_TOD ? Number(process.env.VOX_TOD) : 0.28;
   interface GlowFx {
@@ -2249,6 +2250,26 @@ function main(): void {
       yaw = sunYaw + (1 - ease) * -0.28;
       // Tilt down to survey terrain, levelling toward the horizon so sky + sun show.
       pitch = lerp01(-0.34, -0.11, ease) + Math.sin(tt * 0.5) * 0.012;
+      // Dip the gaze for the finale so the foreground detonation reads in-frame.
+      if (tt > total - 0.6) pitch -= (tt - (total - 0.6)) * 0.35;
+
+      // Finale: detonate a TNT cluster just ahead so the closing frame catches a
+      // bright fireball, flying debris, a chain reaction, and bullet-time.
+      if (!cinematicBoomed && !process.env.VOX_BOOM && tt > total - 0.16) {
+        const f = basis().fwd;
+        const tx = Math.max(4, Math.min(W - 5, Math.floor(camX + f[0] * 15)));
+        const tz = Math.max(4, Math.min(D - 5, Math.floor(camZ + f[2] * 15)));
+        let ty = SEA_LEVEL + 1;
+        for (let y = H - 1; y >= 1; y -= 1) {
+          if (isSolid(voxelAt(tx, y, tz))) {
+            ty = y;
+            break;
+          }
+        }
+        for (let dx = -1; dx <= 1; dx += 1) for (let dz = -1; dz <= 1; dz += 1) setBlock(tx + dx, ty + 1, tz + dz, B_TNT);
+        detonate(tx, ty + 3, tz, 7, 2.4);
+        cinematicBoomed = true;
+      }
     }
 
     // Debug/verification: repeating detonations on terrain in capture mode (VOX_BOOM=1).
