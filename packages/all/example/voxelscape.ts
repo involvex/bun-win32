@@ -1998,8 +1998,176 @@ function main(): void {
   }
   const glowFx: GlowFx[] = [];
 
+  /** Approximate base albedo (normalized RGB) for a block id — used to tint break flecks. */
+  function blockGlowTint(b: number): [number, number, number] {
+    switch (b) {
+      case B_GRASS:
+        return [0.4, 0.62, 0.24];
+      case B_DIRT:
+        return [0.46, 0.32, 0.2];
+      case B_STONE:
+        return [0.44, 0.45, 0.48];
+      case B_SAND:
+        return [0.84, 0.76, 0.53];
+      case B_WOOD:
+        return [0.32, 0.21, 0.12];
+      case B_LEAF:
+        return [0.2, 0.48, 0.18];
+      case B_SNOW:
+        return [0.92, 0.95, 1.0];
+      case B_GRAVEL:
+        return [0.48, 0.46, 0.43];
+      case B_TNT:
+        return [0.74, 0.13, 0.1];
+      case B_GLOWSTONE:
+        return [0.98, 0.85, 0.5];
+      case B_PLANK:
+        return [0.68, 0.51, 0.32];
+      case B_BRICK:
+        return [0.6, 0.28, 0.2];
+      case B_OBSIDIAN:
+        return [0.1, 0.07, 0.14];
+      default:
+        return [0.6, 0.6, 0.6];
+    }
+  }
+
+  // ── Lightweight particle system (pool-capped; feeds the additive glow layer) ───
+  // Each particle is a tiny physics point that fades over its life. They are emitted
+  // as low-priority glow candidates in buildGlows(), so transient explosions/fire
+  // always keep their slots and the GLOW_MAX cap bounds GPU cost automatically.
+  // gravity: +ve falls, -ve rises (smoke/embers); drag damps velocity each second.
+  const PARTICLE_CAP = 300;
+  interface Particle {
+    x: number;
+    y: number;
+    z: number;
+    vx: number;
+    vy: number;
+    vz: number;
+    cr: number;
+    cg: number;
+    cb: number;
+    r0: number; // glow radius
+    inten: number; // peak intensity (scaled by remaining life)
+    gravity: number;
+    drag: number;
+    life: number;
+    maxLife: number;
+  }
+  const particles: Particle[] = [];
+  /** Emit one particle, evicting the oldest when the pool is full (cheap, bounded). */
+  function emitParticle(p: Particle): void {
+    if (particles.length >= PARTICLE_CAP) particles.shift();
+    particles.push(p);
+  }
+  /** Block break: a small dark burst of flecks in the broken block's color. */
+  function spawnBreakFlecks(bx: number, by: number, bz: number, block: number): void {
+    const [br, bg, bb] = blockGlowTint(block);
+    for (let i = 0; i < 8; i += 1) {
+      emitParticle({
+        x: bx + 0.5 + (Math.random() - 0.5) * 0.7,
+        y: by + 0.5 + (Math.random() - 0.5) * 0.7,
+        z: bz + 0.5 + (Math.random() - 0.5) * 0.7,
+        vx: (Math.random() - 0.5) * 4,
+        vy: 1.5 + Math.random() * 3,
+        vz: (Math.random() - 0.5) * 4,
+        cr: br * 0.55,
+        cg: bg * 0.55,
+        cb: bb * 0.55, // dark flecks: dim, brief
+        r0: 0.5 + Math.random() * 0.3,
+        inten: 0.7,
+        gravity: 22,
+        drag: 1.6,
+        life: 0.28 + Math.random() * 0.22,
+        maxLife: 0.5,
+      });
+    }
+  }
+  /** Explosion: a rising grey smoke column + a scatter of bright warm sparks. */
+  function spawnExplosionParticles(ex: number, ey: number, ez: number, power: number): void {
+    const sparks = Math.min(20, Math.round(8 + power * 7));
+    for (let i = 0; i < sparks; i += 1) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = 5 + Math.random() * 9 * power;
+      emitParticle({
+        x: ex + 0.5,
+        y: ey + 0.5,
+        z: ez + 0.5,
+        vx: Math.cos(a) * sp,
+        vy: 3 + Math.random() * 8,
+        vz: Math.sin(a) * sp,
+        cr: 2.2,
+        cg: 1.1 + Math.random() * 0.4,
+        cb: 0.25,
+        r0: 0.55 + Math.random() * 0.35,
+        inten: 1.6,
+        gravity: 20,
+        drag: 1.1,
+        life: 0.35 + Math.random() * 0.35,
+        maxLife: 0.7,
+      });
+    }
+    const puffs = Math.min(14, Math.round(6 + power * 4));
+    for (let i = 0; i < puffs; i += 1) {
+      emitParticle({
+        x: ex + 0.5 + (Math.random() - 0.5) * 1.6,
+        y: ey + 0.5 + Math.random() * 1.0,
+        z: ez + 0.5 + (Math.random() - 0.5) * 1.6,
+        vx: (Math.random() - 0.5) * 2,
+        vy: 1.5 + Math.random() * 2.5,
+        vz: (Math.random() - 0.5) * 2,
+        cr: 0.5,
+        cg: 0.5,
+        cb: 0.55, // faint cool-grey: reads as a fading smoke puff (additive can't darken)
+        r0: 1.6 + Math.random() * 1.4,
+        inten: 0.7 + power * 0.2,
+        gravity: -3.5, // buoyant: rises as it fades
+        drag: 1.3,
+        life: 0.9 + Math.random() * 0.7,
+        maxLife: 1.6,
+      });
+    }
+  }
+  /** Fire: an occasional rising ember from a burning cell (warm, small, drifting). */
+  function spawnEmber(fx: number, fy: number, fz: number): void {
+    emitParticle({
+      x: fx + 0.5 + (Math.random() - 0.5) * 0.6,
+      y: fy + 0.8,
+      z: fz + 0.5 + (Math.random() - 0.5) * 0.6,
+      vx: (Math.random() - 0.5) * 1.2,
+      vy: 1.5 + Math.random() * 1.5,
+      vz: (Math.random() - 0.5) * 1.2,
+      cr: 2.0,
+      cg: 0.85,
+      cb: 0.2,
+      r0: 0.45 + Math.random() * 0.3,
+      inten: 1.1,
+      gravity: -4.5, // hot air lift
+      drag: 0.8,
+      life: 0.6 + Math.random() * 0.6,
+      maxLife: 1.2,
+    });
+  }
+  /** Advance every particle (gravity + drag + fade) and reap the dead ones. */
+  function stepParticles(pdt: number): void {
+    for (let i = particles.length - 1; i >= 0; i -= 1) {
+      const p = particles[i]!;
+      p.vy -= p.gravity * pdt;
+      const damp = Math.max(0, 1 - p.drag * pdt);
+      p.vx *= damp;
+      p.vz *= damp;
+      p.x += p.vx * pdt;
+      p.y += p.vy * pdt;
+      p.z += p.vz * pdt;
+      p.life -= pdt;
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+  }
+
   function triggerExplosionFx(ex: number, ey: number, ez: number, power: number): void {
     glowFx.push({ x: ex + 0.5, y: ey + 0.5, z: ez + 0.5, r0: 2.4 * power, cr: 1.8, cg: 0.8, cb: 0.36, intensity: 2.6 * power, life: 0.5, maxLife: 0.5 });
+    spawnExplosionParticles(ex, ey, ez, power);
     const dist = Math.hypot(ex - camX, ey - camY, ez - camZ);
     const atten = 1 / (1 + dist * 0.06);
     shake = Math.min(2.4, shake + power * 1.3 * atten);
@@ -2109,6 +2277,12 @@ function main(): void {
       const x = rem - z * W;
       const fl = 0.7 + 0.3 * Math.sin(nowSec * 20 + x * 1.3 + z * 0.7);
       glowCands.push({ x: x + 0.5, y: y + 1.0, z: z + 0.5, r: 1.9, cr: 1.7, cg: 0.62, cb: 0.18, inten: 1.5 * fl, pri: 1, d2: 0 });
+    }
+    // Particles (break flecks, explosion sparks/smoke, fire embers): low priority so
+    // transient explosions/fire keep their slots; the GLOW_MAX cap bounds GPU cost.
+    for (const pt of particles) {
+      const k = Math.max(0, pt.life / pt.maxLife);
+      glowCands.push({ x: pt.x, y: pt.y, z: pt.z, r: pt.r0, cr: pt.cr, cg: pt.cg, cb: pt.cb, inten: pt.inten * k, pri: 0, d2: 0 });
     }
     // Nearby emissive blocks (lava/glowstone) via a small local scan.
     const R = 12;
@@ -2271,7 +2445,9 @@ function main(): void {
           entities.spawnBomb(camX + cf[0] * 1.2, camY + cf[1] * 1.2, camZ + cf[2] * 1.2, cf[0] * 24, cf[1] * 24 + 4, cf[2] * 24, 2.6);
         }
       } else if (leftDown && actCooldown <= 0 && pick.hit) {
+        const broken = voxelAt(pick.cell[0], pick.cell[1], pick.cell[2]);
         setBlock(pick.cell[0], pick.cell[1], pick.cell[2], B_AIR);
+        spawnBreakFlecks(pick.cell[0], pick.cell[1], pick.cell[2], broken);
         editedThisFrame = true;
         actCooldown = 0.07;
         audio?.breakBlock();
@@ -2416,6 +2592,22 @@ function main(): void {
       ticksRun += 1;
     }
     entities.step(sdt);
+    stepParticles(sdt);
+    // Fire embers: sample a few burning cells per frame for occasional rising embers.
+    if (sim.burning.size > 0 && particles.length < PARTICLE_CAP - 8) {
+      let sampled = 0;
+      for (const bi of sim.burning.keys()) {
+        if (sampled >= 6) break;
+        sampled += 1;
+        if (Math.random() < 0.18) {
+          const by = (bi / (W * D)) | 0;
+          const rem = bi - by * W * D;
+          const bz = (rem / W) | 0;
+          const bx = rem - bz * W;
+          spawnEmber(bx, by, bz);
+        }
+      }
+    }
     audio?.pump(sim.fuses.size > 0, sim.burning.size > 0);
     // Re-upload the grid when the world changed, an edit happened, or entities exist.
     if (wasActive || editedThisFrame || entities.list.length > 0) reuploadField();
