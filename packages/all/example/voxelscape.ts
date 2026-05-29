@@ -412,10 +412,10 @@ export function createSim(SW: number, SH: number, SD: number, data?: Uint32Array
       const rem = bi - y * SWD;
       const z = (rem / SW) | 0;
       const x = rem - z * SW;
-      // Spread to flammable neighbors.
+      // Spread to flammable neighbors (tuned so fire reliably propagates + reads well).
       for (const [dx, dy, dz] of N6) {
         const nb = get(x + dx, y + dy, z + dz);
-        if (FLAMMABLE[nb]! > 0 && Math.random() < FLAMMABLE[nb]! * 0.05) ignite(x + dx, y + dy, z + dz);
+        if (FLAMMABLE[nb]! > 0 && Math.random() < FLAMMABLE[nb]! * 0.12) ignite(x + dx, y + dy, z + dz);
       }
       const nt = tleft - SIM_TICK_SECONDS;
       if (nt > 0) {
@@ -476,6 +476,196 @@ export function createSim(SW: number, SH: number, SD: number, data?: Uint32Array
     explode,
     stepTick,
   };
+}
+
+// ── Entity system (debris, AI critters, projectiles) ───────────────────────────
+// All dynamic objects share the player's swept-AABB integrator against the sim's
+// solid voxels, then get stamped into the render grid as voxels (so they inherit
+// the raytracer's lighting/shadows for free). Pure of GPU/FFI; the game stamps +
+// reacts to onExplode.
+export const ENT_DEBRIS = 0;
+export const ENT_CRITTER = 1;
+export const ENT_BOMB = 2;
+export const ENT_METEOR = 3;
+
+export interface Entity {
+  kind: number;
+  pos: [number, number, number];
+  vel: [number, number, number];
+  size: [number, number, number];
+  ttl: number; // seconds remaining; Infinity = persists (critters)
+  block: number; // render block id
+  state: number; // critter AI: 0 wander, 1 flee, 2 launched
+  timer: number; // AI re-plan / projectile fuse
+  hx: number; // critter heading
+  hz: number;
+  ground: boolean;
+}
+
+export interface Entities {
+  list: Entity[];
+  onExplode: ((x: number, y: number, z: number, power: number) => void) | null;
+  step(dt: number): void;
+  spawnDebris(x: number, y: number, z: number, vx: number, vy: number, vz: number, block: number): void;
+  spawnCritter(x: number, y: number, z: number): Entity;
+  spawnBomb(x: number, y: number, z: number, vx: number, vy: number, vz: number, fuse: number): void;
+  spawnMeteor(x: number, y: number, z: number, tx: number, tz: number): void;
+  alarm(x: number, y: number, z: number, power: number): void;
+  knockback(x: number, y: number, z: number, power: number): void;
+}
+
+const DEBRIS_CAP = 420;
+
+export function createEntities(sim: Sim): Entities {
+  const list: Entity[] = [];
+  const solid = (x: number, y: number, z: number): boolean => {
+    if (x < 0 || z < 0 || x >= sim.W || z >= sim.D) return true;
+    if (y < 0) return true;
+    if (y >= sim.H) return false;
+    return isSolid(sim.getBlock(Math.floor(x), Math.floor(y), Math.floor(z)));
+  };
+  const ents: Entities = {
+    list,
+    onExplode: null,
+    spawnDebris(x, y, z, vx, vy, vz, block) {
+      // Cap: evict the oldest debris when full.
+      let debrisCount = 0;
+      for (const e of list) if (e.kind === ENT_DEBRIS) debrisCount += 1;
+      if (debrisCount >= DEBRIS_CAP) {
+        for (let i = 0; i < list.length; i += 1) {
+          if (list[i]!.kind === ENT_DEBRIS) {
+            list.splice(i, 1);
+            break;
+          }
+        }
+      }
+      list.push({ kind: ENT_DEBRIS, pos: [x, y, z], vel: [vx, vy, vz], size: [0.3, 0.3, 0.3], ttl: 2.2 + Math.random() * 1.5, block, state: 0, timer: 0, hx: 0, hz: 0, ground: false });
+    },
+    spawnCritter(x, y, z) {
+      const e: Entity = { kind: ENT_CRITTER, pos: [x, y, z], vel: [0, 0, 0], size: [0.7, 1.6, 0.7], ttl: Infinity, block: B_WOOD, state: 0, timer: Math.random() * 2, hx: Math.random() * 2 - 1, hz: Math.random() * 2 - 1, ground: false };
+      list.push(e);
+      return e;
+    },
+    spawnBomb(x, y, z, vx, vy, vz, fuse) {
+      list.push({ kind: ENT_BOMB, pos: [x, y, z], vel: [vx, vy, vz], size: [0.4, 0.4, 0.4], ttl: fuse, block: B_TNT, state: 0, timer: 0, hx: 0, hz: 0, ground: false });
+    },
+    spawnMeteor(x, y, z, tx, tz) {
+      const dx = tx - x;
+      const dz = tz - z;
+      const t = 1.6;
+      list.push({ kind: ENT_METEOR, pos: [x, y, z], vel: [dx / t, -y / t, dz / t], size: [1.0, 1.0, 1.0], ttl: 6, block: B_LAVA, state: 0, timer: 0, hx: 0, hz: 0, ground: false });
+    },
+    alarm(x, y, z, power) {
+      const r = 6 + power * 4;
+      for (const e of list) {
+        if (e.kind !== ENT_CRITTER) continue;
+        const dx = e.pos[0] - x;
+        const dz = e.pos[2] - z;
+        if (dx * dx + dz * dz < r * r) {
+          const d = Math.hypot(dx, dz) || 1;
+          e.hx = dx / d;
+          e.hz = dz / d;
+          e.state = 1; // flee
+          e.timer = 1.5 + Math.random();
+        }
+      }
+    },
+    knockback(x, y, z, power) {
+      for (const e of list) {
+        const dx = e.pos[0] - x;
+        const dy = e.pos[1] - y;
+        const dz = e.pos[2] - z;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        const r = 5 + power * 4;
+        if (d2 > r * r || d2 < 1e-3) continue;
+        const d = Math.sqrt(d2);
+        const f = (1 - d / r) * (8 + power * 10);
+        e.vel[0] += (dx / d) * f;
+        e.vel[1] += (dy / d) * f * 0.6 + 4;
+        e.vel[2] += (dz / d) * f;
+        if (e.kind === ENT_CRITTER) {
+          e.state = 2; // launched
+          e.timer = 1.2;
+        }
+      }
+    },
+    step(dt) {
+      const g = 28;
+      for (let i = list.length - 1; i >= 0; i -= 1) {
+        const e = list[i]!;
+        if (e.kind === ENT_BOMB || e.kind === ENT_METEOR) {
+          e.vel[1] -= g * dt * (e.kind === ENT_METEOR ? 0.2 : 1);
+          const nx = e.pos[0] + e.vel[0] * dt;
+          const ny = e.pos[1] + e.vel[1] * dt;
+          const nz = e.pos[2] + e.vel[2] * dt;
+          e.ttl -= dt;
+          const hitSolid = solid(nx, ny, nz);
+          if (hitSolid || e.ttl <= 0 || ny < 0) {
+            if (ents.onExplode) ents.onExplode(Math.floor(e.pos[0]), Math.floor(Math.max(0, e.pos[1])), Math.floor(e.pos[2]), e.kind === ENT_METEOR ? 2.0 : 1.0);
+            list.splice(i, 1);
+            continue;
+          }
+          e.pos[0] = nx;
+          e.pos[1] = ny;
+          e.pos[2] = nz;
+          continue;
+        }
+        if (e.kind === ENT_DEBRIS) {
+          e.vel[1] -= g * dt;
+          const r = sweptMove(e.pos[0], e.pos[1], e.pos[2], e.vel[0], e.vel[1], e.vel[2], e.size[0], e.size[1], e.size[2], dt, solid, 0);
+          e.pos[0] = r.x;
+          e.pos[1] = r.y;
+          e.pos[2] = r.z;
+          e.vel[0] = r.hitX ? 0 : r.vx * 0.86;
+          e.vel[1] = r.onGround ? -r.vy * 0.32 : r.vy;
+          e.vel[2] = r.hitZ ? 0 : r.vz * 0.86;
+          if (r.onGround) {
+            e.vel[0] *= 0.7;
+            e.vel[2] *= 0.7;
+          }
+          e.ttl -= dt;
+          if (e.ttl <= 0) list.splice(i, 1);
+          continue;
+        }
+        // ENT_CRITTER — wander / flee / launched.
+        e.timer -= dt;
+        const speed = e.state === 1 ? 5.5 : e.state === 2 ? 0 : 2.2;
+        if (e.state === 2) {
+          if (e.ground && e.timer <= 0) e.state = 0;
+        } else {
+          if (e.timer <= 0) {
+            if (e.state === 1) e.state = 0; // calm down
+            const a = Math.random() * Math.PI * 2;
+            e.hx = Math.cos(a);
+            e.hz = Math.sin(a);
+            e.timer = 1.5 + Math.random() * 2.5;
+          }
+          e.vel[0] = e.hx * speed;
+          e.vel[2] = e.hz * speed;
+          // hop occasionally / when blocked
+          if (e.ground && Math.random() < 0.02) e.vel[1] = 6.5;
+        }
+        e.vel[1] -= g * dt;
+        const r = sweptMove(e.pos[0], e.pos[1], e.pos[2], e.vel[0], e.vel[1], e.vel[2], e.size[0], e.size[1], e.size[2], dt, solid, 1.05);
+        // If blocked horizontally while wandering, hop or turn.
+        if ((r.hitX || r.hitZ) && r.onGround && e.state !== 2) {
+          if (Math.random() < 0.5) e.vel[1] = 6.5;
+          else {
+            e.hx = -e.hx;
+            e.hz = -e.hz;
+          }
+        }
+        e.pos[0] = r.x;
+        e.pos[1] = r.y;
+        e.pos[2] = r.z;
+        e.vel[0] = r.vx;
+        e.vel[1] = r.vy;
+        e.vel[2] = r.vz;
+        e.ground = r.onGround;
+      }
+    },
+  };
+  return ents;
 }
 
 // Virtual-key codes for interactive controls.
@@ -1396,6 +1586,8 @@ function main(): void {
   // Build the world on the CPU and upload it as a structured buffer SRV.
   const sim = createSim(W, H, D, generateWorld());
   const voxels = sim.world; // authoritative grid (the sim owns + mutates it)
+  const frame = new Uint32Array(W * H * D); // render grid = world + stamped entities
+  const entities = createEntities(sim);
   const voxelBytes = Buffer.from(voxels.buffer, 0, voxels.byteLength);
   const field = gpu.makeStructuredBuffer({ stride: 4, count: W * H * D, srv: true, cpuWritable: true, initialData: voxelBytes });
 
@@ -1532,8 +1724,29 @@ function main(): void {
     return { fwd, right, up };
   }
 
+  // Stamp one dynamic voxel into the render grid, without burying solid terrain.
+  function stampCell(x: number, y: number, z: number, b: number): void {
+    if (x < 0 || y < 0 || z < 0 || x >= W || y >= H || z >= D) return;
+    const i = idx(x, y, z);
+    const cur = frame[i]!;
+    if (cur === B_AIR || cur === B_WATER) frame[i] = b;
+  }
+
   function reuploadField(): void {
-    const buf = Buffer.from(voxels.buffer, 0, voxels.byteLength);
+    // Render grid = world snapshot + stamped entities (debris, critters, projectiles).
+    frame.set(voxels);
+    for (const e of entities.list) {
+      const x = Math.floor(e.pos[0]);
+      const z = Math.floor(e.pos[2]);
+      const y = Math.floor(e.pos[1]);
+      if (e.kind === ENT_CRITTER) {
+        stampCell(x, y, z, e.block);
+        stampCell(x, y + 1, z, e.block);
+      } else {
+        stampCell(x, y, z, e.block);
+      }
+    }
+    const buf = Buffer.from(frame.buffer, 0, frame.byteLength);
     gpu.updateDynamicBuffer(field.buffer, buf);
   }
 
@@ -1567,6 +1780,7 @@ function main(): void {
   // ── FX state: screen-shake, white flash, transient glow effects, day cycle ─────
   let shake = 0;
   let flash = 0;
+  let slowmo = 0; // bullet-time: seconds of remaining slow motion
   let nextBoom = 0.4; // VOX_BOOM repeating-detonation timer (capture-mode verification)
   // Time of day (0..1). Capture mode pins it to a low golden-hour sun unless VOX_TOD is set.
   let timeOfDay = process.env.VOX_TOD ? Number(process.env.VOX_TOD) : 0.28;
@@ -1593,8 +1807,28 @@ function main(): void {
   }
 
   function processSimEvents(ev: SimEvents): void {
-    for (const e of ev.explosions) triggerExplosionFx(e.x, e.y, e.z, e.power);
+    for (const e of ev.explosions) {
+      triggerExplosionFx(e.x, e.y, e.z, e.power);
+      entities.knockback(e.x + 0.5, e.y + 0.5, e.z + 0.5, e.power);
+      entities.alarm(e.x + 0.5, e.y + 0.5, e.z + 0.5, e.power);
+      // Fling some debris cubes from the destroyed blocks (sampled + capped).
+      const destroyed = e.result.destroyed;
+      const stride = Math.max(1, Math.floor(destroyed.length / 28));
+      for (let k = 0; k < destroyed.length; k += stride) {
+        const d = destroyed[k]!;
+        const dx = d.x - e.x;
+        const dy = d.y - e.y;
+        const dz = d.z - e.z;
+        const dl = Math.hypot(dx, dy, dz) || 1;
+        const sp = 6 + Math.random() * 8;
+        entities.spawnDebris(d.x + 0.5, d.y + 0.5, d.z + 0.5, (dx / dl) * sp + (Math.random() - 0.5) * 3, (dy / dl) * sp + 5 + Math.random() * 4, (dz / dl) * sp + (Math.random() - 0.5) * 3, d.block);
+      }
+    }
     for (const s of ev.steam) glowFx.push({ x: s.x + 0.5, y: s.y + 0.9, z: s.z + 0.5, r0: 2.0, cr: 1.0, cg: 1.0, cb: 1.0, intensity: 2.2, life: 0.45, maxLife: 0.45 });
+    // Bullet-time on a big blast or a chain reaction.
+    let maxPower = 0;
+    for (const e of ev.explosions) maxPower = Math.max(maxPower, e.power);
+    if (maxPower >= 1.8 || ev.explosions.length >= 2) slowmo = Math.max(slowmo, 0.55);
   }
 
   /** Detonate immediately at (x,y,z): carve + spawn FX (used by tools + the cinematic). */
@@ -1602,6 +1836,21 @@ function main(): void {
     const result = sim.explode(x, y, z, radius, power);
     processSimEvents({ explosions: [{ x, y, z, power, result }], steam: [], splashes: [], extinguished: [] });
     editedThisFrame = true;
+  }
+
+  // Projectiles detonate via this callback; spawn a few critters to roam the world.
+  entities.onExplode = (x, y, z, power) => detonate(x, y, z, 4.0 + 1.6 * power, power);
+  for (let i = 0; i < 12; i += 1) {
+    const cx = 4 + Math.floor(Math.random() * (W - 8));
+    const cz = 4 + Math.floor(Math.random() * (D - 8));
+    let cy = SEA_LEVEL + 1;
+    for (let y = H - 1; y >= 1; y -= 1) {
+      if (isSolid(voxelAt(cx, y, cz))) {
+        cy = y + 1;
+        break;
+      }
+    }
+    entities.spawnCritter(cx + 0.5, cy + 0.1, cz + 0.5);
   }
 
   // Assemble up to GLOW_MAX glow points into the cbuffer (offset 128), nearest-first
@@ -1829,23 +2078,36 @@ function main(): void {
       pitch = lerp01(-0.34, -0.11, ease) + Math.sin(tt * 0.5) * 0.012;
     }
 
-    // Debug/verification: repeating detonations in capture mode (VOX_BOOM=1).
+    // Debug/verification: repeating detonations on terrain in capture mode (VOX_BOOM=1).
     if (!interactive && process.env.VOX_BOOM && elapsed > nextBoom) {
-      detonate(Math.floor(W * 0.5), SEA_LEVEL + 7, Math.floor(D * 0.5), 6, 1.6);
-      nextBoom = elapsed + 0.7;
+      const bx = Math.floor(W * 0.5);
+      const bz = Math.floor(D * 0.38);
+      let by = SEA_LEVEL + 2;
+      for (let y = H - 1; y >= 1; y -= 1) {
+        if (isSolid(voxelAt(bx, y, bz))) {
+          by = y;
+          break;
+        }
+      }
+      detonate(bx, by, bz, 6, 1.8);
+      nextBoom = elapsed + 0.9;
     }
 
-    // ── Step the physics simulation (fixed timestep) ───────────────────────────
+    // ── Bullet-time + step physics & entities (fixed-step sim, smooth entities) ──
+    if (slowmo > 0) slowmo -= dt; // decays in real time
+    const timeScale = slowmo > 0 ? 0.3 : 1.0;
+    const sdt = dt * timeScale;
     const wasActive = sim.active.size > 0 || sim.fuses.size > 0 || sim.burning.size > 0;
-    physAccum += dt;
+    physAccum += sdt;
     let ticksRun = 0;
     while (physAccum >= PHYS_TICK && ticksRun < 6) {
       processSimEvents(sim.stepTick(PHYS_BUDGET));
       physAccum -= PHYS_TICK;
       ticksRun += 1;
     }
-    // Re-upload the grid only when something changed (idle world ⇒ no upload).
-    if (wasActive || editedThisFrame) reuploadField();
+    entities.step(sdt);
+    // Re-upload the grid when the world changed, an edit happened, or entities exist.
+    if (wasActive || editedThisFrame || entities.list.length > 0) reuploadField();
 
     // ── Build the constant buffer immediately before the consuming call ─────────
     const { fwd, right, up } = basis();

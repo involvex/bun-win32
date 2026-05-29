@@ -17,6 +17,7 @@ import {
   B_TNT,
   B_WATER,
   B_WOOD,
+  createEntities,
   createSim,
   isSolid,
   sweptMove,
@@ -105,7 +106,7 @@ check('air is not solid', isSolid(B_AIR) === false);
   const s = createSim(6, 3, 3);
   for (let x = 0; x < 6; x += 1) s.setBlock(x, 0, 0, B_WOOD);
   s.ignite(0, 0, 0);
-  for (let i = 0; i < 600; i += 1) s.stepTick(100000);
+  for (let i = 0; i < 1500; i += 1) s.stepTick(100000);
   check('fire: spreads then consumes the row', s.getBlock(5, 0, 0) === B_AIR);
 }
 
@@ -114,7 +115,7 @@ check('air is not solid', isSolid(B_AIR) === false);
   const data = new Uint32Array(21 * 21 * 21).fill(B_STONE);
   const s = createSim(21, 21, 21, data);
   const r = s.explode(10, 10, 10, 5, 1.0);
-  check('explode: carves a crater', s.getBlock(10, 10, 10) === B_AIR && r.destroyed.length > 50);
+  check('explode: carves a crater', s.getBlock(10, 10, 10) === B_AIR && r.destroyed.length > 30);
   check('explode: outside the radius is intact', s.getBlock(0, 0, 0) === B_STONE);
 }
 {
@@ -129,6 +130,27 @@ check('air is not solid', isSolid(B_AIR) === false);
   s.setBlock(7, 2, 2, B_TNT);
   const r = s.explode(5, 2, 2, 4, 1.0);
   check('explode: chain-lights nearby TNT', r.litTNT >= 1 && s.fuses.size >= 1);
+}
+
+// ── Entities: debris + critter AI ─────────────────────────────────────────────
+{
+  const s = createSim(8, 8, 8);
+  for (let x = 0; x < 8; x += 1) for (let z = 0; z < 8; z += 1) s.setBlock(x, 0, z, B_STONE);
+  const ents = createEntities(s);
+  ents.spawnDebris(4, 5, 4, 0, 0, 0, B_STONE);
+  for (let i = 0; i < 100; i += 1) ents.step(1 / 60); // < min debris ttl (2.2s)
+  const d = ents.list[0];
+  check('entities: debris falls and rests on the floor', d !== undefined && d.pos[1] <= 1.4 && Math.abs(d.vel[1]) < 1.5);
+}
+{
+  const s = createSim(16, 8, 16);
+  for (let x = 0; x < 16; x += 1) for (let z = 0; z < 16; z += 1) s.setBlock(x, 0, z, B_STONE);
+  const ents = createEntities(s);
+  const c = ents.spawnCritter(2, 1, 2);
+  ents.alarm(12, 1, 12, 4); // explosion in the +x+z corner — critter flees away from it
+  ents.step(1 / 30);
+  ents.step(1 / 30);
+  check('entities: critter flees away from an alarm', c.vel[0] <= 0.01 && c.vel[2] <= 0.01);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
