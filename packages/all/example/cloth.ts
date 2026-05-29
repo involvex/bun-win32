@@ -48,10 +48,10 @@ import { captureBackBuffer, formatGrid } from './_snapshot';
 
 const encodeWide = (str: string): Buffer => Buffer.from(`${str}\0`, 'utf16le');
 
-// Fill the primary monitor (borderless). The HDR target + post both use clientW/clientH
-// so they follow whatever the window's real client size turns out to be.
-const WIDTH = User32.GetSystemMetrics(SystemMetric.SM_CXSCREEN) || 1280;
-const HEIGHT = User32.GetSystemMetrics(SystemMetric.SM_CYSCREEN) || 720;
+// A modest borderless window (no need to fill the whole desktop). The HDR target + post
+// both use clientW/clientH so they follow the window's real client size.
+const WIDTH = 1280;
+const HEIGHT = 720;
 
 // Virtual-key codes for the interactive controls.
 const VK_LEFT = 0x25;
@@ -910,7 +910,7 @@ while (!win.shouldClose()) {
   const upX = fwdY * rgtZ - fwdZ * rgtY;
   const upY = fwdZ * rgtX - fwdX * rgtZ;
   const upZ = fwdX * rgtY - fwdY * rgtX;
-  const gain = camDist * 2; // a full-screen swipe meaningfully grabs the cloth
+  const gain = camDist * 0.2; // gentle brush: a drag nudges the cloth a fraction of the cursor motion (tunable)
   const dragWX = rgtX * dragNdcX * gain + upX * dragNdcY * gain;
   const dragWY = rgtY * dragNdcX * gain + upY * dragNdcY * gain;
   const dragWZ = rgtZ * dragNdcX * gain + upZ * dragNdcY * gain;
@@ -924,7 +924,7 @@ while (!win.shouldClose()) {
   brushData.writeFloatLE(ndcX, 64);
   brushData.writeFloatLE(ndcY, 68);
   brushData.writeFloatLE(mouse.down ? 1 : 0, 72);
-  brushData.writeFloatLE(0.13, 76); // brush radius (NDC)
+  brushData.writeFloatLE(0.11, 76); // brush radius (NDC)
   brushData.writeFloatLE(dragWX, 80);
   brushData.writeFloatLE(dragWY, 84);
   brushData.writeFloatLE(dragWZ, 88);
@@ -1016,7 +1016,7 @@ while (!win.shouldClose()) {
   // Trigger on the first frame whose sim time has passed the chosen well-developed
   // flapping pose; this is deterministic regardless of the (very high) frame rate.
   const wallNow = performance.now();
-  const isLast = durationMs > 0 && (simTime >= CAPTURE_SIM_TIME || wallNow - startTime >= durationMs);
+  const isLast = durationMs > 0 && ((simTime >= CAPTURE_SIM_TIME && fps > 0) || wallNow - startTime >= durationMs);
   if (isLast && !captured) {
     captured = true;
     const shotDir = resolve(import.meta.dir, '..', 'screenshots');
