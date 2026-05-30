@@ -153,5 +153,37 @@ check('air is not solid', isSolid(B_AIR) === false);
   check('entities: critter flees away from an alarm', c.vel[0] <= 0.01 && c.vel[2] <= 0.01);
 }
 
+// ── Survival creatures: hostile seek + wildlife flee + lethal damage ──────────
+{
+  // A hostile mob steers toward the player target.
+  const s = createSim(20, 8, 20);
+  for (let x = 0; x < 20; x += 1) for (let z = 0; z < 20; z += 1) s.setBlock(x, 0, z, B_STONE);
+  const ents = createEntities(s);
+  const m = ents.spawnMob(2, 1, 2, 0);
+  ents.target = [16, 1, 16];
+  ents.step(1 / 30);
+  check('hostile mob hunts toward the player', m.vel[0] > 0 && m.vel[2] > 0);
+}
+{
+  // Wildlife bolts away from a nearby player (within the flee radius).
+  const s = createSim(20, 8, 20);
+  for (let x = 0; x < 20; x += 1) for (let z = 0; z < 20; z += 1) s.setBlock(x, 0, z, B_STONE);
+  const ents = createEntities(s);
+  const c = ents.spawnCritter(10, 1, 10);
+  ents.target = [13, 1, 13]; // dist ~4.2 < 9 → flee
+  ents.step(1 / 30);
+  check('wildlife flees a nearby player', c.vel[0] < 0 && c.vel[2] < 0);
+}
+{
+  // damage() kills a mob in range and reports the kill; hostileCount drops.
+  const s = createSim(10, 6, 10);
+  for (let x = 0; x < 10; x += 1) for (let z = 0; z < 10; z += 1) s.setBlock(x, 0, z, B_STONE);
+  const ents = createEntities(s);
+  ents.spawnMob(5, 1, 5, 1); // lunger, hp 2
+  const before = ents.hostileCount();
+  const kills = ents.damage(5, 1.5, 5, 3, 10);
+  check('damage gibs a mob and counts the kill', before === 1 && kills === 1 && ents.hostileCount() === 0);
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
 if (failures > 0) process.exit(1);

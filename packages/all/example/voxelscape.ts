@@ -97,6 +97,11 @@ export const B_PLANK = 13;
 export const B_BRICK = 14;
 export const B_OBSIDIAN = 15;
 export const B_COUNT = 16;
+// Render-only ids for creatures: stamped into the render grid (never the sim world), so
+// they inherit raytraced lighting/shadows. Handled by the shader palette + glow layer;
+// NOT part of the B_COUNT property tables (they never reach isSolid/the cellular rules).
+export const B_CRITTER = 16; // wildlife body — warm cream, pops against the greenery
+export const B_MOB = 17; //     hostile mob body — dark menacing red
 
 // ── Per-block property tables (indexed by block id, length B_COUNT) ────────────
 /** Collides with a physical body. Air, water, and lava are non-solid (pass through). */
@@ -515,23 +520,35 @@ export interface Entity {
   size: [number, number, number];
   ttl: number; // seconds remaining; Infinity = persists (critters)
   block: number; // render block id
-  state: number; // critter AI: 0 wander, 1 flee, 2 launched
+  state: number; // critter AI: 0 wander/seek, 1 flee, 2 launched, 3 graze (idle)
   timer: number; // AI re-plan / projectile fuse
   hx: number; // critter heading
   hz: number;
   ground: boolean;
+  hostile: boolean; // hunts the player (night mobs) vs. peaceful wildlife
+  variant: number; // 0 walker, 1 lunger (hostiles); 0 for everything else
+  hp: number; // creature health (mobs/wildlife die at <= 0)
 }
 
 export interface Entities {
   list: Entity[];
   onExplode: ((x: number, y: number, z: number, power: number) => void) | null;
+  /** Game sets this to the player's position each frame so hostiles can hunt + wildlife flee. */
+  target: [number, number, number] | null;
+  /** Called when a critter dies (game spawns FX + scores hostiles). */
+  onCritterDeath: ((x: number, y: number, z: number, hostile: boolean) => void) | null;
   step(dt: number): void;
   spawnDebris(x: number, y: number, z: number, vx: number, vy: number, vz: number, block: number): void;
   spawnCritter(x: number, y: number, z: number): Entity;
+  spawnMob(x: number, y: number, z: number, variant: number): Entity;
   spawnBomb(x: number, y: number, z: number, vx: number, vy: number, vz: number, fuse: number): void;
   spawnMeteor(x: number, y: number, z: number, tx: number, ty: number, tz: number): void;
   alarm(x: number, y: number, z: number, power: number): void;
   knockback(x: number, y: number, z: number, power: number): void;
+  /** Radial damage to creatures (explosions/melee). Returns the number of hostiles killed. */
+  damage(x: number, y: number, z: number, radius: number, amount: number): number;
+  /** Count of currently-alive hostile mobs (for the wave tracker). */
+  hostileCount(): number;
 }
 
 const DEBRIS_CAP = 420;
@@ -547,6 +564,8 @@ export function createEntities(sim: Sim): Entities {
   const ents: Entities = {
     list,
     onExplode: null,
+    target: null,
+    onCritterDeath: null,
     spawnDebris(x, y, z, vx, vy, vz, block) {
       // Cap: evict the oldest debris when full.
       let debrisCount = 0;
@@ -559,23 +578,46 @@ export function createEntities(sim: Sim): Entities {
           }
         }
       }
-      list.push({ kind: ENT_DEBRIS, pos: [x, y, z], vel: [vx, vy, vz], size: [0.3, 0.3, 0.3], ttl: 2.2 + Math.random() * 1.5, block, state: 0, timer: 0, hx: 0, hz: 0, ground: false });
+      list.push({ kind: ENT_DEBRIS, pos: [x, y, z], vel: [vx, vy, vz], size: [0.3, 0.3, 0.3], ttl: 2.2 + Math.random() * 1.5, block, state: 0, timer: 0, hx: 0, hz: 0, ground: false, hostile: false, variant: 0, hp: 1 });
     },
     spawnCritter(x, y, z) {
       const a0 = Math.random() * Math.PI * 2;
-      const e: Entity = { kind: ENT_CRITTER, pos: [x, y, z], vel: [0, 0, 0], size: [0.7, 1.6, 0.7], ttl: Infinity, block: B_WOOD, state: 0, timer: Math.random() * 2, hx: Math.cos(a0), hz: Math.sin(a0), ground: false };
+      const e: Entity = { kind: ENT_CRITTER, pos: [x, y, z], vel: [0, 0, 0], size: [0.7, 1.6, 0.7], ttl: Infinity, block: B_CRITTER, state: 0, timer: Math.random() * 2, hx: Math.cos(a0), hz: Math.sin(a0), ground: false, hostile: false, variant: 0, hp: 3 };
+      list.push(e);
+      return e;
+    },
+    spawnMob(x, y, z, variant) {
+      // 0 = walker (sturdy, dogged), 1 = lunger (smaller, fast, fragile).
+      const a0 = Math.random() * Math.PI * 2;
+      const lunger = variant === 1;
+      const e: Entity = {
+        kind: ENT_CRITTER,
+        pos: [x, y, z],
+        vel: [0, 0, 0],
+        size: lunger ? [0.6, 1.2, 0.6] : [0.8, 1.7, 0.8],
+        ttl: Infinity,
+        block: B_MOB,
+        state: 0,
+        timer: Math.random(),
+        hx: Math.cos(a0),
+        hz: Math.sin(a0),
+        ground: false,
+        hostile: true,
+        variant,
+        hp: lunger ? 2 : 4,
+      };
       list.push(e);
       return e;
     },
     spawnBomb(x, y, z, vx, vy, vz, fuse) {
-      list.push({ kind: ENT_BOMB, pos: [x, y, z], vel: [vx, vy, vz], size: [0.4, 0.4, 0.4], ttl: fuse, block: B_TNT, state: 0, timer: 0, hx: 0, hz: 0, ground: false });
+      list.push({ kind: ENT_BOMB, pos: [x, y, z], vel: [vx, vy, vz], size: [0.4, 0.4, 0.4], ttl: fuse, block: B_TNT, state: 0, timer: 0, hx: 0, hz: 0, ground: false, hostile: false, variant: 0, hp: 1 });
     },
     spawnMeteor(x, y, z, tx, ty, tz) {
       const dx = tx - x;
       const dy = ty - y;
       const dz = tz - z;
       const t = 1.6;
-      list.push({ kind: ENT_METEOR, pos: [x, y, z], vel: [dx / t, dy / t, dz / t], size: [1.0, 1.0, 1.0], ttl: 6, block: B_LAVA, state: 0, timer: 0, hx: 0, hz: 0, ground: false });
+      list.push({ kind: ENT_METEOR, pos: [x, y, z], vel: [dx / t, dy / t, dz / t], size: [1.0, 1.0, 1.0], ttl: 6, block: B_LAVA, state: 0, timer: 0, hx: 0, hz: 0, ground: false, hostile: false, variant: 0, hp: 1 });
     },
     alarm(x, y, z, power) {
       const r = 6 + power * 4;
@@ -610,6 +652,30 @@ export function createEntities(sim: Sim): Entities {
           e.timer = 1.2;
         }
       }
+    },
+    damage(x, y, z, radius, amount) {
+      let kills = 0;
+      const r2 = radius * radius;
+      for (let i = list.length - 1; i >= 0; i -= 1) {
+        const e = list[i]!;
+        if (e.kind !== ENT_CRITTER) continue;
+        const dx = e.pos[0] - x;
+        const dy = e.pos[1] - y;
+        const dz = e.pos[2] - z;
+        if (dx * dx + dy * dy + dz * dz > r2) continue;
+        e.hp -= amount;
+        if (e.hp <= 0) {
+          if (e.hostile) kills += 1;
+          ents.onCritterDeath?.(e.pos[0], e.pos[1], e.pos[2], e.hostile);
+          list.splice(i, 1);
+        }
+      }
+      return kills;
+    },
+    hostileCount() {
+      let n = 0;
+      for (const e of list) if (e.kind === ENT_CRITTER && e.hostile) n += 1;
+      return n;
     },
     step(dt) {
       const g = 28;
@@ -654,34 +720,78 @@ export function createEntities(sim: Sim): Entities {
           if (e.ttl <= 0) list.splice(i, 1);
           continue;
         }
-        // ENT_CRITTER — wander / flee / launched.
+        // ── Creature AI: wildlife (wander/graze/flee) + hostiles (hunt the player) ──
+        // Lava melts; a hard fall after being flung chips health; hp <= 0 dies.
+        if (sim.getBlock(Math.floor(e.pos[0]), Math.floor(e.pos[1] + 0.1), Math.floor(e.pos[2])) === B_LAVA) e.hp -= 12 * dt;
         e.timer -= dt;
-        const speed = e.state === 1 ? 5.5 : e.state === 2 ? 0 : 2.2;
+
+        // Heading + distance to the player target (game sets ents.target each frame).
+        let tdx = 0;
+        let tdz = 0;
+        let tdist = Infinity;
+        if (ents.target) {
+          tdx = ents.target[0] - e.pos[0];
+          tdz = ents.target[2] - e.pos[2];
+          tdist = Math.hypot(tdx, tdz);
+        }
+
         if (e.state === 2) {
+          // Launched: tumble until grounded, then resume normal behaviour.
           if (e.ground && e.timer <= 0) e.state = 0;
-        } else {
-          if (e.timer <= 0) {
-            if (e.state === 1) e.state = 0; // calm down
+        } else if (e.hostile) {
+          // Hunt: steer straight at the player; wander only if there's no target.
+          if (tdist > 0.01 && tdist < Infinity) {
+            e.hx = tdx / tdist;
+            e.hz = tdz / tdist;
+          } else if (e.timer <= 0) {
             const a = Math.random() * Math.PI * 2;
             e.hx = Math.cos(a);
             e.hz = Math.sin(a);
-            e.timer = 1.5 + Math.random() * 2.5;
+            e.timer = 1 + Math.random();
           }
-          e.vel[0] = e.hx * speed;
-          e.vel[2] = e.hz * speed;
-          // hop occasionally / when blocked
-          if (e.ground && Math.random() < 0.02) e.vel[1] = 6.5;
+          const mobSpeed = e.variant === 1 ? 6.4 : 3.6;
+          e.vel[0] = e.hx * mobSpeed;
+          e.vel[2] = e.hz * mobSpeed;
+        } else {
+          // Wildlife: bolt away when the player gets close, else amble / graze.
+          if (tdist < 9 && tdist > 0.01) {
+            e.hx = -tdx / tdist;
+            e.hz = -tdz / tdist;
+            e.state = 1;
+            e.timer = 1.0 + Math.random();
+          } else if (e.timer <= 0) {
+            if (Math.random() < 0.3) {
+              e.state = 3; // graze (stand + nibble)
+              e.timer = 1.4 + Math.random() * 1.6;
+            } else {
+              e.state = 0;
+              const a = Math.random() * Math.PI * 2;
+              e.hx = Math.cos(a);
+              e.hz = Math.sin(a);
+              e.timer = 1.5 + Math.random() * 2.5;
+            }
+          }
+          const wspeed = e.state === 1 ? 5.6 : e.state === 3 ? 0 : 2.2;
+          e.vel[0] = e.hx * wspeed;
+          e.vel[2] = e.hz * wspeed;
         }
+        // Hop now and then while moving on the ground.
+        if (e.state !== 2 && e.state !== 3 && e.ground && Math.random() < (e.hostile ? 0.03 : 0.02)) e.vel[1] = e.hostile ? 7.0 : 6.5;
+
         e.vel[1] -= g * dt;
-        const r = sweptMove(e.pos[0], e.pos[1], e.pos[2], e.vel[0], e.vel[1], e.vel[2], e.size[0], e.size[1], e.size[2], dt, solid, 1.05);
-        // If blocked horizontally while wandering, hop or turn.
+        const fall = -e.vel[1];
+        const stepUp = e.variant === 1 ? 1.15 : 1.05;
+        const r = sweptMove(e.pos[0], e.pos[1], e.pos[2], e.vel[0], e.vel[1], e.vel[2], e.size[0], e.size[1], e.size[2], dt, solid, stepUp);
+        // Blocked horizontally → jump to climb (hostiles always try); wildlife may turn.
         if ((r.hitX || r.hitZ) && r.onGround && e.state !== 2) {
-          if (Math.random() < 0.5) e.vel[1] = 6.5;
+          if (e.hostile || Math.random() < 0.5) e.vel[1] = 7.0;
           else {
             e.hx = -e.hx;
             e.hz = -e.hz;
           }
         }
+        // A hard landing after being flung hurts (mobs can be blasted to their death).
+        if (r.onGround && !e.ground && fall > 24) e.hp -= (fall - 24) * 0.5;
         e.pos[0] = r.x;
         e.pos[1] = r.y;
         e.pos[2] = r.z;
@@ -689,6 +799,10 @@ export function createEntities(sim: Sim): Entities {
         e.vel[1] = r.vy;
         e.vel[2] = r.vz;
         e.ground = r.onGround;
+        if (e.hp <= 0) {
+          ents.onCritterDeath?.(e.pos[0], e.pos[1], e.pos[2], e.hostile);
+          list.splice(i, 1);
+        }
       }
     },
   };
@@ -838,6 +952,14 @@ float3 blockColor(uint t, float3 cell) {
   if (t == ${B_OBSIDIAN}u) {                         // obsidian: near-black volcanic glass with a purple sheen
     float h = hash21(cell.xz * 2.3 + cell.y);
     return float3(0.06, 0.045, 0.10) + float3(0.06, 0.02, 0.10) * h;
+  }
+  if (t == ${B_CRITTER}u) {                          // wildlife: woolly cream with a soft hue drift
+    float h = hash21(cell.xz * 1.9 + cell.y * 1.3);
+    return lerp(float3(0.86, 0.82, 0.70), float3(0.97, 0.94, 0.84), h);
+  }
+  if (t == ${B_MOB}u) {                              // hostile mob: dark blood-red, slightly mottled
+    float h = hash21(cell.xz * 2.1 + cell.y * 1.7);
+    return lerp(float3(0.36, 0.05, 0.05), float3(0.55, 0.11, 0.08), h);
   }
   return float3(0.5, 0.5, 0.5);
 }
@@ -2061,6 +2183,18 @@ function main(): void {
   let slowmo = 0; // bullet-time: seconds of remaining slow motion
   let nextBoom = 0.4; // VOX_BOOM repeating-detonation timer (capture-mode verification)
   let cinematicBoomed = false; // one-shot finale detonation for the gallery shot
+
+  // ── Survival game state (day = build/prep · night = waves of hostile mobs) ─────
+  const HEALTH_MAX = 100;
+  let health = HEALTH_MAX;
+  let score = 0;
+  let wave = 0; // waves survived
+  let waveActive = false; // a night assault is currently underway
+  let hurt = 0; // red damage-vignette envelope (decays each frame)
+  let dead = false; // brief death/respawn pause
+  let deadTimer = 0;
+  let damageCd = 0; // i-frames between mob contact hits
+  let regenCd = 0; // delay before health regen kicks in after taking damage
   // Time of day (0..1). Capture mode pins it to a moody low-dusk sun (richer sky for
   // contrast, so the finale fireball + glow POP instead of washing out) unless VOX_TOD is set.
   let timeOfDay = process.env.VOX_TOD ? Number(process.env.VOX_TOD) : 0.225;
@@ -2260,6 +2394,7 @@ function main(): void {
       triggerExplosionFx(e.x, e.y, e.z, e.power);
       entities.knockback(e.x + 0.5, e.y + 0.5, e.z + 0.5, e.power);
       entities.alarm(e.x + 0.5, e.y + 0.5, e.z + 0.5, e.power);
+      entities.damage(e.x + 0.5, e.y + 0.5, e.z + 0.5, 4 + e.power * 3, 4 + e.power * 4); // blasts gib mobs (scored via onCritterDeath)
       // Fling some debris cubes from the destroyed blocks (sampled + capped).
       const destroyed = e.result.destroyed;
       const stride = Math.max(1, Math.floor(destroyed.length / 28));
@@ -2289,6 +2424,14 @@ function main(): void {
 
   // Projectiles detonate via this callback; spawn a few critters to roam the world.
   entities.onExplode = (x, y, z, power) => detonate(x, y, z, 4.0 + 1.6 * power, power);
+  // Creature death → debris gibs + a poof of glow; slain hostiles score points.
+  entities.onCritterDeath = (x, y, z, hostile) => {
+    for (let k = 0; k < 5; k += 1) {
+      entities.spawnDebris(x, y + 0.5, z, (Math.random() - 0.5) * 5, 3 + Math.random() * 3, (Math.random() - 0.5) * 5, hostile ? B_MOB : B_CRITTER);
+    }
+    glowFx.push({ x, y: y + 0.6, z, r0: 1.8, cr: hostile ? 2.4 : 1.1, cg: hostile ? 0.4 : 1.0, cb: hostile ? 0.3 : 0.9, intensity: 1.6, life: 0.4, maxLife: 0.4 });
+    if (hostile) score += 25;
+  };
   function spawnCritters(n: number): void {
     for (let i = 0; i < n; i += 1) {
       const cx = 4 + Math.floor(Math.random() * (W - 8));
@@ -2301,6 +2444,23 @@ function main(): void {
         }
       }
       entities.spawnCritter(cx + 0.5, cy + 0.1, cz + 0.5);
+    }
+  }
+  /** Spawn n hostile mobs on the ground in a ring around the player (a night wave). */
+  function spawnMobWave(n: number): void {
+    for (let i = 0; i < n; i += 1) {
+      const ang = Math.random() * Math.PI * 2;
+      const dist = 26 + Math.random() * 46;
+      const mx = Math.max(2, Math.min(W - 3, Math.floor(player[0] + Math.cos(ang) * dist)));
+      const mz = Math.max(2, Math.min(D - 3, Math.floor(player[2] + Math.sin(ang) * dist)));
+      let my = SEA_LEVEL + 2;
+      for (let y = H - 1; y >= 1; y -= 1) {
+        if (isSolid(voxelAt(mx, y, mz))) {
+          my = y + 1;
+          break;
+        }
+      }
+      entities.spawnMob(mx + 0.5, my + 0.1, mz + 0.5, Math.random() < 0.3 ? 1 : 0);
     }
   }
   /** Drop the player onto dry ground near the basin center (after a regenerate). */
@@ -2344,11 +2504,13 @@ function main(): void {
     sim.water.fill(0);
     for (let i = 0; i < sim.world.length; i += 1) if (sim.world[i] === B_WATER) sim.water[i] = WATER_MAX;
     entities.list.length = 0;
-    spawnCritters(12);
+    spawnCritters(30);
     respawnPlayer();
     editedThisFrame = true;
   }
-  spawnCritters(12);
+  spawnCritters(30);
+  // Debug/verification: VOX_MOBS=N spawns a hostile wave at start (test seek + eye-glow).
+  if (process.env.VOX_MOBS) spawnMobWave(Number(process.env.VOX_MOBS) | 0);
 
   // Assemble up to GLOW_MAX glow points into the cbuffer (offset 128), nearest-first
   // with transient FX prioritized. Returns the count written.
@@ -2398,6 +2560,10 @@ function main(): void {
         glowCands.push({ x: e.pos[0], y: e.pos[1], z: e.pos[2], r: 1.8, cr: 2.2, cg: 0.5, cb: 0.12, inten: 1.2 + 1.8 * blink, pri: 2, d2: 0 });
       } else if (e.kind === ENT_METEOR) {
         glowCands.push({ x: e.pos[0], y: e.pos[1], z: e.pos[2], r: 3.0, cr: 2.4, cg: 0.8, cb: 0.18, inten: 4.0, pri: 3, d2: 0 });
+      } else if (e.kind === ENT_CRITTER && e.hostile) {
+        // Menacing red eye-glow at head height (flickers); pri 1 so it survives the cap.
+        const fl = 0.8 + 0.2 * Math.sin(nowSec * 9 + e.pos[0] * 1.7);
+        glowCands.push({ x: e.pos[0], y: e.pos[1] + e.size[1] * 0.85, z: e.pos[2], r: 1.0, cr: 2.6, cg: 0.32, cb: 0.12, inten: 1.1 * fl, pri: 1, d2: 0 });
       }
     }
     // Particles (break flecks, explosion sparks/smoke, fire embers): low priority so
@@ -2781,6 +2947,8 @@ function main(): void {
       physAccum -= PHYS_TICK;
       ticksRun += 1;
     }
+    // Hostiles hunt this point; wildlife flee it (the player — the camera in capture).
+    entities.target = [camX, camY, camZ];
     entities.step(sdt);
     stepParticles(sdt);
     // Fire embers: sample a few burning cells per frame for occasional rising embers.
