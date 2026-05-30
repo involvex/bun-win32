@@ -62,11 +62,17 @@ const WIDTH = 1280;
 const HEIGHT = 720;
 const TRANSPARENT_BK = 1;
 
-// World dimensions (i = x + z*W + y*W*D).
-const W = 128;
-const D = 128;
-const H = 48;
+// World dimensions (i = x + z*W + y*W*D). An enormous basin — 4× the area of the
+// original sandbox — with the distance-haze hiding the far DDA clip so GPU cost stays
+// bounded. Tunable: drop to 192 if a weaker GPU can't hold a playable framerate.
+const W = 384;
+const D = 384;
+const H = 64;
 const SEA_LEVEL = 16;
+
+// Primary DDA view distance (cells). The aerial-perspective haze fully saturates near
+// this range, so the ray budget caps GPU cost without a visible far clip plane.
+const PRIMARY_STEPS = 448;
 
 // Max additive glow points fed to the shader each frame (explosions, fire, lava…).
 const GLOW_MAX = 32;
@@ -617,7 +623,12 @@ export function createEntities(sim: Sim): Entities {
           e.ttl -= dt;
           const hitSolid = solid(nx, ny, nz);
           if (hitSolid || e.ttl <= 0 || ny < 0) {
-            if (ents.onExplode) ents.onExplode(Math.floor(e.pos[0]), Math.floor(Math.max(0, e.pos[1])), Math.floor(e.pos[2]), e.kind === ENT_METEOR ? 2.0 : 1.0);
+            if (ents.onExplode) {
+              const ex = Math.max(0, Math.min(sim.W - 1, Math.floor(e.pos[0])));
+              const ey = Math.max(0, Math.min(sim.H - 1, Math.floor(e.pos[1])));
+              const ez = Math.max(0, Math.min(sim.D - 1, Math.floor(e.pos[2])));
+              ents.onExplode(ex, ey, ez, e.kind === ENT_METEOR ? 2.0 : 1.0);
+            }
             list.splice(i, 1);
             continue;
           }
@@ -995,8 +1006,13 @@ float4 main(float4 fragPos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
   float3 sunCol = lerp(float3(0.20, 0.26, 0.46), float3(1.55, 1.16, 0.78), day);
   float3 sky = skyColor(rd, sun);
 
+  // When the eye is submerged, SKIP water on the primary ray so it reaches the seabed
+  // and terrain (then the underwater deep-fog below tints the whole view). Otherwise the
+  // ray would hit the water cell the camera sits in at t=0 and run the surface-shading
+  // branch for every pixel — the chaotic "everything's underwater glass" artifact.
+  bool eyeWater = iEyeInWater > 0.5;
   int3 cell; float3 n; uint block; float t;
-  bool hit = traceVoxels(ro, rd, 320, false, cell, n, block, t);
+  bool hit = traceVoxels(ro, rd, ${PRIMARY_STEPS}, eyeWater, cell, n, block, t);
 
   float3 col = sky;
   if (hit) {
@@ -1113,7 +1129,10 @@ float4 main(float4 fragPos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
     // ── Atmospheric aerial perspective: warm haze accumulates with distance and
     // brightens toward the sun (in-scattering), so far hills melt into golden air.
     // Kept gentle so foreground voxels stay crisp; only the deep distance softens.
-    float fog = 1.0 - exp(-max(0.0, t - 22.0) * 0.0062);
+    // Aerial haze: crisp foreground + mid-ground, ramping to full only near the DDA
+    // view-distance clip so the enormous basin has no hard edge. A power curve keeps
+    // near hills sharp (vs. the old exponential that pastel-washed the longer sightlines).
+    float fog = pow(saturate((t - 30.0) / 410.0), 2.0);
     float sunAmt = saturate(dot(rd, sun));
     float3 hazeCol = lerp(sky, float3(1.0, 0.80, 0.55), pow(sunAmt, 4.0) * 0.35);
     col = lerp(col, hazeCol, saturate(fog));
@@ -1231,13 +1250,19 @@ function makeNoise2D(seed: number): (x: number, z: number) => number {
   };
 }
 
-function generateWorld(): Uint32Array {
+function generateWorld(seed = 1337): Uint32Array {
   const voxels = new Uint32Array(W * H * D); // zero = all air
-  const n1 = makeNoise2D(1337);
-  const n2 = makeNoise2D(4242);
-  const n3 = makeNoise2D(9001);
-  const nRidge = makeNoise2D(5150);
-  const nWarp = makeNoise2D(2718);
+  // Every noise field is keyed off the seed, so each press of R yields a genuinely
+  // different basin (terrain, ridges, domain warp, river meander).
+  const s = seed | 0;
+  const n1 = makeNoise2D((1337 ^ s) | 0);
+  const n2 = makeNoise2D((4242 ^ (s * 7 + 1)) | 0);
+  const n3 = makeNoise2D((9001 ^ (s * 13 + 3)) | 0);
+  const nRidge = makeNoise2D((5150 ^ (s * 17 + 5)) | 0);
+  const nWarp = makeNoise2D((2718 ^ (s * 23 + 7)) | 0);
+  const riverPhase = ((s % 977) * 0.0123) % (Math.PI * 2); // per-seed river meander phase
+  // Scatter density scales with the basin area so a 256² world isn't sparse.
+  const areaScale = (W * D) / (128 * 128);
 
   const height = new Int32Array(W * D);
 
@@ -1258,16 +1283,17 @@ function generateWorld(): Uint32Array {
       const r = 1 - Math.abs(nRidge(wx / 30, wz / 30) * 2 - 1);
       e = e * 0.7 + r * r * 0.45;
 
-      // Shape: gentle valleys, dramatic peaks above the snow line.
+      // Shape: gentle valleys, dramatic peaks above the snow line. Caps below H so
+      // there's air headroom over the tallest peaks (for flying meteors + mobs).
       e = Math.pow(Math.max(0, Math.min(1, e)), 1.45);
-      let h = Math.floor(5 + e * (H - 8));
-      h = Math.max(2, Math.min(H - 2, h));
+      let h = Math.floor(5 + e * (H - 14));
+      h = Math.max(2, Math.min(H - 6, h));
 
       // ── Winding river carved through the basin. A meandering channel follows a
       // warped sine; cells near its centerline get gouged down below sea level.
-      const riverCenter = D * 0.5 + Math.sin(x / 26) * 16 + (nWarp(x / 30, 7) - 0.5) * 24;
+      const riverCenter = D * 0.5 + Math.sin(x / 32 + riverPhase) * 30 + (nWarp(x / 30, 7) - 0.5) * 44;
       const riverDist = Math.abs(z - riverCenter);
-      const riverWidth = 7 + nWarp(x / 18, 13) * 5;
+      const riverWidth = 8 + nWarp(x / 18, 13) * 6;
       if (riverDist < riverWidth) {
         const carve = (1 - riverDist / riverWidth); // 0..1, deepest at center
         const bed = SEA_LEVEL - 3 - Math.floor(carve * 4);
@@ -1280,7 +1306,7 @@ function generateWorld(): Uint32Array {
       for (let y = 0; y <= h; y += 1) {
         let block: number;
         if (y === h) {
-          if (h >= H - 8) block = B_SNOW;
+          if (h >= H - 16) block = B_SNOW;
           else if (h <= SEA_LEVEL + 1) block = B_SAND;            // beaches/banks
           else block = B_GRASS;
         } else if (y >= h - 3) {
@@ -1299,12 +1325,12 @@ function generateWorld(): Uint32Array {
   }
 
   // Scatter trees on grass above the shoreline, with varied canopy shapes/sizes.
-  let treeSeed = 24680;
+  let treeSeed = ((24680 ^ (s * 40503)) & 0x7fffffff) || 1;
   const rng = (): number => {
     treeSeed = (treeSeed * 1103515245 + 12345) & 0x7fffffff;
     return treeSeed / 0x7fffffff;
   };
-  const treeCount = 150;
+  const treeCount = Math.round(150 * areaScale);
   for (let tIter = 0; tIter < treeCount; tIter += 1) {
     const tx = 3 + Math.floor(rng() * (W - 6));
     const tz = 3 + Math.floor(rng() * (D - 6));
@@ -1339,7 +1365,7 @@ function generateWorld(): Uint32Array {
   // ── Physics-showcase features: gravel slopes, glowstone veins, lava pools, and
   //    plank shacks to demolish. Reuses the deterministic tree RNG above. ────────
   // Gravel blobs scattered on dry, mid-altitude surface.
-  for (let i = 0; i < 40; i += 1) {
+  for (let i = 0; i < Math.round(40 * areaScale); i += 1) {
     const gx = 3 + Math.floor(rng() * (W - 6));
     const gz = 3 + Math.floor(rng() * (D - 6));
     const gh = height[gx + gz * W]!;
@@ -1358,7 +1384,7 @@ function generateWorld(): Uint32Array {
   }
 
   // Glowstone veins just beneath the surface (a warm subterranean glint).
-  for (let i = 0; i < 24; i += 1) {
+  for (let i = 0; i < Math.round(24 * areaScale); i += 1) {
     const gx = 2 + Math.floor(rng() * (W - 4));
     const gz = 2 + Math.floor(rng() * (D - 4));
     const gh = height[gx + gz * W]!;
@@ -1368,7 +1394,8 @@ function generateWorld(): Uint32Array {
 
   // A few small lava pools in dry depressions, kept well away from water.
   let pools = 0;
-  for (let attempt = 0; attempt < 600 && pools < 3; attempt += 1) {
+  const poolTarget = Math.round(3 * areaScale);
+  for (let attempt = 0; attempt < 600 * areaScale && pools < poolTarget; attempt += 1) {
     const lx = 10 + Math.floor(rng() * (W - 20));
     const lz = 10 + Math.floor(rng() * (D - 20));
     const lh = height[lx + lz * W]!;
@@ -1400,7 +1427,8 @@ function generateWorld(): Uint32Array {
 
   // A few hollow plank shacks on the meadow — satisfying to blow apart.
   let shacks = 0;
-  for (let attempt = 0; attempt < 600 && shacks < 3; attempt += 1) {
+  const shackTarget = Math.round(3 * areaScale);
+  for (let attempt = 0; attempt < 600 * areaScale && shacks < shackTarget; attempt += 1) {
     const bx = 12 + Math.floor(rng() * (W - 24));
     const bz = 12 + Math.floor(rng() * (D - 24));
     const bh = height[bx + bz * W]!;
@@ -1704,8 +1732,15 @@ function main(): void {
   const { w: cw, h: ch } = win.clientSize();
   const g = gpu.createDevice(win.hwnd, { width: cw, height: ch });
 
+  // Capture mode pins a fixed seed for a deterministic gallery shot; interactive play
+  // launches a fresh RANDOM world each run (and R reshuffles it — see regenerate()).
+  const durationMs = process.env.DEMO_DURATION_MS ? Number(process.env.DEMO_DURATION_MS) : 0;
+  const interactive = durationMs === 0;
+  const CAPTURE_SEED = 1337;
+  let worldSeed = process.env.VOX_SEED ? Number(process.env.VOX_SEED) | 0 : interactive ? (Math.random() * 0x7fffffff) | 0 : CAPTURE_SEED;
+
   // Build the world on the CPU and upload it as a structured buffer SRV.
-  const sim = createSim(W, H, D, generateWorld());
+  const sim = createSim(W, H, D, generateWorld(worldSeed));
   const voxels = sim.world; // authoritative grid (the sim owns + mutates it)
   const frame = new Uint32Array(W * H * D); // render grid = world + stamped entities
   const entities = createEntities(sim);
@@ -1822,12 +1857,25 @@ function main(): void {
     sun[2] = ce * Math.cos(azim);
   }
 
-  const durationMs = process.env.DEMO_DURATION_MS ? Number(process.env.DEMO_DURATION_MS) : 0;
-  const interactive = durationMs === 0;
   // Debug/verification static camera in capture mode: VOX_CAM="x,y,z,yaw,pitch".
-  const camOverride: number[] | null = process.env.VOX_CAM
+  let camOverride: number[] | null = process.env.VOX_CAM
     ? process.env.VOX_CAM.split(',').map(Number)
     : null;
+  // VOX_DIVE: drop a static camera INSIDE a water body to verify the underwater render path.
+  if (process.env.VOX_DIVE) {
+    let found = false;
+    for (let zz = 2; zz < D - 2 && !found; zz += 1) {
+      for (let xx = 2; xx < W - 2 && !found; xx += 1) {
+        for (let yy = SEA_LEVEL; yy >= 3; yy -= 1) {
+          if (voxelAt(xx, yy, zz) === B_WATER && voxelAt(xx, yy - 1, zz) === B_WATER) {
+            camOverride = [xx + 0.5, yy + 0.25, zz + 0.5, 0.6, -0.1];
+            found = true;
+            break;
+          }
+        }
+      }
+    }
+  }
   // Procedural audio only in interactive play (silent in capture).
   const audio: Audio | null = interactive ? makeAudio() : null;
   let footTimer = 0;
@@ -2255,9 +2303,41 @@ function main(): void {
       entities.spawnCritter(cx + 0.5, cy + 0.1, cz + 0.5);
     }
   }
-  /** R: fresh world (new seed) — reset blocks, fluids, physics, and entities. */
+  /** Drop the player onto dry ground near the basin center (after a regenerate). */
+  function respawnPlayer(): void {
+    let bx = Math.floor(W * 0.5);
+    let bz = Math.floor(D * 0.28);
+    let feet = SEA_LEVEL + 2;
+    // Spiral out from the spawn bias for a column whose top sits above sea level (dry land).
+    for (let r = 0; r < 48; r += 2.5) {
+      const cx = Math.max(2, Math.min(W - 3, Math.floor(W * 0.5 + Math.cos(r) * r)));
+      const cz = Math.max(2, Math.min(D - 3, Math.floor(D * 0.28 + Math.sin(r) * r)));
+      let top = 0;
+      for (let y = H - 1; y >= 1; y -= 1) {
+        if (isSolid(voxelAt(cx, y, cz))) {
+          top = y;
+          break;
+        }
+      }
+      if (top > SEA_LEVEL) {
+        bx = cx;
+        bz = cz;
+        feet = top + 1;
+        break;
+      }
+    }
+    player[0] = bx + 0.5;
+    player[1] = feet + 0.05;
+    player[2] = bz + 0.5;
+    pvel[0] = 0;
+    pvel[1] = 0;
+    pvel[2] = 0;
+    onGround = false;
+  }
+  /** R: brand-new RANDOM world — reset blocks, fluids, physics, entities; respawn the player. */
   function regenerate(): void {
-    sim.world.set(generateWorld());
+    worldSeed = (Math.random() * 0x7fffffff) | 0;
+    sim.world.set(generateWorld(worldSeed));
     sim.active.clear();
     sim.fuses.clear();
     sim.burning.clear();
@@ -2265,6 +2345,7 @@ function main(): void {
     for (let i = 0; i < sim.world.length; i += 1) if (sim.world[i] === B_WATER) sim.water[i] = WATER_MAX;
     entities.list.length = 0;
     spawnCritters(12);
+    respawnPlayer();
     editedThisFrame = true;
   }
   spawnCritters(12);
@@ -2309,6 +2390,15 @@ function main(): void {
       const x = rem - z * W;
       const fl = 0.7 + 0.3 * Math.sin(nowSec * 20 + x * 1.3 + z * 0.7);
       glowCands.push({ x: x + 0.5, y: y + 1.0, z: z + 0.5, r: 1.9, cr: 1.7, cg: 0.62, cb: 0.18, inten: 1.5 * fl, pri: 1, d2: 0 });
+    }
+    // Flying projectiles: bombs glow with their fuse, meteors blaze with a fiery trail.
+    for (const e of entities.list) {
+      if (e.kind === ENT_BOMB) {
+        const blink = 0.5 + 0.5 * Math.sin(nowSec * 28);
+        glowCands.push({ x: e.pos[0], y: e.pos[1], z: e.pos[2], r: 1.8, cr: 2.2, cg: 0.5, cb: 0.12, inten: 1.2 + 1.8 * blink, pri: 2, d2: 0 });
+      } else if (e.kind === ENT_METEOR) {
+        glowCands.push({ x: e.pos[0], y: e.pos[1], z: e.pos[2], r: 3.0, cr: 2.4, cg: 0.8, cb: 0.18, inten: 4.0, pri: 3, d2: 0 });
+      }
     }
     // Particles (break flecks, explosion sparks/smoke, fire embers): low priority so
     // transient explosions/fire keep their slots; the GLOW_MAX cap bounds GPU cost.
@@ -2470,6 +2560,23 @@ function main(): void {
       const rightDown = (User32.GetAsyncKeyState(VK_RBUTTON) & 0x8000) !== 0;
       const pick = pickVoxel(voxels, [camX, camY, camZ], cf, 90);
       actCooldown -= dt;
+      // Aim point for set-pieces (B/M): the targeted block, else a point ~24 blocks
+      // ahead projected down to the terrain — so they work even aiming at sky/water.
+      const aim = (): [number, number, number] => {
+        if (pick.hit) return [pick.cell[0], pick.cell[1], pick.cell[2]];
+        let ax = Math.floor(camX + cf[0] * 24);
+        const az = Math.floor(camZ + cf[2] * 24);
+        ax = Math.max(1, Math.min(W - 2, ax));
+        const cz = Math.max(1, Math.min(D - 2, az));
+        let ay = Math.min(H - 2, Math.floor(camY + cf[1] * 24));
+        for (let y = H - 1; y >= 1; y -= 1) {
+          if (isSolid(voxelAt(ax, y, cz))) {
+            ay = y;
+            break;
+          }
+        }
+        return [ax, ay, cz];
+      };
 
       // LMB: dig (held, throttled). The Bomb slot lobs a bomb on the click edge.
       if (slot.block === -2) {
@@ -2511,20 +2618,32 @@ function main(): void {
 
       // B: carpet bomb — rain TNT bombs over the aim point.
       const bDown = win.keyDown(VK_B);
-      if (bDown && !prevB && pick.hit) {
+      if (bDown && !prevB) {
+        const [ax, ay, az] = aim();
         for (let dx = -2; dx <= 2; dx += 1) {
           for (let dz = -2; dz <= 2; dz += 1) {
-            entities.spawnBomb(pick.cell[0] + dx * 2 + 0.5, Math.min(H - 1, pick.cell[1] + 22), pick.cell[2] + dz * 2 + 0.5, (Math.random() - 0.5) * 2, 0, (Math.random() - 0.5) * 2, 0.9 + Math.random() * 0.6);
+            entities.spawnBomb(
+              Math.max(1, Math.min(W - 2, ax + dx * 2)) + 0.5,
+              Math.min(H - 1, ay + 24),
+              Math.max(1, Math.min(D - 2, az + dz * 2)) + 0.5,
+              (Math.random() - 0.5) * 2,
+              0,
+              (Math.random() - 0.5) * 2,
+              0.9 + Math.random() * 0.6,
+            );
           }
         }
         setToast('carpet bomb away!', elapsed);
       }
       prevB = bDown;
 
-      // M: meteor — a flaming projectile streaks down onto the aim point.
+      // M: meteor — a flaming projectile streaks down from high overhead onto the aim.
       const mDown = win.keyDown(VK_M);
-      if (mDown && !prevM && pick.hit) {
-        entities.spawnMeteor(pick.cell[0] - 34, Math.min(H - 2, pick.cell[1] + 42), pick.cell[2] - 34, pick.cell[0], pick.cell[1], pick.cell[2]);
+      if (mDown && !prevM) {
+        const [ax, ay, az] = aim();
+        const sx = Math.max(1, Math.min(W - 2, ax + 6));
+        const sz = Math.max(1, Math.min(D - 2, az + 6));
+        entities.spawnMeteor(sx, H - 2, sz, ax, ay, az);
         setToast('incoming meteor!', elapsed);
       }
       prevM = mDown;
@@ -2634,6 +2753,20 @@ function main(): void {
       }
       detonate(bx, by, bz, 6, 1.8);
       nextBoom = elapsed + 0.9;
+    }
+    // Debug/verification: launch a meteor at the basin center in capture mode (VOX_METEOR=1).
+    if (!interactive && process.env.VOX_METEOR && elapsed > nextBoom) {
+      const mx = Math.floor(W * 0.5);
+      const mz = Math.floor(D * 0.5);
+      let my = SEA_LEVEL + 2;
+      for (let y = H - 1; y >= 1; y -= 1) {
+        if (isSolid(voxelAt(mx, y, mz))) {
+          my = y;
+          break;
+        }
+      }
+      entities.spawnMeteor(Math.min(W - 2, mx + 6), H - 2, Math.min(D - 2, mz + 6), mx, my, mz);
+      nextBoom = elapsed + 1.5;
     }
 
     // ── Bullet-time + step physics & entities (fixed-step sim, smooth entities) ──
