@@ -1785,6 +1785,7 @@ interface Audio {
   place(): void;
   boom(power: number): void;
   squeak(): void;
+  hurt(): void;
   pump(fuseActive: boolean, fireActive: boolean): void;
   close(): void;
 }
@@ -1818,6 +1819,7 @@ function makeAudio(): Audio {
       add(1.15, (t) => (Math.sin(2 * Math.PI * (58 - 22 * t) * t) * 0.6 + noise() * Math.exp(-t * 6) * 0.5 + Math.sin(2 * Math.PI * 40 * t) * 0.3) * Math.exp(-t * 2.4) * a);
     },
     squeak: () => add(0.12, (t) => Math.sin(2 * Math.PI * (900 + 500 * Math.sin(t * 55)) * t) * Math.exp(-t * 16) * 0.1),
+    hurt: () => add(0.24, (t) => (Math.sin(2 * Math.PI * (200 - 120 * t) * t) * 0.6 + noise() * 0.4) * Math.exp(-t * 7) * 0.32),
     pump: (fuseActive, fireActive) => {
       if (!pcm.available) return;
       fuseLvl += ((fuseActive ? 1 : 0) - fuseLvl) * 0.12;
@@ -1865,6 +1867,7 @@ function main(): void {
   const sim = createSim(W, H, D, generateWorld(worldSeed));
   const voxels = sim.world; // authoritative grid (the sim owns + mutates it)
   const frame = new Uint32Array(W * H * D); // render grid = world + stamped entities
+  const frameBuf = Buffer.from(frame.buffer, 0, frame.byteLength); // persistent view, reused each upload
   const entities = createEntities(sim);
   const voxelBytes = Buffer.from(voxels.buffer, 0, voxels.byteLength);
   const field = gpu.makeStructuredBuffer({ stride: 4, count: W * H * D, srv: true, cpuWritable: true, initialData: voxelBytes });
@@ -1948,6 +1951,7 @@ function main(): void {
   ];
   let selectedSlot = 0;
   let actCooldown = 0; // throttles held break/place
+  let meleeCd = 0; // throttles melee swats
   let prevE = false;
   let prevB = false;
   let prevM = false;
@@ -1983,6 +1987,11 @@ function main(): void {
   let camOverride: number[] | null = process.env.VOX_CAM
     ? process.env.VOX_CAM.split(',').map(Number)
     : null;
+  // VOX_SURVIVAL: run the night-wave loop in capture mode (verification), camera pinned at
+  // the player's eye so the converging mobs swarm into view. VOX_CAM still overrides.
+  if (process.env.VOX_SURVIVAL && !camOverride) {
+    camOverride = [player[0], player[1] + EYE_H, player[2], 0.6, -0.04];
+  }
   // VOX_DIVE: drop a static camera INSIDE a water body to verify the underwater render path.
   if (process.env.VOX_DIVE) {
     let found = false;
@@ -2069,8 +2078,7 @@ function main(): void {
         stampCell(x, y, z, e.block);
       }
     }
-    const buf = Buffer.from(frame.buffer, 0, frame.byteLength);
-    gpu.updateDynamicBuffer(field.buffer, buf);
+    gpu.updateDynamicBuffer(field.buffer, frameBuf);
   }
 
   function setBlock(x: number, y: number, z: number, t: number): void {
@@ -2195,9 +2203,12 @@ function main(): void {
   let deadTimer = 0;
   let damageCd = 0; // i-frames between mob contact hits
   let regenCd = 0; // delay before health regen kicks in after taking damage
+  let prevNight = false; // edge-detect dusk/dawn for wave start/clear
+  let reinforceCd = 0; // delay before a cleared-early night sends reinforcements
+  const aiTarget: [number, number, number] = [0, 0, 0]; // reused per-frame (no churn)
   // Time of day (0..1). Capture mode pins it to a moody low-dusk sun (richer sky for
   // contrast, so the finale fireball + glow POP instead of washing out) unless VOX_TOD is set.
-  let timeOfDay = process.env.VOX_TOD ? Number(process.env.VOX_TOD) : 0.225;
+  let timeOfDay = process.env.VOX_TOD ? Number(process.env.VOX_TOD) : interactive ? 0.30 : 0.225;
   interface GlowFx {
     x: number;
     y: number;
@@ -2387,6 +2398,7 @@ function main(): void {
     shake = Math.min(2.4, shake + power * 1.3 * atten);
     flash = Math.min(0.85, flash + power * 0.3 * atten);
     audio?.boom(power * atten + 0.3);
+    if (interactive && dist < 5.5) hurtPlayer((5.5 - dist) * 3.0 * power); // caught in your own blast
   }
 
   function processSimEvents(ev: SimEvents): void {
@@ -2506,7 +2518,137 @@ function main(): void {
     entities.list.length = 0;
     spawnCritters(30);
     respawnPlayer();
+    health = HEALTH_MAX;
+    score = 0;
+    wave = 0;
+    waveActive = false;
+    prevNight = false;
     editedThisFrame = true;
+  }
+
+  // ── Survival loop: day = build/prep · night = a wave of mobs hunts you ─────────
+  function hurtPlayer(amount: number): void {
+    if (dead || flying) return;
+    health -= amount;
+    hurt = 1;
+    regenCd = 3.5;
+    audio?.hurt();
+    shake = Math.min(2.4, shake + 0.45);
+  }
+  function onNightfall(now: number): void {
+    wave += 1;
+    waveActive = true;
+    reinforceCd = 7;
+    spawnMobWave(5 + 2 * wave);
+    // A quarter of the wildlife goes feral until dawn (variant 2 = revert, not despawn).
+    let wild = 0;
+    for (const e of entities.list) if (e.kind === ENT_CRITTER && !e.hostile) wild += 1;
+    const cap = Math.ceil(wild * 0.25);
+    let feral = 0;
+    for (const e of entities.list) {
+      if (feral >= cap) break;
+      if (e.kind === ENT_CRITTER && !e.hostile && Math.random() < 0.4) {
+        e.hostile = true;
+        e.block = B_MOB;
+        e.variant = 2;
+        feral += 1;
+      }
+    }
+    setToast(`NIGHT ${wave} — ${entities.hostileCount()} incoming, defend!`, now);
+    audio?.boom(0.6);
+  }
+  function onDawn(now: number): void {
+    if (waveActive) {
+      const bonus = 100 * wave;
+      score += bonus;
+      setToast(`Dawn — survived wave ${wave}!  +${bonus}`, now);
+    }
+    waveActive = false;
+    // First light: spawned mobs retreat (despawn); feral wildlife revert to grazing.
+    for (let i = entities.list.length - 1; i >= 0; i -= 1) {
+      const e = entities.list[i]!;
+      if (e.kind !== ENT_CRITTER || !e.hostile) continue;
+      if (e.variant === 2) {
+        e.hostile = false;
+        e.block = B_CRITTER;
+        e.variant = 0;
+      } else {
+        glowFx.push({ x: e.pos[0], y: e.pos[1] + 0.6, z: e.pos[2], r0: 1.4, cr: 1.0, cg: 0.5, cb: 0.4, intensity: 1.0, life: 0.3, maxLife: 0.3 });
+        entities.list.splice(i, 1);
+      }
+    }
+  }
+  function onDeath(now: number): void {
+    dead = true;
+    deadTimer = 2.4;
+    waveActive = false;
+    flash = Math.max(flash, 0.5);
+    setToast('You fell — respawning at dawn…', now);
+    for (let i = entities.list.length - 1; i >= 0; i -= 1) {
+      const e = entities.list[i]!;
+      if (e.kind === ENT_CRITTER && e.hostile && e.variant !== 2) entities.list.splice(i, 1);
+    }
+    timeOfDay = 0.3; // skip to morning so the player gets a prep day
+    computeSun(timeOfDay);
+    prevNight = false;
+  }
+  function updateSurvival(sdt2: number, now: number): void {
+    const night = sun[1] < -0.04;
+    if (night && !prevNight && !dead) onNightfall(now);
+    else if (!night && prevNight && !dead) onDawn(now);
+    prevNight = night;
+
+    // Reinforcements if the player clears a night early.
+    if (waveActive && night && !dead) {
+      reinforceCd -= sdt2;
+      if (entities.hostileCount() === 0 && reinforceCd <= 0) {
+        spawnMobWave(Math.min(14, 4 + wave));
+        reinforceCd = 7;
+        setToast('reinforcements close in!', now);
+      }
+    }
+
+    // Mob contact damage (i-framed so a swarm doesn't shred you instantly).
+    damageCd -= sdt2;
+    if (!dead && !flying && damageCd <= 0) {
+      for (const e of entities.list) {
+        if (e.kind !== ENT_CRITTER || !e.hostile) continue;
+        const dx = e.pos[0] - player[0];
+        const dz = e.pos[2] - player[2];
+        const dy = e.pos[1] - player[1];
+        if (dx * dx + dz * dz < 1.7 && dy > -1.4 && dy < 2.2) {
+          hurtPlayer(e.variant === 1 ? 8 : 12);
+          const d = Math.hypot(dx, dz) || 1;
+          pvel[0] -= (dx / d) * 4.5;
+          pvel[2] -= (dz / d) * 4.5;
+          damageCd = 0.7;
+          break;
+        }
+      }
+    }
+
+    // Lava burns; fire too.
+    if (!dead && !flying && voxelAt(Math.floor(player[0]), Math.floor(player[1] + 0.1), Math.floor(player[2])) === B_LAVA) {
+      hurtPlayer(26 * sdt2);
+      regenCd = 2;
+    }
+
+    // Health regen after a lull; the hurt vignette decays.
+    regenCd -= sdt2;
+    if (!dead && regenCd <= 0 && health < HEALTH_MAX) health = Math.min(HEALTH_MAX, health + 7 * sdt2);
+    hurt = Math.max(0, hurt - sdt2 * 2.2);
+
+    // Death + respawn.
+    if (health <= 0 && !dead) onDeath(now);
+    if (dead) {
+      deadTimer -= sdt2;
+      if (deadTimer <= 0) {
+        dead = false;
+        respawnPlayer();
+        health = HEALTH_MAX;
+        hurt = 0;
+      }
+    }
   }
   spawnCritters(30);
   // Debug/verification: VOX_MOBS=N spawns a hostile wave at start (test seek + eye-glow).
@@ -2626,8 +2768,8 @@ function main(): void {
     }
 
     // ── Day/night progression (interactive animates; capture pins golden hour) ──
-    if (interactive) {
-      timeOfDay += dt / 180; // a full day every ~3 minutes
+    if (interactive || process.env.VOX_SURVIVAL) {
+      timeOfDay += dt / 75; // a full day/night cycle every ~75s (brisk survival pacing)
       if (win.keyDown(VK_T)) timeOfDay += dt * 0.12; // hold T to scrub fast
       if (timeOfDay >= 1) timeOfDay -= 1;
     }
@@ -2744,8 +2886,33 @@ function main(): void {
         return [ax, ay, cz];
       };
 
-      // LMB: dig (held, throttled). The Bomb slot lobs a bomb on the click edge.
-      if (slot.block === -2) {
+      // Melee: a hostile in front + within reach → LMB swats it (so you're never
+      // defenseless), taking priority over digging/lobbing so close combat always works.
+      let meleeTarget: Entity | null = null;
+      {
+        let best = 3.0 * 3.0;
+        for (const e of entities.list) {
+          if (e.kind !== ENT_CRITTER || !e.hostile) continue;
+          const dx = e.pos[0] - camX;
+          const dy = e.pos[1] + 0.8 - camY;
+          const dz = e.pos[2] - camZ;
+          const d2 = dx * dx + dy * dy + dz * dz;
+          if (d2 > best) continue;
+          const d = Math.sqrt(d2) || 1;
+          if ((dx * cf[0] + dy * cf[1] + dz * cf[2]) / d < 0.5) continue; // must be roughly ahead
+          best = d2;
+          meleeTarget = e;
+        }
+      }
+      meleeCd -= dt;
+
+      // LMB: swat a mob → else lob a bomb (Bomb slot) → else dig (held, throttled).
+      if (leftDown && meleeTarget && meleeCd <= 0) {
+        entities.damage(meleeTarget.pos[0], meleeTarget.pos[1], meleeTarget.pos[2], 1.3, 3.4);
+        entities.knockback(meleeTarget.pos[0], meleeTarget.pos[1], meleeTarget.pos[2], 0.5);
+        meleeCd = 0.32;
+        audio?.breakBlock();
+      } else if (slot.block === -2) {
         if (leftDown && !prevLeft) {
           entities.spawnBomb(camX + cf[0] * 1.2, camY + cf[1] * 1.2, camZ + cf[2] * 1.2, cf[0] * 24, cf[1] * 24 + 4, cf[2] * 24, 2.6);
         }
@@ -2948,8 +3115,12 @@ function main(): void {
       ticksRun += 1;
     }
     // Hostiles hunt this point; wildlife flee it (the player — the camera in capture).
-    entities.target = [camX, camY, camZ];
+    aiTarget[0] = camX;
+    aiTarget[1] = camY;
+    aiTarget[2] = camZ;
+    entities.target = aiTarget;
     entities.step(sdt);
+    if (interactive || process.env.VOX_SURVIVAL) updateSurvival(dt, elapsed); // day/night waves, health, combat, respawn
     stepParticles(sdt);
     // Fire embers: sample a few burning cells per frame for occasional rising embers.
     if (sim.burning.size > 0 && particles.length < PARTICLE_CAP - 8) {
