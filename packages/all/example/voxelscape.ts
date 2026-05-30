@@ -722,7 +722,7 @@ cbuffer Frame : register(b0) {
   float3 iCamPos;       // 16
   float  iFlash;        // 28  (0..1 explosion white flash)
   float3 iForward;      // 32
-  float  iPad2;         // 44
+  float  iEyeInWater;   // 44  (1 when the camera eye is submerged in water)
   float3 iRight;        // 48
   float  iPad3;         // 60
   float3 iUp;           // 64
@@ -907,6 +907,10 @@ bool traceVoxels(float3 ro, float3 rd, int maxSteps, bool skipWater,
   for (int i = 0; i < maxSteps; i++) {
     uint b = sampleVoxel(cell.x, cell.y, cell.z);
     if (b != 0u && !(skipWater && b == ${B_WATER}u)) {
+      // If we hit on the very first cell (ray started inside geometry) the face
+      // normal is still zero — seed it facing back at the viewer so downstream
+      // lighting/fresnel never operate on a degenerate (0,0,0) normal.
+      if (dot(normal, normal) < 0.5) normal = normalize(-rd);
       outCell = cell; outNormal = normal; outBlock = b; outT = t;
       return true;
     }
@@ -1067,7 +1071,8 @@ float4 main(float4 fragPos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
       refrCol *= (0.5 + 0.5 * sh);
 
       // Fresnel mix refraction (looking down) vs reflection (grazing).
-      float fres = lerp(0.03, 1.0, pow(saturate(1.0 - dot(-rd, wn)), 5.0));
+      // Softer, less mirror-like: cap reflectance and bias toward the water body color.
+      float fres = lerp(0.02, 0.62, pow(saturate(1.0 - dot(-rd, wn)), 5.0));
       lit = lerp(refrCol, reflCol, fres);
 
       // Foam: white at the shoreline (shallow) and on the brightest ripple crests.
@@ -1077,7 +1082,7 @@ float4 main(float4 fragPos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
 
       // Sharp sun glint + a shimmering reflection road toward the sun.
       float3 hh = normalize(sun - rd);
-      lit += sunCol * pow(saturate(dot(wn, hh)), 220.0) * 2.4;
+      lit += sunCol * pow(saturate(dot(wn, hh)), 220.0) * 1.2;
       lit += float3(1.0, 0.82, 0.55) * pow(saturate(dot(refl, sun)), 28.0) * 0.5;
     } else {
       // Crisp specular highlight on snow only.
@@ -1149,9 +1154,23 @@ float4 main(float4 fragPos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
       float occ = saturate((sceneT - s) / max(gr, 1.0) + 0.5); // soft occlusion band
       float d = length((ro + rd * s) - gA.xyz);
       float gauss = exp(-(d * d) / (gr * gr));
-      col += gB.rgb * gB.w * gauss * occ / (1.0 + 0.012 * s);
+      // Tame close-range blow-out: glow contribution is softened as the point
+      // approaches the camera (1/(1+s) alone over-blooms when you stand in lava/fire).
+      float nearFade = saturate((s - 1.0) * 0.5);
+      col += gB.rgb * gB.w * gauss * occ * nearFade / (1.0 + 0.05 * s);
     }
-    col = min(col, float3(60.0, 60.0, 60.0)); // keep 32 points from oversaturating
+    col = min(col, float3(12.0, 12.0, 12.0)); // keep glow from oversaturating into white
+  }
+
+  // ── Underwater: when the eye is submerged, fog the whole scene into a deep
+  // blue-green and add a gentle caustic shimmer, instead of surface shading. ──
+  if (iEyeInWater > 0.5) {
+    float depthFog = hit ? saturate(t * 0.085 + 0.30) : 0.85;
+    float3 deepWater = float3(0.035, 0.16, 0.20);
+    col = lerp(col, deepWater, depthFog);
+    float caustic = 0.5 + 0.5 * sin(ro.x * 2.0 + iTime * 2.0) * sin(ro.z * 2.0 - iTime * 1.6);
+    col += deepWater * caustic * 0.10;
+    col *= 0.82; // a touch dimmer below the surface
   }
 
   // Explosion white flash (full-screen, pre-tonemap so it blooms through the filmic
@@ -2652,6 +2671,7 @@ function main(): void {
 
     // ── Build the constant buffer immediately before the consuming call ─────────
     const { fwd, right, up } = basis();
+    const eyeInWater = voxelAt(Math.floor(camX), Math.floor(camY), Math.floor(camZ)) === B_WATER;
     // Screen-shake jitters the eye position.
     const ox = shake > 0.001 ? (Math.random() * 2 - 1) * shake * 0.35 : 0;
     const oy = shake > 0.001 ? (Math.random() * 2 - 1) * shake * 0.35 : 0;
@@ -2667,7 +2687,7 @@ function main(): void {
     cbData.writeFloatLE(fwd[0], 32);
     cbData.writeFloatLE(fwd[1], 36);
     cbData.writeFloatLE(fwd[2], 40);
-    cbData.writeFloatLE(0, 44);
+    cbData.writeFloatLE(eyeInWater ? 1 : 0, 44);
     cbData.writeFloatLE(right[0], 48);
     cbData.writeFloatLE(right[1], 52);
     cbData.writeFloatLE(right[2], 56);
