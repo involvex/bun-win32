@@ -516,21 +516,30 @@ const frame = (t: Term, time: number, dt: number, _frameNo: number): void => {
     // foreground massif dead ahead so the frame reads as a hero peak with the rest of
     // the ranges receding behind it (parallax depth) — instead of a flat featureless
     // crossing. Sampled on the deterministic map, so capture/bench see it identically.
-    let bestBear = 0, bestH = -1;
+    // Hero-peak seek, CONTINUOUS: weight each sampled bearing by the (steeply-powered)
+    // ground height there and take the weighted-MEAN bearing, so the heading drifts
+    // smoothly toward tall ground instead of snapping between discrete argmax picks
+    // (the old argmax flip is what slammed the roll ±0.5 every frame).
+    let wsum = 0, bsum = 0;
     for (let s = -2; s <= 2; s++) {
       const bear = cam.yaw + s * 0.26;
       const sx = cam.x + Math.cos(bear) * 470;
       const sz = cam.z + Math.sin(bear) * 470;
       const gh = HMAP[(Math.floor(sz) & MAP_MASK) * MAP_N + (Math.floor(sx) & MAP_MASK)];
-      if (gh > bestH) { bestH = gh; bestBear = s * 0.26; }
+      const w = gh * gh * gh * gh;            // emphasise the tallest ground, continuously
+      wsum += w; bsum += w * (s * 0.26);
     }
-    // Keep the seek GENTLE and centred on the sun-quartering target so the sky/sun win
-    // is never lost; the bias only nudges the heading toward the nearest hero massif.
+    const bestBear = wsum > 1e-6 ? bsum / wsum : 0;
+    // Gentle serpentine target, centred so the sun stays quartering off one side.
     const targetYaw = SUN_AZ - 0.5 + turn + bestBear * 0.45;
-    // ease yaw toward the serpentine target; derivative drives the visual roll
-    const dyaw = (targetYaw - cam.yaw);
-    cam.yaw += dyaw * Math.min(1, dt * 1.9);
-    cam.roll = clamp(-dyaw * 9.0, -0.5, 0.5);
+    const prevYaw = cam.yaw;
+    cam.yaw += (targetYaw - cam.yaw) * Math.min(1, dt * 1.4);
+    // Bank from the SMOOTHED yaw RATE (how fast we're actually turning), eased toward
+    // the target roll — NEVER from the raw standing error, which saturated and slammed
+    // the horizon ±0.5 rad per frame. yaw now drifts smoothly so the rate is smooth.
+    const yawRate = (cam.yaw - prevYaw) / Math.max(dt, 1e-3);
+    const targetRoll = clamp(-yawRate * 0.7, -0.28, 0.28);
+    cam.roll = lerp(cam.roll, targetRoll, Math.min(1, dt * 3.0));
     // forward cruise
     const speed = 90;
     cam.x += Math.cos(cam.yaw) * speed * dt;
@@ -583,7 +592,12 @@ const frame = (t: Term, time: number, dt: number, _frameNo: number): void => {
       if (gw > maxGround) maxGround = gw;
     }
     const minClear = maxGround + 95;
-    if (cam.height < minClear) cam.height = minClear;
+    // Ease up to clearance (the look-ahead gives lead time) instead of SNAPPING the
+    // altitude — the hard pop was the second source of camera jerk. A generous hard
+    // floor well below the eased clearance is the only last-resort anti-clip.
+    if (cam.height < minClear) cam.height = lerp(cam.height, minClear, Math.min(1, dt * 2.2));
+    const hardFloor = maxGround + 35;
+    if (cam.height < hardFloor) cam.height = hardFloor;
   }
 
   // ── Build the painted sky + sun + horizon glow into the framebuffer ───────────
