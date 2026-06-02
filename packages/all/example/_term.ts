@@ -587,6 +587,11 @@ export interface DemoSpec {
    * the terminal's normal mouse selection/scroll alone.
    */
   mouse?: boolean;
+  /**
+   * Whether 'q'/'Q' quits the demo (default true). Set false when the demo uses
+   * Q as a control key — ESC and Ctrl-C ALWAYS quit regardless of this flag.
+   */
+  quitOnQ?: boolean;
 }
 
 const drawHud = (t: Term, spec: DemoSpec, fps: number, ms: number, extra?: string): void => {
@@ -734,7 +739,8 @@ export async function runDemo(spec: DemoSpec): Promise<void> {
         i += 2; // unknown CSI prefix — skip and keep parsing
         continue;
       }
-      if (code === 3 || ch === 'q' || ch === 'Q' || code === 27) {
+      // ESC and Ctrl-C always quit; 'q'/'Q' quits unless the demo claims it.
+      if (code === 3 || code === 27 || ((ch === 'q' || ch === 'Q') && spec.quitOnQ !== false)) {
         stop();
         return;
       }

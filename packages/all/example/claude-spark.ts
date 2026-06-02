@@ -56,8 +56,9 @@ const restPos = (i: number, cx: number, cy: number, R: number): [number, number]
 
 runDemo({
   title: 'CLAUDE SPARK',
-  hud: 'WASD/ARROWS AIM - QE SPIN - [ ] REACH - MOUSE/CLICK SURGE',
+  hud: 'WASD/ARROWS AIM - QE SPIN - [ ] REACH - CLICK SURGE - ESC QUIT',
   mouse: true,
+  quitOnQ: false, // Q is a control key here (spin) — ESC / Ctrl-C still quit
   captureT: 5,
   onKey: (k, t) => {
     const step = Math.min(t.W, t.H) * 0.06;
