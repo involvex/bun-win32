@@ -96,11 +96,13 @@ packages/all/screenshots/*
 !packages/all/screenshots/swarm3d.png
 !packages/all/screenshots/reaction.png
 !packages/all/screenshots/cinema.png
+!packages/all/screenshots/gameboy-tty.png
 packages/all/replay-*.gif
 packages/all/bun-win32-wallpaper.png
 
 # Local verification captures + process scratch from the interactive terminal demos
 packages/all/.shots/
+packages/all/.testroms/
 *.stackdump
 packages/all/example/nul
 packages/all/example/.train.*

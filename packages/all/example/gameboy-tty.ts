@@ -775,8 +775,8 @@ export class Cartridge {
         break;
       default: return;
     }
-    const total = r.s + r.m * 60 + r.h * 3600 + (r.d & 0x1ff) * 86400;
-    this.rtcBase = total;
+    const days = (r.d & 0x1ff) + (this.rtcCarry ? 512 : 0); // carry bit extends the day count
+    this.rtcBase = r.s + r.m * 60 + r.h * 3600 + days * 86400;
     this.rtcAnchor = this.nowSec();
   }
 
@@ -2482,24 +2482,30 @@ function resolveRom(): { rom: Uint8Array; title: string; path: string | null } {
 
 /** A small translucent status line in the top-left bezel/corner. */
 function drawHud(t: Term, title: string, info: string): void {
-  const line = `GB · ${title}`;
-  const w = Math.min(t.W - 4, Math.max(Term.textWidth(line), Term.textWidth(info)) + 6);
-  t.plate(2, 2, w, 20, 0.42);
-  t.text(5, 4, line, 150, 220, 170, 1);
-  t.text(5, 12, info, 150, 150, 165, 1);
+  // A single thin status line in the top-left, kept short so it barely covers
+  // the picture. Drawn over a translucent plate for legibility on any scene.
+  const line = `GB ${title}  ${info}`;
+  const w = Math.min(t.W - 2, Term.textWidth(line) + 5);
+  t.plate(1, 1, w, 11, 0.4);
+  t.text(3, 3, line, 150, 220, 170, 1);
 }
 
 /** A scripted joypad timeline for deterministic capture (clear title → wander). */
 function scriptedButtons(frame: number): Buttons {
   const none: Buttons = { right: false, left: false, up: false, down: false, a: false, bBtn: false, select: false, start: false };
   const pulse = (lo: number, hi: number): boolean => frame >= lo && frame < hi;
-  if (pulse(30, 40) || pulse(70, 80) || pulse(110, 120) || pulse(150, 160) || pulse(190, 200) || pulse(230, 240)) {
-    return { ...none, start: true };
-  }
-  if (pulse(255, 268)) return { ...none, right: true };
-  if (pulse(275, 288)) return { ...none, down: true };
-  if (pulse(295, 308)) return { ...none, right: true };
-  if (pulse(315, 328)) return { ...none, down: true };
+  // Tap Start+A repeatedly through the logo/copyright/title/story screens.
+  if (frame < 520 && frame % 36 < 7) return { ...none, start: true, a: true };
+  // Then roll a tour of the magic floor so the shot lands on lively gameplay,
+  // every move leaving a track and bumping the % counter.
+  if (pulse(540, 553)) return { ...none, right: true };
+  if (pulse(562, 575)) return { ...none, down: true };
+  if (pulse(584, 597)) return { ...none, right: true };
+  if (pulse(606, 619)) return { ...none, down: true };
+  if (pulse(628, 641)) return { ...none, left: true };
+  if (pulse(650, 663)) return { ...none, down: true };
+  if (pulse(672, 685)) return { ...none, left: true };
+  if (pulse(694, 707)) return { ...none, up: true };
   return none;
 }
 
@@ -2507,7 +2513,7 @@ function scriptedButtons(frame: number): Buttons {
 function runCapture(gb: GameBoy, title: string): void {
   const cols = Math.max(20, Number(process.env.TERM_COLS ?? 160) | 0);
   const rows = Math.max(8, Number(process.env.TERM_ROWS ?? 72) | 0);
-  const frames = Math.max(1, Number(process.env.CAPTURE_FRAMES_RUN ?? 340) | 0);
+  const frames = Math.max(1, Number(process.env.CAPTURE_FRAMES_RUN ?? 720) | 0);
   const t = new Term(cols, rows);
   for (let i = 0; i < frames; i += 1) {
     gb.setButtons(scriptedButtons(i));
@@ -2554,12 +2560,22 @@ async function main(): Promise<void> {
       gb.loadSaveData(new Uint8Array(f.buffer, f.byteOffset, f.byteLength));
     } catch { /* corrupt/locked save — start fresh rather than crash */ }
   }
+  // Synchronous save — used on teardown so the file is fully flushed before exit.
   const writeSave = (): void => {
     if (!savePath) return;
     const data = gb.getSaveData();
     if (data) {
       try { writeFileSync(savePath, data); } catch { /* ignore transient IO errors */ }
     }
+  };
+  // Non-blocking autosave — fire-and-forget so a slow disk never stalls a frame.
+  let autosaving = false;
+  const autoSave = (): void => {
+    if (!savePath || autosaving) return;
+    const data = gb.getSaveData();
+    if (!data) return;
+    autosaving = true;
+    Bun.write(savePath, data).catch(() => { /* ignore */ }).finally(() => { autosaving = false; });
   };
 
   if (pcm.available) {
@@ -2624,17 +2640,18 @@ async function main(): Promise<void> {
   let prevFrame = Bun.nanoseconds();
   let lastSaveMs = 0;
 
+  try {
   while (running) {
     const frameStart = Bun.nanoseconds();
     if (durationMs > 0 && (frameStart - t0) / 1e6 >= durationMs) break;
     const dtMs = (frameStart - prevFrame) / 1e6;
     prevFrame = frameStart;
 
-    // Autosave battery RAM every ~5 s so a hard kill loses at most that much.
+    // Autosave battery RAM every ~5 s (non-blocking) so a hard kill loses little.
     const elapsedTotalMs = (frameStart - t0) / 1e6;
     if (savePath && elapsedTotalMs - lastSaveMs >= 5000) {
       lastSaveMs = elapsedTotalMs;
-      writeSave();
+      autoSave();
     }
     if (dtMs > 0) fpsEma = fpsEma * 0.9 + Math.min(999, 1000 / dtMs) * 0.1;
 
@@ -2653,8 +2670,9 @@ async function main(): Promise<void> {
       else if (vk === VK.P) paused = !paused;
       else if (vk === VK.R) {
         // Soft reset, preserving battery RAM (the physical cart keeps its save).
+        // A fresh APU avoids carrying stale channel/sequencer state into the reset.
         const carry = gb.getSaveData();
-        gb = new GameBoy(rom, apu);
+        gb = new GameBoy(rom, new Apu(AUDIO_RATE));
         if (carry) gb.loadSaveData(carry);
       } else if (vk === VK.LBRACK) activePalette = (activePalette + DMG_PALETTES.length - 1) % DMG_PALETTES.length;
       else if (vk === VK.RBRACK) activePalette = (activePalette + 1) % DMG_PALETTES.length;
@@ -2693,8 +2711,9 @@ async function main(): Promise<void> {
     }
     await new Promise<void>((r) => setImmediate(r));
   }
-
-  cleanup();
+  } finally {
+    cleanup(); // always restore the console + flush the save, even on a thrown error
+  }
   process.exit(0);
 }
 
