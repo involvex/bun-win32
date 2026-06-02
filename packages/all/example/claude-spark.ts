@@ -41,6 +41,14 @@ let tipY = new Float64Array(N);
 const phase = new Float64Array(N);
 let inited = false;
 
+// Control state. spin/reachScale persist across resizes; kb target re-seeds on init.
+// Initial values may be set from the env (SPARK_SPIN radians, SPARK_REACH 0.2..2).
+let spin = Number(process.env.SPARK_SPIN) || 0; // Q/E rotate the whole spark
+let reachScale = process.env.SPARK_REACH ? Math.max(0.2, Math.min(2, Number(process.env.SPARK_REACH))) : 1; // [ ] reach
+let kbX = 0, kbY = 0; // WASD / arrow aim target (pixels)
+let lastMouseT = -99, lastKeyT = -99, prevSeq = 0;
+let keyDirty = false;
+
 const restPos = (i: number, cx: number, cy: number, R: number): [number, number] => {
   const a = (SPIKES[i].deg * Math.PI) / 180;
   return [cx + Math.cos(a) * R * SPIKES[i].len, cy + Math.sin(a) * R * SPIKES[i].len];
@@ -48,9 +56,25 @@ const restPos = (i: number, cx: number, cy: number, R: number): [number, number]
 
 runDemo({
   title: 'CLAUDE SPARK',
-  hud: 'MOVE THE MOUSE - THE SPARK REACHES - CLICK TO SURGE',
+  hud: 'WASD/ARROWS AIM - QE SPIN - [ ] REACH - MOUSE/CLICK SURGE',
   mouse: true,
   captureT: 5,
+  onKey: (k, t) => {
+    const step = Math.min(t.W, t.H) * 0.06;
+    if (k === 'w' || k === 'up') kbY -= step;
+    else if (k === 's' || k === 'down') kbY += step;
+    else if (k === 'a' || k === 'left') kbX -= step;
+    else if (k === 'd' || k === 'right') kbX += step;
+    else if (k === 'q') spin -= 0.13;
+    else if (k === 'e') spin += 0.13;
+    else if (k === '[') reachScale = Math.max(0.2, reachScale - 0.1);
+    else if (k === ']') reachScale = Math.min(2.0, reachScale + 0.1);
+    else if (k === 'r') { spin = 0; reachScale = 1; kbX = t.W / 2 + Math.min(t.W, t.H) * 0.25; kbY = t.H / 2; }
+    else return;
+    kbX = Math.max(0, Math.min(t.W - 1, kbX));
+    kbY = Math.max(0, Math.min(t.H - 1, kbY));
+    keyDirty = true;
+  },
   init: (t) => {
     const cx = t.W / 2, cy = t.H / 2, R = Math.min(t.W, t.H) * 0.42;
     const rng = mulberry32(0x5afe);
@@ -60,6 +84,9 @@ runDemo({
       tipY[i] = ry;
       phase[i] = rng() * TAU;
     }
+    kbX = cx + R * 0.6; // default aim
+    kbY = cy;
+    prevSeq = t.mouseSeq;
     inited = true;
   },
   frame: (t, time, dt) => {
@@ -83,19 +110,17 @@ runDemo({
       }
     }
 
-    // ── Where the spark reaches: the real mouse, or a roaming virtual cursor ──
-    const live = t.mouseActive && t.mouseX >= 0;
-    let mx: number, my: number;
-    if (live) {
-      mx = t.mouseX;
-      my = t.mouseY;
-    } else {
-      // eased Lissajous orbit so it's alive headlessly and before the first move
-      mx = cx + Math.cos(time * 0.55) * R * 1.15;
-      my = cy + Math.sin(time * 0.8) * R * 0.95;
-    }
+    // ── Input mode: most-recently-used of mouse / keyboard wins, else orbit ───
+    if (t.mouseActive && t.mouseSeq !== prevSeq) { prevSeq = t.mouseSeq; lastMouseT = time; }
+    if (keyDirty) { lastKeyT = time; keyDirty = false; }
+    const useMouse = t.mouseActive && time - lastMouseT < 1.5;
+    const useKeys = time - lastKeyT < 4.0;
+    let mx: number, my: number, mode: number; // 0 auto · 1 mouse · 2 keys
+    if (useMouse && (!useKeys || lastMouseT >= lastKeyT)) { mx = t.mouseX; my = t.mouseY; mode = 1; }
+    else if (useKeys) { mx = kbX; my = kbY; mode = 2; }
+    else { mx = cx + Math.cos(time * 0.5) * R * 0.82; my = cy + Math.sin(time * 0.7) * R * 0.66; mode = 0; } // eased idle orbit
     const surge = t.mouseDown ? 1 : 0; // click = stronger reach
-    const reachK = 0.82 + 0.5 * surge;
+    const reachK = (0.5 + 0.4 * surge) * reachScale;
 
     let tdx = mx - cx, tdy = my - cy;
     const md = Math.max(1e-3, Math.hypot(tdx, tdy));
@@ -127,7 +152,7 @@ runDemo({
 
     // ── Each tentacle: spring its tip toward (rest blended with reach) ────────
     for (let i = 0; i < N; i++) {
-      const a = (SPIKES[i].deg * Math.PI) / 180;
+      const a = (SPIKES[i].deg * Math.PI) / 180 + spin; // Q/E rotate the whole burst
       const dirx = Math.cos(a), diry = Math.sin(a);
       const breath = 1 + 0.05 * Math.sin(time * 1.2 + phase[i]);
       const rx = cx + dirx * R * SPIKES[i].len * breath;
@@ -135,16 +160,16 @@ runDemo({
 
       // alignment of this spike with the cursor direction → how much it reaches
       const align = clamp(dirx * mnx + diry * mny, -1, 1);
-      const w = smoothstep(0.05, 1.0, align) * reachK;
-      // desired tip: rest, pulled toward the cursor for facing spikes (and a touch
-      // of global lean when the cursor is close)
-      const near = smoothstep(R * 2.2, R * 0.4, md);
-      let dx = lerp(rx, mx, w) - rx + (mx - rx) * 0.06 * near;
-      let dy = lerp(ry, my, w) - ry + (my - ry) * 0.06 * near;
+      const w = smoothstep(0.18, 1.0, align) * reachK; // only well-aligned arms reach
+      // desired tip: rest, pulled toward the cursor for facing spikes (and a faint
+      // global lean when the cursor is close)
+      const near = smoothstep(R * 2.0, R * 0.5, md);
+      const dx = lerp(rx, mx, w) - rx + (mx - rx) * 0.03 * near;
+      const dy = lerp(ry, my, w) - ry + (my - ry) * 0.03 * near;
       let destX = rx + dx, destY = ry + dy;
-      // clamp how far a tentacle can stretch from the centre
+      // clamp how far a tentacle can stretch from the centre (keeps it a logo, not a flail)
       const ex = destX - cx, ey = destY - cy, el = Math.hypot(ex, ey);
-      const cap = R * 1.85;
+      const cap = R * 1.4;
       if (el > cap) {
         destX = cx + (ex / el) * cap;
         destY = cy + (ey / el) * cap;
@@ -183,13 +208,13 @@ runDemo({
     // ── Pointer reticle so you can see what it's reaching for ─────────────────
     {
       const rr = Math.max(2, R * 0.05);
-      const col: [number, number, number] = live ? [255, 230, 205] : [150, 120, 100];
-      const ringA = live ? 0.9 : 0.4;
+      const col: [number, number, number] = mode === 1 ? [255, 230, 205] : mode === 2 ? [235, 200, 165] : [150, 120, 100];
+      const ringA = mode === 0 ? 0.4 : 0.9;
       for (let k = 0; k < 48; k++) {
         const ang = (k / 48) * TAU;
         t.blendPixel(Math.round(mx + Math.cos(ang) * rr), Math.round(my + Math.sin(ang) * rr), col[0], col[1], col[2], ringA);
       }
-      if (live && surge) disc(mx, my, rr * 0.6, CORE, true, 0.5);
+      if (mode === 1 && surge) disc(mx, my, rr * 0.6, CORE, true, 0.5);
     }
 
     void clamp01;
