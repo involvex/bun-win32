@@ -33,6 +33,7 @@
  */
 import { Kernel32 } from '../index';
 import { STD_HANDLE } from '@bun-win32/kernel32';
+import { dlopen } from 'bun:ffi';
 
 // ── Console mode flags (kept local to avoid leaning on enum spelling) ──────────
 const ENABLE_PROCESSED_OUTPUT = 0x0001;
@@ -559,6 +560,37 @@ const detectSize = (): { cols: number; rows: number } => {
   return { cols, rows };
 };
 
+/**
+ * Precise frame pacing on Windows. `Bun.sleep` and the default OS timer quantize
+ * to the ~15.6ms system tick, so a 16.67ms (60fps) wait rounds up to ~31ms — i.e.
+ * a 60fps cap actually runs at ~30fps. A high-resolution waitable timer (Win10
+ * 1803+) waits accurately without busy-spinning a core. Returns a blocking
+ * wait(ms) function, or null if the high-res timer is unavailable (older Windows),
+ * in which case callers fall back to Bun.sleep.
+ */
+export const makeFrameWaiter = (): ((ms: number) => void) | null => {
+  try {
+    const k = dlopen('kernel32.dll', {
+      CreateWaitableTimerExW: { args: ['ptr', 'ptr', 'u32', 'u32'], returns: 'ptr' },
+      SetWaitableTimer: { args: ['ptr', 'ptr', 'i32', 'ptr', 'ptr', 'i32'], returns: 'i32' },
+      WaitForSingleObject: { args: ['ptr', 'u32'], returns: 'u32' },
+    });
+    const TIMER_ALL_ACCESS = 0x1f0003;
+    const HIGH_RES = 0x2; // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+    const h = k.symbols.CreateWaitableTimerExW(null, null, HIGH_RES, TIMER_ALL_ACCESS);
+    if (!h) return null;
+    const due = new BigInt64Array(1);
+    return (ms: number): void => {
+      if (ms <= 0) return;
+      due[0] = BigInt(-Math.round(ms * 1e4)); // relative, negative, 100ns units
+      k.symbols.SetWaitableTimer(h, due, 0, null, null, 0);
+      k.symbols.WaitForSingleObject(h, 0xffffffff);
+    };
+  } catch {
+    return null;
+  }
+};
+
 // ── Demo runtime ───────────────────────────────────────────────────────────────
 export interface DemoSpec {
   title: string;
@@ -592,6 +624,11 @@ export interface DemoSpec {
    * Q as a control key — ESC and Ctrl-C ALWAYS quit regardless of this flag.
    */
   quitOnQ?: boolean;
+  /**
+   * Whether the spacebar toggles pause (default true). Typing demos that need
+   * space as a literal character set this false and handle 'space' in onKey.
+   */
+  pauseOnSpace?: boolean;
 }
 
 const drawHud = (t: Term, spec: DemoSpec, fps: number, ms: number, extra?: string): void => {
@@ -745,7 +782,7 @@ export async function runDemo(spec: DemoSpec): Promise<void> {
         return;
       }
       if (ch === ' ') {
-        paused = !paused;
+        if (spec.pauseOnSpace !== false) paused = !paused;
         spec.onKey?.('space', t);
         i++;
         continue;
@@ -769,6 +806,7 @@ export async function runDemo(spec: DemoSpec): Promise<void> {
   const durationMs = envNum('DEMO_DURATION_MS', 0);
   const cap = spec.targetFps ?? 0;
   const minFrameMs = cap > 0 ? 1000 / cap : 0;
+  const frameWait = minFrameMs > 0 ? makeFrameWaiter() : null;
 
   let cleaned = false;
   const cleanup = (): void => {
@@ -829,15 +867,22 @@ export async function runDemo(spec: DemoSpec): Promise<void> {
       if (durationMs > 0 && (now - t0) / 1e6 >= durationMs) break;
 
       if (minFrameMs > 0) {
-        const spent = (Bun.nanoseconds() - now) / 1e6;
-        const sleep = minFrameMs - spent;
-        if (sleep > 0) await Bun.sleep(sleep);
-        else await Bun.sleep(0);
-      } else {
-        await Bun.sleep(0); // yield to the event loop (input / timers)
+        const wait = minFrameMs - (Bun.nanoseconds() - now) / 1e6;
+        if (wait > 0.2) {
+          if (frameWait) frameWait(wait); // precise high-res wait — Bun.sleep quantizes to ~15.6ms on Windows (→ ~30fps)
+          else await Bun.sleep(wait); // legacy fallback (pre-1803 Windows)
+        }
       }
+      // Yield via the check phase to drain stdin/resize I/O. NOT Bun.sleep(0): its
+      // timer only fires on the next ~15.6ms Windows tick after the blocking wait
+      // above, which would re-introduce the ~30fps quantization the timer just fixed.
+      await new Promise<void>((r) => setImmediate(r));
     }
   } finally {
     cleanup();
+  }
+  if (env('FPS_REPORT') === '1') {
+    const secs = (Bun.nanoseconds() - t0) / 1e9;
+    process.stderr.write(`fps_report avg=${(frame / Math.max(1e-9, secs)).toFixed(1)} frames=${frame} secs=${secs.toFixed(2)}\n`);
   }
 }
