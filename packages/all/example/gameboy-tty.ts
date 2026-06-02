@@ -2219,6 +2219,11 @@ export class GameBoy {
 // The dark console "bezel" the LCD floats in (letterbox fill).
 const BEZEL: readonly [number, number, number] = [12, 18, 14];
 
+// Synchronized Output (DEC private mode 2026): begin/end an atomic screen update
+// so a supporting terminal never paints a half-written frame (tear-free "VSync").
+const SYNC_BEGIN = '\x1b[?2026h';
+const SYNC_END = '\x1b[?2026l';
+
 /**
  * Nearest-neighbour scale-to-fit + centre the 160×144 RGBA `frame` into the
  * Term pixel grid. When the terminal is large enough the scale snaps to an
@@ -2617,7 +2622,7 @@ async function main(): Promise<void> {
     restored = true;
     writeSave(); // flush battery RAM before tearing down
     input.restore();
-    process.stdout.write('\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l');
+    process.stdout.write(`${SYNC_END}\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l`); // end any open sync + restore
     Kernel32.SetConsoleMode(hOut, savedOut >>> 0);
     Kernel32.SetConsoleOutputCP(savedCp);
     pcm.close();
@@ -2729,7 +2734,14 @@ async function main(): Promise<void> {
     const status = `${Math.round(fpsEma)} FPS  ${muted ? 'MUTE' : '♪'}` +
       `${paused ? '  PAUSE' : ''}${turbo ? '  TURBO' : ''}  Z=A X=B ENT=START RSH=SEL  ESC quit`;
     drawHud(t, title, status);
+    // Synchronized Output (DEC private mode 2026) — the terminal's "VSync":
+    // bracket the frame so a supporting terminal (Windows Terminal) buffers the
+    // whole update and flips it atomically instead of revealing it mid-scanout
+    // (which is the tearing you see while the BG scrolls). Unsupported terminals
+    // ignore the escapes harmlessly.
+    process.stdout.write(SYNC_BEGIN);
     t.present();
+    process.stdout.write(SYNC_END);
 
     // The real engine throughput: how long emulating + rendering + painting a
     // frame actually took, excluding the pacing wait. (The game still runs at
