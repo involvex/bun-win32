@@ -25,7 +25,9 @@
  *
  * Run: bun run packages/all/example/fluid-ink.ts
  */
-import { runDemo, Term, clamp01, lerp, mulberry32, TAU } from './_term';
+import { Term, run } from '@bun-win32/terminal';
+
+import { clamp01, lerp, mulberry32, TAU } from './_kit';
 
 // ── Fixed internal simulation grid ─────────────────────────────────────────────
 // The solver always runs at this resolution (plus a 1-cell border) regardless of
@@ -472,8 +474,8 @@ const buildBilinearLUT = (W: number, H: number): void => {
 
 const render = (t: Term): void => {
   buildMag();
-  const buf = t.buf;
-  const W = t.W, H = t.H;
+  const buf = t.pixels;
+  const W = t.width, H = t.height;
   buildBilinearLUT(W, H);
   for (let y = 0; y < H; y++) {
     const y0 = yi[y];
@@ -631,7 +633,7 @@ const ensure = (): void => {
   inited = true;
 };
 
-runDemo({
+run({
   title: 'Fluid Ink',
   hud: 'STABLE FLUIDS  -  SEMILAGRANGIAN ADVECTION  +  PRESSURE PROJECTION  +  VORTICITY CONFINEMENT',
   captureT: 7,

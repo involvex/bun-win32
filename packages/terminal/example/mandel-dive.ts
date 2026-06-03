@@ -47,7 +47,9 @@
  * Run: bun run packages/all/example/mandel-dive.ts   (ESC / q quits; SPACE pauses)
  */
 
-import { runDemo, Term, clamp01, smoothstep, TAU } from './_term';
+import { run, Term } from '@bun-win32/terminal';
+
+import { clamp01, smoothstep, TAU } from './_kit';
 
 // ── Dive target: a self-similar point on the rim of the seahorse valley. ───────
 // Zooming toward it reveals an endless cascade of mini-brots and spirals.
@@ -107,14 +109,14 @@ const AA_OX2 = -0.30, AA_OY2 = 0.20;
 let sr = 0, sg = 0, sb = 0;
 
 
-runDemo({
+run({
   title: 'Mandel-Dive',
   hud: 'INFINITE MANDELBROT PLUNGE - SEAHORSE VALLEY - SMOOTH ITER + DISTANCE-ESTIMATE GLOW',
   captureT: 7,
   frame: (t: Term, time: number) => {
-    const W = t.W;
-    const H = t.H;
-    const buf = t.buf;
+    const W = t.width;
+    const H = t.height;
+    const buf = t.pixels;
     const aspect = t.aspect; // W/H so the set isn't squashed
 
     // ── Looped, eased dive depth ──────────────────────────────────────────────

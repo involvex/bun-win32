@@ -44,7 +44,9 @@
  *
  * Run: bun run packages/all/example/flowfield.ts
  */
-import { runDemo, Term, clamp01, lerp, smoothstep, mulberry32, TAU } from './_term';
+import { Term, run } from '@bun-win32/terminal';
+
+import { clamp01, lerp, smoothstep, mulberry32, TAU } from './_kit';
 
 // ── Value-noise streamfunction ─────────────────────────────────────────────────
 // A small lattice of pseudo-random gradients, smoothly interpolated. We evolve the
@@ -305,7 +307,7 @@ const EXPOSURE = 3.3; // HDR exposure before the ACES tonemap (tuned so ribbons 
 const decayPow = (base: number, dt: number): number => Math.pow(base, dt * 60);
 
 const frame = (t: Term, time: number, dt: number): void => {
-  const W = t.W, H = t.H;
+  const W = t.width, H = t.height;
   if (accW !== W || accH !== H) allocAccum(W, H);
   if (!seeded) seedAll();
 
@@ -445,7 +447,7 @@ const frame = (t: Term, time: number, dt: number): void => {
   // — Tonemap the HDR buffer to the 8-bit framebuffer —
   // Vignette is a precomputed per-pixel LUT; ACES inlined; writes go straight into
   // t.buf (aces() returns 0..1 so *255|0 can never exceed 255 — no clamp needed).
-  const buf = t.buf;
+  const buf = t.pixels;
   const N = W * H;
   let o = 0;
   for (let idx = 0; idx < N; idx++) {
@@ -527,12 +529,12 @@ const buildBloom = (W: number, H: number): void => {
   blurChannel(bloomB, W, H);
 };
 
-runDemo({
+run({
   title: 'Flow Field',
   hud: 'CURL-NOISE FOCAL FLOW - DESIGNED RIBBONS + NEGATIVE SPACE - HDR COLORED BLOOM',
   captureT: 7,
   init: (t) => {
-    allocAccum(t.W, t.H);
+    allocAccum(t.width, t.height);
     // Seed already aware of the t≈0 composition so the initial scatter lands in the
     // corridors, not the void (warmup at negative time refines it toward exactly t=0).
     compAspect = t.aspect;

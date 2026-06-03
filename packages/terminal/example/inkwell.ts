@@ -32,7 +32,9 @@
  *
  * Run: bun run packages/all/example/inkwell.ts
  */
-import { runDemo, Term, clamp, smoothstep, aces } from './_term';
+import { run, Term } from '@bun-win32/terminal';
+
+import { clamp, smoothstep, aces } from './_kit';
 
 // ── Fixed interior simulation grid (+1-cell border). Tuned for ≥90 bench fps. ───
 const GW = 128;
@@ -473,8 +475,8 @@ const step = (time: number, dt: number, t: Term, useAttract: boolean): void => {
     // Live cursor: drag vector → velocity; button → dye. Mouse coords are pixels;
     // map to the interior grid. Both injections are scaled by sdt-independent
     // gains and the per-frame drag delta so fast flicks stir harder.
-    const gx = clamp((t.mouseX / Math.max(t.W - 1, 1)) * GW + 1, 1, NX - 2);
-    const gy = clamp((t.mouseY / Math.max(t.H - 1, 1)) * GH + 1, 1, NY - 2);
+    const gx = clamp((t.mouse.x / Math.max(t.width - 1, 1)) * GW + 1, 1, NX - 2);
+    const gy = clamp((t.mouse.y / Math.max(t.height - 1, 1)) * GH + 1, 1, NY - 2);
     if (lastMX < 0) { lastMX = gx; lastMY = gy; }
     const dx = gx - lastMX, dy = gy - lastMY;
     lastMX = gx; lastMY = gy;
@@ -486,7 +488,7 @@ const step = (time: number, dt: number, t: Term, useAttract: boolean): void => {
     if (sp > 3.5) { const k = 3.5 / sp; sx *= k; sy *= k; }
     if (sp > 0.02) stir(gx, gy, 4.2, sx, sy);
     // Button held → inject luminous dye, riding the same drag for a painted look.
-    if (t.mouseDown) {
+    if (t.mouse.down) {
       const [cr, cg, cb] = inkColor(hue);
       splat(gx, gy, 3.0, sx * 0.6, sy * 0.6, cr, cg, cb, 0.7);
     }
@@ -620,8 +622,8 @@ const buildLUTs = (W: number, H: number): void => {
 
 const render = (t: Term, time: number): void => {
   buildMag();
-  const buf = t.buf;
-  const W = t.W, H = t.H;
+  const buf = t.pixels;
+  const W = t.width, H = t.height;
   buildLUTs(W, H);
   // Subtle global breathing of the tank light so the empty water still feels alive
   // between blooms (deterministic — a pure function of sim time).
@@ -732,9 +734,9 @@ const render = (t: Term, time: number): void => {
 
 // ── Cursor halo: in live mode, mark where the cursor is so stirring feels direct.
 const drawCursor = (t: Term): void => {
-  const cx = t.mouseX, cy = t.mouseY;
+  const cx = t.mouse.x, cy = t.mouse.y;
   if (cx < 0 || cy < 0) return;
-  const ring = t.mouseDown ? 3.2 : 2.4;
+  const ring = t.mouse.down ? 3.2 : 2.4;
   const r2 = (ring + 1.5) * (ring + 1.5);
   // Halo colour from the SAME curated palette as the ink it drops, so the cursor
   // reads as a luminous nib of the current ink (ACES-graded to display range).
@@ -744,7 +746,7 @@ const drawCursor = (t: Term): void => {
     for (let dx = -4; dx <= 4; dx++) {
       const d = Math.sqrt(dx * dx + dy * dy);
       if (d * d > r2) continue;
-      const a = smoothstep(ring + 1.5, ring - 0.6, d) * (t.mouseDown ? 0.85 : 0.5);
+      const a = smoothstep(ring + 1.5, ring - 0.6, d) * (t.mouse.down ? 0.85 : 0.5);
       t.addPixel(cx + dx, cy + dy, hr * a, hg * a, hb * a);
     }
   }
@@ -798,7 +800,7 @@ const ensure = (): void => {
   inited = true;
 };
 
-runDemo({
+run({
   title: 'Inkwell',
   hud: 'DRAG TO STIR  -  HOLD TO INK  -  WHEEL SHIFTS HUE',
   captureT: 5,
@@ -816,12 +818,12 @@ runDemo({
     // counts once the terminal has reported ANY mouse activity — in capture/bench
     // there is none, so mouseActive stays false and attract runs from t=0.
     let interacted = false;
-    if (t.mouseActive) {
-      if (t.mouseSeq !== lastSeq) { lastSeq = t.mouseSeq; interacted = true; everInteracted = true; }
-      if (t.wheel !== 0) {
-        hue = (hue + t.wheel * 0.04) % 1;
+    if (t.mouse.active) {
+      if (t.mouse.sequence !== lastSeq) { lastSeq = t.mouse.sequence; interacted = true; everInteracted = true; }
+      if (t.mouse.wheel !== 0) {
+        hue = (hue + t.mouse.wheel * 0.04) % 1;
         if (hue < 0) hue += 1;
-        t.wheel = 0;
+        t.mouse.wheel = 0;
         interacted = true; everInteracted = true;
       }
     }

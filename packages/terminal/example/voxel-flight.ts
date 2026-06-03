@@ -34,7 +34,9 @@
  *
  * Run: bun run packages/all/example/voxel-flight.ts
  */
-import { runDemo, Term, clamp, clamp01, lerp, smoothstep, fract, aces } from './_term';
+import { Term, run } from '@bun-win32/terminal';
+
+import { clamp, clamp01, lerp, smoothstep, fract, aces } from './_kit';
 
 // ── Ordered dither (8×8 Bayer) ──────────────────────────────────────────────────
 // 24-bit output banding shows up badly in the wide, smooth sky + haze gradients of a
@@ -471,7 +473,7 @@ const frame = (t: Term, time: number, dt: number, _frameNo: number): void => {
   simTimeRef.v = time;
   buildMap();
   if (!camInit) resetCam();
-  const W = t.W, H = t.H, buf = t.buf;
+  const W = t.width, H = t.height, buf = t.pixels;
   // Render width: the supersampled column count the whole pipeline below works in. The
   // engine display buffer `buf` stays W wide; we box-average RW→W at the end.
   const RW = SS * W;
@@ -486,20 +488,20 @@ const frame = (t: Term, time: number, dt: number, _frameNo: number): void => {
 
   // ── Input → camera (live mode only; capture/bench never sees input) ────────────
   // Detect fresh mouse movement to claim control.
-  if (t.mouseActive && (t.mouseSeq !== lastMouseSeq)) {
+  if (t.mouse.active && (t.mouse.sequence !== lastMouseSeq)) {
     if (lastMouseX >= 0) {
-      const dxm = t.mouseX - lastMouseX;
-      const dym = t.mouseY - lastMouseY;
+      const dxm = t.mouse.x - lastMouseX;
+      const dym = t.mouse.y - lastMouseY;
       cam.yaw += dxm * 0.0055;
       cam.pitch = clamp(cam.pitch - dym * 1.6, -H * 0.55, H * 0.9);
       if (Math.abs(dxm) > 0 || Math.abs(dym) > 0) { userControlled = true; lastInputT = time; }
     }
-    lastMouseX = t.mouseX; lastMouseY = t.mouseY;
-    lastMouseSeq = t.mouseSeq;
+    lastMouseX = t.mouse.x; lastMouseY = t.mouse.y;
+    lastMouseSeq = t.mouse.sequence;
   }
-  if (t.wheel !== 0) {
-    cam.height = clamp(cam.height + t.wheel * 22, 40, 900);
-    t.wheel = 0; userControlled = true; lastInputT = time;
+  if (t.mouse.wheel !== 0) {
+    cam.height = clamp(cam.height + t.mouse.wheel * 22, 40, 900);
+    t.mouse.wheel = 0; userControlled = true; lastInputT = time;
   }
   expireKeys(time);
 
@@ -552,7 +554,7 @@ const frame = (t: Term, time: number, dt: number, _frameNo: number): void => {
     cam.height = lerp(cam.height, baseAlt, Math.min(1, dt * 0.8));
     // gentle look-down: horizon sits in the upper third, leaving a generous sky with
     // the sun + glow; the extra pitch reveals the layered ridges below the skyline.
-    cam.pitch = lerp(cam.pitch, -0.085 * t.H + 0.024 * t.H * Math.sin(time * 0.17), Math.min(1, dt * 1.5));
+    cam.pitch = lerp(cam.pitch, -0.085 * t.height + 0.024 * t.height * Math.sin(time * 0.17), Math.min(1, dt * 1.5));
   } else {
     // ── Manual flight ──
     const boost = keys.boost ? 2.2 : 1;
@@ -943,7 +945,7 @@ const frame = (t: Term, time: number, dt: number, _frameNo: number): void => {
   }
 };
 
-runDemo({
+run({
   title: 'Voxel Flight',
   hud: 'WASD/ARROWS FLY - MOUSE LOOK - WHEEL ALTITUDE - SHIFT BOOST',
   captureT: 6,

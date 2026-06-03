@@ -31,7 +31,9 @@
  *
  * Run: bun run packages/all/example/swarm3d.ts
  */
-import { runDemo, Term, clamp, clamp01, lerp, smoothstep, aces, mulberry32, hash2, TAU } from './_term';
+import { Term, run } from '@bun-win32/terminal';
+
+import { clamp, clamp01, lerp, smoothstep, aces, mulberry32, hash2, TAU } from './_kit';
 
 // ── Flock parameters ───────────────────────────────────────────────────────────
 const N = 3600;                 // boids — tuned for >=120 fps full-screen at BENCH
@@ -402,7 +404,7 @@ function buildSky(H: number): void {
 function frame(t: Term, time: number, dt: number): void {
   simulate(time, dt);
 
-  const W = t.W, H = t.H, buf = t.buf;
+  const W = t.width, H = t.height, buf = t.pixels;
   const aspect = t.aspect;
 
   // — Cinematic dusk sky: a designed multi-stop vertical gradient (deep indigo
@@ -653,7 +655,7 @@ function finish(buf: Uint8Array, W: number, H: number): void {
   }
 }
 
-runDemo({
+run({
   title: 'Murmuration',
   hud: 'REYNOLDS BOIDS - CURL-WIND SHEAR - DUSK GRADE',
   captureT: 6,

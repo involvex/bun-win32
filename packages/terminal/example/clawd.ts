@@ -23,7 +23,9 @@
  *
  * Run: bun run packages/all/example/clawd.ts   (ESC/q quit · SPACE pause)
  */
-import { runDemo, clamp, clamp01, lerp, smoothstep } from './_term';
+import { run } from '@bun-win32/terminal';
+
+import { clamp, clamp01, lerp, smoothstep } from './_kit';
 
 // ── Palette (sampled from the real "Welcome, Claw'd" artwork) ──────────────────
 const CLAY: [number, number, number] = [218, 119, 88];
@@ -41,13 +43,13 @@ const UNITS_H = 16;
 const BODY_BOTTOM = 13; // legs hang below this
 const HEAD_L = 3, HEAD_R = 15; // narrow head/torso span (cols 3..15 → width 12)
 
-runDemo({
+run({
   title: "CLAW'D",
   hud: 'ANTHROPICS PIXEL MASCOT - PURE TYPESCRIPT',
   captureT: 3.2,
   drawHud: true,
   frame: (t, time) => {
-    const { W, H } = t;
+    const { width: W, height: H } = t;
     // Flat cream stage.
     t.clear(CREAM[0], CREAM[1], CREAM[2]);
 

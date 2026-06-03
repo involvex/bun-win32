@@ -23,7 +23,9 @@
  *
  * Run: bun run packages/all/example/torus-knot.ts
  */
-import { runDemo, Term, hsv, clamp, clamp01, lerp, smoothstep, aces, mulberry32, hash2, TAU } from './_term';
+import { run, Term } from '@bun-win32/terminal';
+
+import { hsv, clamp, clamp01, lerp, smoothstep, aces, mulberry32, hash2, TAU } from './_kit';
 
 // ── Knot geometry ──────────────────────────────────────────────────────────────
 const P = 2; // windings around the axis of symmetry
@@ -245,23 +247,23 @@ for (let d2 = 0; d2 <= BLOOM_R * BLOOM_R; d2++) BLOOM_EXP[d2] = Math.exp(-d2 * 0
 let HITMASK!: Uint8Array;
 let BGSNAP!: Uint8Array;
 
-runDemo({
+run({
   title: 'Torus Knot',
   hud: 'RAYMARCHED (2,3) KNOT * SOFT SHADOW * SPEC BLOOM * PURE TYPESCRIPT',
   captureT: 5,
   init: (t) => {
     buildGeometry();
-    buildStars(t.W, t.H);
-    SPEC_X = new Int32Array(t.W * t.H);
-    SPEC_Y = new Int32Array(t.W * t.H);
-    SPEC_I = new Float32Array(t.W * t.H);
-    HITMASK = new Uint8Array(t.W * t.H);
-    BGSNAP = new Uint8Array(t.W * t.H * 3);
+    buildStars(t.width, t.height);
+    SPEC_X = new Int32Array(t.width * t.height);
+    SPEC_Y = new Int32Array(t.width * t.height);
+    SPEC_I = new Float32Array(t.width * t.height);
+    HITMASK = new Uint8Array(t.width * t.height);
+    BGSNAP = new Uint8Array(t.width * t.height * 3);
   },
   frame: (t, time) => {
-    const W = t.W,
-      H = t.H;
-    const buf = t.buf;
+    const W = t.width,
+      H = t.height;
+    const buf = t.pixels;
 
     // ── Background: designed radial vignette gradient (deep teal-indigo) ─────────
     const cxw = W * 0.5,

@@ -47,7 +47,9 @@
  * Run:  bun run packages/all/example/raycaster-term.ts
  *       CAPTURE_PNG=/tmp/ray.png TERM_COLS=160 TERM_ROWS=50 CAPTURE_T=3 bun run …
  */
-import { runDemo, Term, clamp, clamp01, smoothstep, fract, mulberry32, hash2 } from './_term';
+import { Term, run } from '@bun-win32/terminal';
+
+import { clamp, clamp01, smoothstep, fract, mulberry32, hash2 } from './_kit';
 
 // ── Maze world ───────────────────────────────────────────────────────────────
 // A square grid of cells. cell value 0 = open, ≥1 = solid wall with that material
@@ -272,7 +274,7 @@ const frame = (t: Term, time: number, dt: number, _frame: number): void => {
   simTime.v = time;
   buildMaze();
   if (!playerInit) resetPlayer();
-  const W = t.W, H = t.H, buf = t.buf;
+  const W = t.width, H = t.height, buf = t.pixels;
   if (depthW !== W) { depth = new Float32Array(W); depthW = W; }
 
   // ── Input → movement ───────────────────────────────────────────────────────
@@ -477,7 +479,7 @@ const frame = (t: Term, time: number, dt: number, _frame: number): void => {
 
 // ── Minimap: top-down maze + player dot + swept view cone ───────────────────────
 const drawMinimap = (t: Term): void => {
-  const W = t.W;
+  const W = t.width;
   const px = Math.max(2, Math.min(4, ((W / 80) | 0) || 2)); // pixels per cell
   const mw = MAP_W * px, mh = MAP_H * px;
   const ox = W - mw - 2, oy = 2;            // top-right corner, 2px margin
@@ -515,7 +517,7 @@ const drawMinimap = (t: Term): void => {
   t.setPixel((pX + Math.cos(player.ang) * px) | 0, (pY + Math.sin(player.ang) * px) | 0, 255, 60, 60);
 };
 
-runDemo({
+run({
   title: 'Raycaster',
   hud: 'WASD/ARROWS MOVE - A/D STRAFE - LEFT/RIGHT TURN - Q QUIT',
   mode: 'sextant',

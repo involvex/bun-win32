@@ -39,7 +39,9 @@
  *
  * Run: bun run packages/all/example/reaction.ts
  */
-import { runDemo, Term, clamp01, lerp, smoothstep, aces, mulberry32, TAU } from './_term';
+import { run, Term } from '@bun-win32/terminal';
+
+import { clamp01, lerp, smoothstep, aces, mulberry32, TAU } from './_kit';
 
 // ── Internal simulation grid ───────────────────────────────────────────────────
 // Fixed, display-independent. Chosen wide-ish to match terminal aspect and keep a
@@ -412,8 +414,8 @@ const buildXTable = (W: number): void => {
 
 // ── Render: bilinear-upsample V to pixels, shade like microscopy ───────────────
 const render = (t: Term, time: number): void => {
-  const buf = t.buf;
-  const W = t.W, H = t.H;
+  const buf = t.pixels;
+  const W = t.width, H = t.height;
   const v = V;
   const sy = GH / H;
   if (W !== lastSampW) { buildXTable(W); lastSampW = W; }
@@ -573,8 +575,8 @@ const fastSin = (x: number): number => {
   return sinLut[((x * SIN_K) | 0) & (SIN_N - 1)];
 };
 const bloomVignette = (t: Term, time: number): void => {
-  const buf = t.buf;
-  const W = t.W, H = t.H;
+  const buf = t.pixels;
+  const W = t.width, H = t.height;
   if (lumaScratch.length !== W * H) lumaScratch = new Float32Array(W * H);
   if (bvW !== W || bvH !== H) { buildBloomTables(W, H); bvW = W; bvH = H; }
   const L = lumaScratch;
@@ -643,7 +645,7 @@ const prewarm = (): void => {
   prewarmed = true;
 };
 
-runDemo({
+run({
   title: 'Reaction',
   hud: 'GRAY-SCOTT REACTION-DIFFUSION - SPATIAL PHASE FIELD - LIVING TURING ORGANISM',
   captureT: 8,

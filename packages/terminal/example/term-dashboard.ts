@@ -36,7 +36,9 @@
  * Run:  bun run packages/all/example/term-dashboard.ts
  *       (↑/↓ select · click a row · wheel scrolls · SPACE pause · q/ESC quit)
  */
-import { runDemo, Term, clamp, clamp01, lerp, smoothstep, fract, TAU, hsv, mulberry32 } from './_term';
+import { Term, run } from '@bun-win32/terminal';
+
+import { clamp, clamp01, lerp, smoothstep, fract, TAU, hsv, mulberry32 } from './_kit';
 
 // ── Palette (cohesive cool slate + warm clay accent) ────────────────────────────
 const BG0: [number, number, number] = [13, 16, 24]; // deepest backdrop
@@ -232,8 +234,8 @@ const fitText = (str: string, maxPx: number, scale = 1): string => {
 /** Soft additive glow centred at (cx,cy) — the cursor flourish. */
 const glow = (t: Term, cx: number, cy: number, radius: number, col: [number, number, number], strength: number): void => {
   const r = Math.ceil(radius);
-  const x0 = Math.max(0, (cx - r) | 0), x1 = Math.min(t.W - 1, (cx + r) | 0);
-  const y0 = Math.max(0, (cy - r) | 0), y1 = Math.min(t.H - 1, (cy + r) | 0);
+  const x0 = Math.max(0, (cx - r) | 0), x1 = Math.min(t.width - 1, (cx + r) | 0);
+  const y0 = Math.max(0, (cy - r) | 0), y1 = Math.min(t.height - 1, (cy + r) | 0);
   const inv = 1 / (radius * radius);
   for (let y = y0; y <= y1; y++) {
     const dy = y - cy;
@@ -266,7 +268,7 @@ const uptimeStr = (time: number): string => {
   return `${hh}H ${pad2(mm)}M ${pad2(ss)}S`;
 };
 
-runDemo({
+run({
   title: 'COMMAND CENTER',
   hud: '',
   mouse: true,
@@ -285,7 +287,7 @@ runDemo({
   },
   frame: (t, time, dt) => {
     const frameStart = performance.now();
-    const { W, H } = t;
+    const { width: W, height: H } = t;
     if (dt > 0) fpsEma = fpsEma * 0.9 + (1 / dt) * 0.1;
 
     // ── advance streams + log on a fixed cadence (independent of fps) ───────────
@@ -302,9 +304,9 @@ runDemo({
     selFlash = Math.max(0, selFlash - dt * 3.2);
 
     // ── detect real input (mouse moved/clicked/wheel) ───────────────────────────
-    if (t.mouseSeq !== lastSeq) {
-      lastSeq = t.mouseSeq;
-      if (t.mouseActive) {
+    if (t.mouse.sequence !== lastSeq) {
+      lastSeq = t.mouse.sequence;
+      if (t.mouse.active) {
         everInteracted = true;
         lastInputTime = time;
       }
@@ -313,10 +315,10 @@ runDemo({
 
     // ── cursor: real mouse if recently active, else attract Lissajous ───────────
     let curX: number, curY: number, curDown: boolean, autoPilot: boolean;
-    if (realInputRecent && t.mouseInside) {
-      curX = t.mouseX;
-      curY = t.mouseY;
-      curDown = t.mouseDown;
+    if (realInputRecent && t.mouse.inside) {
+      curX = t.mouse.x;
+      curY = t.mouse.y;
+      curDown = t.mouse.down;
       autoPilot = false;
     } else {
       autoPilot = true;
@@ -523,11 +525,11 @@ runDemo({
       const visible = Math.max(1, Math.floor((menuH - 16 - footerH) / rowH));
 
       // ── apply wheel scroll (real input) ───────────────────────────────────────
-      if (t.wheel !== 0) {
+      if (t.mouse.wheel !== 0) {
         everInteracted = true;
         lastInputTime = time;
-        scroll = clamp(scroll - Math.sign(t.wheel) * 1, 0, Math.max(0, ROWS.length - visible));
-        t.wheel = 0;
+        scroll = clamp(scroll - Math.sign(t.mouse.wheel) * 1, 0, Math.max(0, ROWS.length - visible));
+        t.mouse.wheel = 0;
       }
 
       // ── hover hit-test against the cursor (real OR auto-pilot) ─────────────────

@@ -44,7 +44,9 @@
  *
  * Run: bun run packages/all/example/blackhole-tty.ts   (drag orbit · wheel zoom · R reset · ESC/q quit)
  */
-import { runDemo, Term, clamp, clamp01, lerp, smoothstep, aces, TAU } from './_term';
+import { Term, run } from '@bun-win32/terminal';
+
+import { clamp, clamp01, lerp, smoothstep, aces, TAU } from './_kit';
 
 // ── Internal render scale ───────────────────────────────────────────────────────
 // The lensing march is the cost driver, so it runs at a fixed PIXEL BUDGET and is
@@ -542,7 +544,7 @@ const doBloom = (): void => {
 
 // ── Per-frame ──────────────────────────────────────────────────────────────────
 const frame = (t: Term, time: number, dt: number, _frameNo: number): void => {
-  const W = t.W, H = t.H;
+  const W = t.width, H = t.height;
   if (RW === 0) initBuffers(t);
 
   // ── camera: an interactive orbit camera. The DEFAULT (untouched) pose is the
@@ -558,16 +560,16 @@ const frame = (t: Term, time: number, dt: number, _frameNo: number): void => {
   // Drain the keyboard accumulators (written by onKey between frames) and the wheel.
   const keyAzim = kbAzim, keyElev = kbElev, keyZoom = kbZoom, doReset = pendingReset;
   kbAzim = 0; kbElev = 0; kbZoom = 0; pendingReset = false;
-  const wheel = t.wheel; t.wheel = 0;
+  const wheel = t.mouse.wheel; t.mouse.wheel = 0;
 
   // Drag deltas from the (opted-in) mouse: anchor on press, accumulate while held.
-  const down = t.mouseDown && t.mouseInside;
+  const down = t.mouse.down && t.mouse.inside;
   let dragAzim = 0, dragElev = 0;
-  if (down && !dragging) { prevMX = t.mouseX; prevMY = t.mouseY; velAzim = 0; }   // press: anchor, no jump, fresh flick
+  if (down && !dragging) { prevMX = t.mouse.x; prevMY = t.mouse.y; velAzim = 0; }   // press: anchor, no jump, fresh flick
   else if (down && dragging) {
-    dragAzim = (t.mouseX - prevMX) * DRAG_AZIM;
-    dragElev = (t.mouseY - prevMY) * DRAG_ELEV;
-    prevMX = t.mouseX; prevMY = t.mouseY;
+    dragAzim = (t.mouse.x - prevMX) * DRAG_AZIM;
+    dragElev = (t.mouse.y - prevMY) * DRAG_ELEV;
+    prevMX = t.mouse.x; prevMY = t.mouse.y;
   }
   dragging = down;
 
@@ -670,7 +672,7 @@ const frame = (t: Term, time: number, dt: number, _frameNo: number): void => {
   doBloom();
 
   // ── composite + tonemap, bilinearly upsampling internal → t.buf ──
-  const buf = t.buf;
+  const buf = t.pixels;
   const sxs = RW / W, sys = RH / H;
   const bloomGain = 1.5;
 
@@ -743,7 +745,7 @@ const frame = (t: Term, time: number, dt: number, _frameNo: number): void => {
   }
 };
 
-runDemo({
+run({
   title: 'Black Hole TTY',
   hud: 'DRAG ORBIT - WHEEL/+- ZOOM - ARROWS NUDGE - R RESET',
   captureT: 7,

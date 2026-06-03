@@ -47,7 +47,9 @@
  *
  * Run: bun run packages/all/example/powder.ts
  */
-import { runDemo, Term, clamp, clamp01, aces, mulberry32, hash2 } from './_term';
+import { Term, run } from '@bun-win32/terminal';
+
+import { clamp, clamp01, aces, mulberry32, hash2 } from './_kit';
 
 // ── Material ids (packed into one Uint8 grid) ──────────────────────────────────
 const EMPTY = 0;
@@ -697,9 +699,9 @@ const blackbody = (t: number, out: RGB): void => {
 const bbTmp: RGB = [0, 0, 0];
 
 const render = (t: Term, time: number): void => {
-  const buf = t.buf;
-  const W = t.W;
-  const H = t.H;
+  const buf = t.pixels;
+  const W = t.width;
+  const H = t.height;
   const N = W * H;
   light.fill(0);
 
@@ -897,8 +899,8 @@ const render = (t: Term, time: number): void => {
 // void/gas so it never paints over solid material. Negligible cost (≈48 points).
 const EMBER_N = 56;
 const drawEmbers = (t: Term, time: number): void => {
-  const W = t.W;
-  const H = t.H;
+  const W = t.width;
+  const H = t.height;
   for (let k = 0; k < EMBER_N; k++) {
     // Per-ember stable parameters from a hash of its index.
     const hx = hash2(k * 53 + 11, 7);
@@ -943,9 +945,9 @@ const isAir = (m: number): boolean => m === EMPTY || m === SMOKE || m === STEAM;
 //           across the scene, so emitters actually illuminate nearby sand/water).
 // Cheap O(W·H + (W·H)/4) and allocation-free.
 const bloomAndComposite = (t: Term, N: number): void => {
-  const W = t.W;
-  const H = t.H;
-  const buf = t.buf;
+  const W = t.width;
+  const H = t.height;
+  const buf = t.pixels;
   // — TIGHT bloom: horizontal (light → bloomA), 5-tap —
   for (let y = 0; y < H; y++) {
     const row = y * W;
@@ -1049,14 +1051,14 @@ let prevMouseY = -1;
 
 const IDLE_BEFORE_ATTRACT = 3; // seconds of no input before attract resumes
 
-runDemo({
+run({
   title: 'Powder',
   hud: '1-8 MATERIAL  -  DRAG TO PAINT  -  WHEEL BRUSH  -  C CLEAR',
   captureT: 5,
   mouse: true,
   targetFps: 60,
   init: (t) => {
-    allocate(t.W, t.H);
+    allocate(t.width, t.height);
     seedScene();
     curMat = SAND;
     brush = 4;
@@ -1067,7 +1069,7 @@ runDemo({
     prevMouseY = -1;
   },
   resize: (t) => {
-    allocate(t.W, t.H);
+    allocate(t.width, t.height);
     seedScene();
     lastAttractClear = 0;
   },
@@ -1078,20 +1080,20 @@ runDemo({
     if (Number.isFinite(n) && n >= 1 && n <= PALETTE.length) curMat = PALETTE[n - 1].id;
   },
   frame: (t, time, dt) => {
-    if (GW !== t.W || GH !== t.H) allocate(t.W, t.H);
+    if (GW !== t.width || GH !== t.height) allocate(t.width, t.height);
 
     // Wheel → brush size (read AND reset).
-    if (t.wheel !== 0) {
-      brush = clamp(brush + t.wheel, 1, 24) | 0;
-      t.wheel = 0;
+    if (t.mouse.wheel !== 0) {
+      brush = clamp(brush + t.mouse.wheel, 1, 24) | 0;
+      t.mouse.wheel = 0;
       lastInputTime = time;
     }
     // Track interaction. onKey can't see `time`, so any mouse activity or a pending
     // key flag refreshes the idle clock here.
-    if (t.mouseActive && (t.mouseSeq !== 0)) {
-      if (t.mouseX !== prevMouseX || t.mouseY !== prevMouseY || t.mouseDown) lastInputTime = time;
-      prevMouseX = t.mouseX;
-      prevMouseY = t.mouseY;
+    if (t.mouse.active && (t.mouse.sequence !== 0)) {
+      if (t.mouse.x !== prevMouseX || t.mouse.y !== prevMouseY || t.mouse.down) lastInputTime = time;
+      prevMouseX = t.mouse.x;
+      prevMouseY = t.mouse.y;
     }
     if (sawKey) { lastInputTime = time; sawKey = false; }
 
@@ -1099,9 +1101,9 @@ runDemo({
 
     if (userActive) {
       // Live painting.
-      if (t.mouseDown && t.mouseInside) {
+      if (t.mouse.down && t.mouse.inside) {
         const dens = curMat === FIRE ? 1.0 : isLiquid(curMat) ? 0.9 : 0.92;
-        paint(t.mouseX, t.mouseY, brush, curMat, dens);
+        paint(t.mouse.x, t.mouse.y, brush, curMat, dens);
       }
     } else {
       // Attract performance.
@@ -1115,15 +1117,15 @@ runDemo({
     render(t, time);
 
     // Brush preview ring + material/brush readout (live only; capture shows attract).
-    if (userActive && t.mouseInside) drawBrushRing(t);
+    if (userActive && t.mouse.inside) drawBrushRing(t);
     drawSelector(t, userActive);
   },
 });
 
 // A thin ring at the cursor showing the current brush radius (live feedback).
 const drawBrushRing = (t: Term): void => {
-  const cx = t.mouseX;
-  const cy = t.mouseY;
+  const cx = t.mouse.x;
+  const cy = t.mouse.y;
   const r = brush;
   const steps = Math.max(16, (r * 4) | 0);
   for (let s = 0; s < steps; s++) {
@@ -1147,14 +1149,14 @@ const drawSelector = (t: Term, userActive: boolean): void => {
     // Minimal, unobtrusive mode tag tucked into the top-right under the HUD band.
     const label = 'ATTRACT';
     const tw = Term.textWidth(label, 1);
-    const tx = t.W - tw - 4;
+    const tx = t.width - tw - 4;
     const ty = 34;
     t.plate(tx - 2, ty - 2, tw + 4, 11, 0.42);
     t.text(tx, ty, label, 235, 170, 120, 1);
     return;
   }
   const total = PALETTE.length * (swW + gap) - gap;
-  const x0 = t.W - total - 3;
+  const x0 = t.width - total - 3;
   const y0 = 34; // below the FPS HUD band
   t.plate(x0 - 2, y0 - 2, total + 4, swH + 6, 0.5);
   for (let k = 0; k < PALETTE.length; k++) {

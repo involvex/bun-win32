@@ -35,7 +35,9 @@
  *
  * Run: bun run packages/all/example/galaxy-tty.ts
  */
-import { runDemo, Term, clamp01, lerp, smoothstep, aces, mulberry32, TAU } from './_term';
+import { run, Term } from '@bun-win32/terminal';
+
+import { clamp01, lerp, smoothstep, aces, mulberry32, TAU } from './_kit';
 
 // Tuning override hook (GAL_<NAME>) so captures can sweep without recompiling.
 const envN = (name: string, fallback: number): number => {
@@ -325,7 +327,7 @@ const allocForSize = (W: number, H: number, aspect: number): void => {
 };
 
 const frame = (t: Term, time: number, _dt: number, _frameNo: number): void => {
-  const W = t.W, H = t.H, aspect = t.aspect;
+  const W = t.width, H = t.height, aspect = t.aspect;
   if (W !== lastW || H !== lastH) {
     allocForSize(W, H, aspect);
     lastW = W; lastH = H;
@@ -524,7 +526,7 @@ const frame = (t: Term, time: number, _dt: number, _frameNo: number): void => {
   }
 
   // ── COMPOSITE: dust lanes + starfield + bloom + vignette + ACES tonemap → t.buf ──
-  const out = t.buf;
+  const out = t.pixels;
   const invScale = 1 / scale;
   const invSx = 1 / sxScale;
   const EXPOSURE = 1.12;
@@ -594,7 +596,7 @@ const frame = (t: Term, time: number, _dt: number, _frameNo: number): void => {
   }
 };
 
-runDemo({
+run({
   title: 'Galaxy TTY',
   hud: 'DIFFERENTIAL ROTATION - LOG-SPIRAL DENSITY WAVE - HDR ADDITIVE ACES',
   captureT: 8,

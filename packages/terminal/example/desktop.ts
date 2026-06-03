@@ -18,19 +18,10 @@
  * (caret visible), while the video plays and scrubs — then loops. All motion is
  * derived from `time`; all randomness from `mulberry32`, so captures reproduce.
  */
-import {
-  runTextDemo,
-  CharTerm,
-  clamp,
-  clamp01,
-  lerp,
-  smoothstep,
-  fract,
-  TAU,
-  hsv,
-  mulberry32,
-  type RGB,
-} from './_textterm';
+import { CharTerm, runText } from '@bun-win32/terminal';
+import type { RGB } from '@bun-win32/terminal';
+
+import { clamp, clamp01, lerp, smoothstep, fract, TAU, hsv, mulberry32 } from './_kit';
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const INK: RGB = [228, 230, 240];
@@ -106,7 +97,7 @@ const sinT = (x: number): number => {
 
 // ── Layout ──────────────────────────────────────────────────────────────────────
 const layout = (t: CharTerm): void => {
-  cols = t.cols;
+  cols = t.columns;
   rows = t.rows;
   deskH = rows - DOCK_H;
   for (const wn of wins) {
@@ -118,7 +109,7 @@ const layout = (t: CharTerm): void => {
 };
 
 const init = (t: CharTerm): void => {
-  cols = t.cols;
+  cols = t.columns;
   rows = t.rows;
   deskH = rows - DOCK_H;
 
@@ -305,16 +296,16 @@ const titleButtonAt = (wn: Win, mx: number, my: number): number => {
 };
 
 const handleMouse = (t: CharTerm): void => {
-  if (t.mouseSeq === lastSeq) return;
-  lastSeq = t.mouseSeq;
+  if (t.mouse.sequence === lastSeq) return;
+  lastSeq = t.mouse.sequence;
   lastInputTime = liveTime;
-  const mx = t.mouseX;
-  const my = t.mouseY;
-  curDown = t.mouseDown;
+  const mx = t.mouse.x;
+  const my = t.mouse.y;
+  curDown = t.mouse.down;
 
   // Dock hit test (bottom strip): launcher icons restore/raise apps.
   if (my >= deskH) {
-    if (t.mouseDown) {
+    if (t.mouse.down) {
       const dockApp = dockIconAt(mx);
       if (dockApp >= 0) {
         const wn = wins[dockApp];
@@ -326,7 +317,7 @@ const handleMouse = (t: CharTerm): void => {
     return;
   }
 
-  if (t.mouseDown && dragWin < 0) {
+  if (t.mouse.down && dragWin < 0) {
     // Press: find topmost window under cursor.
     for (let z = zorder.length - 1; z >= 0; z--) {
       const app = zorder[z];
@@ -347,13 +338,13 @@ const handleMouse = (t: CharTerm): void => {
         break;
       }
     }
-  } else if (t.mouseDown && dragWin >= 0) {
+  } else if (t.mouse.down && dragWin >= 0) {
     const wn = wins[dragWin];
     wn.x = clamp(mx - dragDX, -wn.w + 6, cols - 6);
     wn.y = clamp(my - dragDY, 1, deskH - 2);
     wn.fx = wn.x / cols;
     wn.fy = wn.y / deskH;
-  } else if (!t.mouseDown) {
+  } else if (!t.mouse.down) {
     dragWin = -1;
   }
 };
@@ -859,7 +850,7 @@ const drawWallpaper = (t: CharTerm, time: number): void => {
     if (tw < 0.5) continue;
     const i = sy * cols + sx;
     // Read back the current bg so the star's colour is lifted off the gradient.
-    const cur = t.bg[i];
+    const cur = t.background[i];
     const k = 90 + tw * 110;
     const cr = ((cur >> 16) & 255) + k;
     const cg = ((cur >> 8) & 255) + k;
@@ -931,7 +922,7 @@ const drawCursor = (t: CharTerm, x: number, y: number, down: boolean): void => {
   // Notepad paper) a full-strength black backing reads as an ugly smudge, so we
   // sample the cell's current bg luminance and fade the backing toward zero as the
   // surface brightens — the white pointer still pops, without the dark hole.
-  const cur = t.bg[cy * cols + cx];
+  const cur = t.background[cy * cols + cx];
   const lum = (((cur >> 16) & 255) * 0.299 + ((cur >> 8) & 255) * 0.587 + (cur & 255) * 0.114) / 255;
   const back = lerp(0.45, 0.1, smoothstep(0.12, 0.42, lum));
   const side = lerp(0.22, 0.06, smoothstep(0.12, 0.42, lum));
@@ -1054,7 +1045,7 @@ const IDLE_RESUME = 3.5; // seconds of no input → resume attract
 
 const frame = (t: CharTerm, time: number, dt: number, _frame: number): void => {
   liveTime = time;
-  if (cols !== t.cols || rows !== t.rows) layout(t);
+  if (cols !== t.columns || rows !== t.rows) layout(t);
 
   // Advance video clip.
   if (videoPlaying) {
@@ -1064,7 +1055,7 @@ const frame = (t: CharTerm, time: number, dt: number, _frame: number): void => {
 
   // Input vs attract arbitration.
   handleMouse(t);
-  const interacted = t.mouseActive || lastInputTime > -1e8;
+  const interacted = t.mouse.active || lastInputTime > -1e8;
   const idle = time - lastInputTime;
   const inAttract = !interacted || idle > IDLE_RESUME;
 
@@ -1072,9 +1063,9 @@ const frame = (t: CharTerm, time: number, dt: number, _frame: number): void => {
     attract(t, time);
   } else {
     // Live: cursor follows the real mouse.
-    curX = t.mouseX;
-    curY = t.mouseY;
-    curDown = t.mouseDown;
+    curX = t.mouse.x;
+    curY = t.mouse.y;
+    curDown = t.mouse.down;
     // Keep the caret solid for a moment after each keystroke, then blink.
     caretSolid = time - lastTypeTime < 0.5;
     // Ensure windows are fully present once the user is driving.
@@ -1110,7 +1101,7 @@ const frame = (t: CharTerm, time: number, dt: number, _frame: number): void => {
   drawCursor(t, curX, curY, curDown);
 };
 
-runTextDemo({
+runText({
   title: 'TermOS — Desktop',
   hud: 'DRAG TITLE · CLICK FOCUS · TYPE IN NOTEPAD · DOCK LAUNCH',
   captureT: 9,

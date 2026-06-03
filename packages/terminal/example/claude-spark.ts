@@ -19,7 +19,9 @@
  *
  * Run: bun run packages/all/example/claude-spark.ts   (move/click the mouse · ESC/q quit)
  */
-import { runDemo, clamp, clamp01, smoothstep, lerp, mulberry32, TAU } from './_term';
+import { run } from '@bun-win32/terminal';
+
+import { clamp, clamp01, smoothstep, lerp, mulberry32, TAU } from './_kit';
 
 // Twelve spikes parsed from Anthropic's claude-logo.svg: {degrees, length 0..1}.
 const SPIKES = [
@@ -77,14 +79,14 @@ const restPos = (i: number, cx: number, cy: number, R: number): [number, number]
   return [cx + Math.cos(a) * R * SPIKES[i].len, cy + Math.sin(a) * R * SPIKES[i].len];
 };
 
-runDemo({
+run({
   title: 'CLAUDE SPARK',
   hud: 'WASD/ARROWS AIM - QE SPIN - [ ] REACH - CLICK SURGE - ESC QUIT',
   mouse: true,
   quitOnQ: false, // Q is a control key here (spin) — ESC / Ctrl-C still quit
   captureT: 5,
   onKey: (k, t) => {
-    const step = Math.min(t.W, t.H) * 0.06;
+    const step = Math.min(t.width, t.height) * 0.06;
     if (k === 'w' || k === 'up') kbY -= step;
     else if (k === 's' || k === 'down') kbY += step;
     else if (k === 'a' || k === 'left') kbX -= step;
@@ -93,15 +95,15 @@ runDemo({
     else if (k === 'e') spin += 0.13;
     else if (k === '[') reachScale = Math.max(0.2, reachScale - 0.1);
     else if (k === ']') reachScale = Math.min(2.0, reachScale + 0.1);
-    else if (k === 'r') { spin = 0; reachScale = 1; kbX = t.W / 2 + Math.min(t.W, t.H) * 0.25; kbY = t.H / 2; }
+    else if (k === 'r') { spin = 0; reachScale = 1; kbX = t.width / 2 + Math.min(t.width, t.height) * 0.25; kbY = t.height / 2; }
     else return;
-    kbX = Math.max(0, Math.min(t.W - 1, kbX));
-    kbY = Math.max(0, Math.min(t.H - 1, kbY));
+    kbX = Math.max(0, Math.min(t.width - 1, kbX));
+    kbY = Math.max(0, Math.min(t.height - 1, kbY));
     keyDirty = true;
   },
   init: (t) => {
-    const cx = t.W / 2, cy = t.H / 2, R = Math.min(t.W, t.H) * 0.42;
-    buildBgLut(R, Math.hypot(t.W, t.H) * 0.5);
+    const cx = t.width / 2, cy = t.height / 2, R = Math.min(t.width, t.height) * 0.42;
+    buildBgLut(R, Math.hypot(t.width, t.height) * 0.5);
     const rng = mulberry32(0x5afe);
     for (let i = 0; i < N; i++) {
       const [rx, ry] = restPos(i, cx, cy, R);
@@ -111,11 +113,11 @@ runDemo({
     }
     kbX = cx + R * 0.6; // default aim
     kbY = cy;
-    prevSeq = t.mouseSeq;
+    prevSeq = t.mouse.sequence;
     inited = true;
   },
   frame: (t, time, dt) => {
-    const { W, H } = t;
+    const { width: W, height: H } = t;
     const cx = W / 2, cy = H / 2;
     const R = Math.min(W, H) * 0.42;
     if (!inited) return;
@@ -125,7 +127,7 @@ runDemo({
     // (no per-pixel sqrt/exp). LUT is rebuilt in init/resize for the current R.
     const maxR = Math.hypot(W, H) * 0.5;
     if (!bgLut) buildBgLut(R, maxR);
-    const lut = bgLut!, lutMax = bgLutR - 1, buf = t.buf;
+    const lut = bgLut!, lutMax = bgLutR - 1, buf = t.pixels;
     for (let y = 0; y < H; y++) {
       const dy = y - cy, dy2 = dy * dy;
       let i = y * W * 3;
@@ -142,15 +144,15 @@ runDemo({
     }
 
     // ── Input mode: most-recently-used of mouse / keyboard wins, else orbit ───
-    if (t.mouseActive && t.mouseSeq !== prevSeq) { prevSeq = t.mouseSeq; lastMouseT = time; }
+    if (t.mouse.active && t.mouse.sequence !== prevSeq) { prevSeq = t.mouse.sequence; lastMouseT = time; }
     if (keyDirty) { lastKeyT = time; keyDirty = false; }
-    const useMouse = t.mouseActive && time - lastMouseT < 1.5;
+    const useMouse = t.mouse.active && time - lastMouseT < 1.5;
     const useKeys = time - lastKeyT < 4.0;
     let mx: number, my: number, mode: number; // 0 auto · 1 mouse · 2 keys
-    if (useMouse && (!useKeys || lastMouseT >= lastKeyT)) { mx = t.mouseX; my = t.mouseY; mode = 1; }
+    if (useMouse && (!useKeys || lastMouseT >= lastKeyT)) { mx = t.mouse.x; my = t.mouse.y; mode = 1; }
     else if (useKeys) { mx = kbX; my = kbY; mode = 2; }
     else { mx = cx + Math.cos(time * 0.5) * R * 0.82; my = cy + Math.sin(time * 0.7) * R * 0.66; mode = 0; } // eased idle orbit
-    const surge = t.mouseDown ? 1 : 0; // click = stronger reach
+    const surge = t.mouse.down ? 1 : 0; // click = stronger reach
     const reachK = (0.5 + 0.4 * surge) * reachScale;
 
     let tdx = mx - cx, tdy = my - cy;

@@ -27,7 +27,7 @@
  * motion is a pure function of sim-time, all randomness seeded with mulberry32,
  * so captures reproduce exactly. Sim resolution (the nebula grid, the star
  * tables in normalized space) is decoupled from display resolution and sampled
- * to t.W/t.H every frame, so the reel reflows seamlessly on terminal resize.
+ * to t.width/t.height every frame, so the reel reflows seamlessly on terminal resize.
  *
  * Technique: parallax point sprites, bilinear field sampling, log-spiral galaxy
  * synthesis, summed Gerstner waves with analytic slope normals, ACES tonemapped
@@ -38,7 +38,9 @@
  *
  * Run: bun run packages/all/example/cinema.ts
  */
-import { runDemo, Term, clamp01, lerp, smoothstep, fract, aces, mulberry32, hash2, TAU } from './_term';
+import { Term, run } from '@bun-win32/terminal';
+
+import { clamp01, lerp, smoothstep, fract, aces, mulberry32, hash2, TAU } from './_kit';
 
 const SQRT = Math.sqrt;
 const SIN = Math.sin;
@@ -119,9 +121,9 @@ function nebAt(u: number, v: number): number {
 function dab(t: Term, cx: number, cy: number, rad: number, r: number, g: number, b: number): void {
   const r2 = rad * rad;
   const x0 = Math.max(0, (cx - rad) | 0);
-  const x1 = Math.min(t.W - 1, (cx + rad) | 0);
+  const x1 = Math.min(t.width - 1, (cx + rad) | 0);
   const y0 = Math.max(0, (cy - rad) | 0);
-  const y1 = Math.min(t.H - 1, (cy + rad) | 0);
+  const y1 = Math.min(t.height - 1, (cy + rad) | 0);
   for (let y = y0; y <= y1; y++) {
     const dy = y - cy;
     for (let x = x0; x <= x1; x++) {
@@ -137,14 +139,14 @@ function dab(t: Term, cx: number, cy: number, rad: number, r: number, g: number,
 
 function centeredText(t: Term, cy: number, str: string, r: number, g: number, b: number, scale: number, a: number): void {
   const w = Term.textWidth(str, scale);
-  const x = ((t.W - w) / 2) | 0;
+  const x = ((t.width - w) / 2) | 0;
   t.text(x, cy, str, r * a, g * a, b * a, scale, false);
 }
 
 // ── SCENE I: nebula + drifting parallax starfield ─────────────────────────────
 function sceneNebula(t: Term, local: number, reveal: number, time: number): void {
-  const W = t.W;
-  const H = t.H;
+  const W = t.width;
+  const H = t.height;
   // The nebula "resolves" — contrast and saturation rise over the scene.
   const resolve = smoothstep(0, SCENES[0].dur * 0.7, local);
   // Slow camera drift across the field (very subtle, dreamlike).
@@ -228,9 +230,9 @@ function sceneNebula(t: Term, local: number, reveal: number, time: number): void
       const gg = (g + halo * 0.55) * reveal;
       const bb = (b + halo * 0.82) * reveal;
       const i = rowBase + x * 3;
-      t.buf[i] = rr > 255 ? 255 : rr | 0;
-      t.buf[i + 1] = gg > 255 ? 255 : gg | 0;
-      t.buf[i + 2] = bb > 255 ? 255 : bb | 0;
+      t.pixels[i] = rr > 255 ? 255 : rr | 0;
+      t.pixels[i + 1] = gg > 255 ? 255 : gg | 0;
+      t.pixels[i + 2] = bb > 255 ? 255 : bb | 0;
     }
   }
   // Parallax stars on three depth planes drifting with the camera.
@@ -266,8 +268,8 @@ function sceneNebula(t: Term, local: number, reveal: number, time: number): void
 
 // ── SCENE II: logarithmic-spiral galaxy ───────────────────────────────────────
 function sceneGalaxy(t: Term, local: number, reveal: number, time: number): void {
-  const W = t.W;
-  const H = t.H;
+  const W = t.width;
+  const H = t.height;
   const asp = t.aspect;
   // Gentle camera sway + slow majestic spin-up.
   const cx = W * 0.5 + SIN(time * 0.05) * W * 0.025;
@@ -345,8 +347,8 @@ const W2_DX = WDX[2], W2_DZ = WDZ[2], W2_K = WK[2], W2_A = WAVES[2].amp, W2_AK =
 const W3_DX = WDX[3], W3_DZ = WDZ[3], W3_K = WK[3], W3_A = WAVES[3].amp, W3_AK = WAVES[3].amp * WK[3], W3_S = WAVES[3].spd;
 
 function sceneOcean(t: Term, local: number, reveal: number, time: number): void {
-  const W = t.W;
-  const H = t.H;
+  const W = t.width;
+  const H = t.height;
   const horizon = (H * 0.46) | 0;
   // Skip the letterbox bar rows — they get blacked out after the grade.
   const bar = letterboxBar(t);
@@ -395,9 +397,9 @@ function sceneOcean(t: Term, local: number, reveal: number, time: number): void 
       const cr = rr * hz;
       const cg = gg * hz;
       const cb = bb * hz;
-      t.buf[i] = cr > 255 ? 255 : cr;
-      t.buf[i + 1] = cg > 255 ? 255 : cg;
-      t.buf[i + 2] = cb > 255 ? 255 : cb;
+      t.pixels[i] = cr > 255 ? 255 : cr;
+      t.pixels[i + 1] = cg > 255 ? 255 : cg;
+      t.pixels[i + 2] = cb > 255 ? 255 : cb;
     }
   }
 
@@ -503,9 +505,9 @@ function sceneOcean(t: Term, local: number, reveal: number, time: number): void 
       g *= reveal;
       b *= reveal;
       const i = rowBase + x * 3;
-      t.buf[i] = r > 255 ? 255 : r;
-      t.buf[i + 1] = g > 255 ? 255 : g;
-      t.buf[i + 2] = b > 255 ? 255 : b;
+      t.pixels[i] = r > 255 ? 255 : r;
+      t.pixels[i + 1] = g > 255 ? 255 : g;
+      t.pixels[i + 2] = b > 255 ? 255 : b;
       // advance the sin/cos recurrence one x-step; resync periodically.
       if (--resync === 0) {
         resync = RESYNC;
@@ -525,8 +527,8 @@ function sceneOcean(t: Term, local: number, reveal: number, time: number): void 
 
 // ── SCENE IV: aurora light-form (+ the one restrained title) ──────────────────
 function sceneAurora(t: Term, local: number, reveal: number, time: number): void {
-  const W = t.W;
-  const H = t.H;
+  const W = t.width;
+  const H = t.height;
   // Faint star bed behind the curtains.
   for (let i = 0; i < bgStars.length; i += 2) {
     const s = bgStars[i];
@@ -642,9 +644,9 @@ let gradeColSq = new Float64Array(0);
 // `yStart`/`yEnd` restrict grading to the visible interior; the letterbox bar
 // rows are about to be blacked out so grading them is pure waste.
 function grade(t: Term, time: number, yStart: number, yEnd: number): void {
-  const W = t.W;
-  const H = t.H;
-  const buf = t.buf;
+  const W = t.width;
+  const H = t.height;
+  const buf = t.pixels;
   const cx = W * 0.5;
   const cy = H * 0.5;
   const invMaxd = 1 / (cx * cx + cy * cy);
@@ -701,27 +703,27 @@ function grade(t: Term, time: number, yStart: number, yEnd: number): void {
 
 // ── 2.39:1 letterbox (pure-black bars, drawn after the grade) ─────────────────
 function letterboxBar(t: Term): number {
-  const targetH = t.W / 2.39;
-  return Math.max(2, Math.round((t.H - targetH) / 2));
+  const targetH = t.width / 2.39;
+  return Math.max(2, Math.round((t.height - targetH) / 2));
 }
 function letterbox(t: Term, bar: number): number {
   for (let y = 0; y < bar; y++) {
-    const top = y * t.W * 3;
-    const bot = (t.H - 1 - y) * t.W * 3;
-    for (let x = 0; x < t.W; x++) {
-      t.buf[top + x * 3] = 0;
-      t.buf[top + x * 3 + 1] = 0;
-      t.buf[top + x * 3 + 2] = 0;
-      t.buf[bot + x * 3] = 0;
-      t.buf[bot + x * 3 + 1] = 0;
-      t.buf[bot + x * 3 + 2] = 0;
+    const top = y * t.width * 3;
+    const bot = (t.height - 1 - y) * t.width * 3;
+    for (let x = 0; x < t.width; x++) {
+      t.pixels[top + x * 3] = 0;
+      t.pixels[top + x * 3 + 1] = 0;
+      t.pixels[top + x * 3 + 2] = 0;
+      t.pixels[bot + x * 3] = 0;
+      t.pixels[bot + x * 3 + 1] = 0;
+      t.pixels[bot + x * 3 + 2] = 0;
     }
   }
   return bar;
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
-runDemo({
+run({
   title: 'CINEMA',
   hud: 'A SELF-PLAYING REEL - 4 SCENES - 2.39:1 - PURE TYPESCRIPT',
   captureT: 12,
@@ -729,7 +731,7 @@ runDemo({
     const rng = mulberry32(20260601);
     // Parallax starfield in normalized space (used by nebula + aurora bed).
     bgStars = [];
-    const NB = Math.max(220, ((t.W * t.H) / 80) | 0);
+    const NB = Math.max(220, ((t.width * t.height) / 80) | 0);
     for (let i = 0; i < NB; i++) bgStars.push({ x: rng(), y: rng(), z: rng(), seed: rng() });
 
     // Value-noise nebula field: smooth a white-noise grid a few times.
@@ -794,7 +796,7 @@ runDemo({
     // Grade only the visible interior — the letterbox bars are about to be
     // overwritten with pure black, so grading those rows is wasted work.
     const bar = letterboxBar(t);
-    grade(t, time, bar, t.H - bar);
+    grade(t, time, bar, t.height - bar);
     letterbox(t, bar);
   },
 });

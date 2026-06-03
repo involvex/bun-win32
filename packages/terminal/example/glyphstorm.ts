@@ -34,7 +34,9 @@
  *
  * Run: bun run packages/all/example/glyphstorm.ts
  */
-import { runDemo, Term, clamp, clamp01, lerp, smoothstep, mulberry32, hsv } from './_term';
+import { Term, run } from '@bun-win32/terminal';
+
+import { clamp, clamp01, lerp, smoothstep, mulberry32, hsv } from './_kit';
 
 // ── Local 5×7 font (mirror of the engine's, so we can rasterize target points) ──
 // Only the glyphs the demo can place. '#' = lit. Unknown → blank advance.
@@ -575,8 +577,8 @@ const ROT_S = Math.sin(0.54);
 
 const frame = (t: Term, time: number, dt: number): void => {
   nowTime = time;
-  const W = t.W;
-  const H = t.H;
+  const W = t.width;
+  const H = t.height;
   if (accW !== W || accH !== H) allocAccum(W, H);
 
   // Decide attract vs user control.
@@ -600,9 +602,9 @@ const frame = (t: Term, time: number, dt: number): void => {
   }
 
   // Mouse target in internal space (only when actually interacting).
-  const mouseOn = userActive && t.mouseActive && t.mouseInside && t.mouseDown;
-  const mIx = (t.mouseX / Math.max(1, W)) * IW;
-  const mIy = (t.mouseY / Math.max(1, H)) * IH;
+  const mouseOn = userActive && t.mouse.active && t.mouse.inside && t.mouse.down;
+  const mIx = (t.mouse.x / Math.max(1, W)) * IW;
+  const mIy = (t.mouse.y / Math.max(1, H)) * IH;
 
   // Scale internal → display.
   const sxScale = (W - 1) / IW;
@@ -774,7 +776,7 @@ const frame = (t: Term, time: number, dt: number): void => {
   // clips. Instead we tonemap LUMINANCE and re-apply the original chroma, then bleed
   // toward white only in proportion to how hot the cell is — so letterform spines get
   // a white-hot core wrapped in a saturated coloured glow rather than a flat blob.
-  const buf = t.buf;
+  const buf = t.pixels;
   const neb = nebula;
   const total = W * H;
   let o = 0;
@@ -855,7 +857,7 @@ const buildBloom = (W: number, H: number): void => {
   bloom.set(bloomTmp);
 };
 
-runDemo({
+run({
   title: 'Glyphstorm',
   hud: 'TYPE TO FORM WORDS - ENTER BURST - BACKSPACE DISSOLVE - DRAG TO STIR',
   captureT: 5,
@@ -863,7 +865,7 @@ runDemo({
   mouse: true,
   pauseOnSpace: false,
   init: (t) => {
-    allocAccum(t.W, t.H);
+    allocAccum(t.width, t.height);
     // Pre-warm the attract script so the first displayed/captured frame is already a
     // living, partially-assembled word rather than a sparse scatter. Run real frames
     // at negative time ending exactly at t=0 to keep the timeline deterministic.

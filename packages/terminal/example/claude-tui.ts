@@ -15,12 +15,10 @@
  * ceiling. Set TERM_FPS=<n> to cap it — e.g. TERM_FPS=120 for a calm interactive
  * cap, TERM_FPS=60 for the original behaviour.
  */
-import {
-  runTextDemo,
-  CharTerm,
-  clamp,
-  type RGB,
-} from './_textterm';
+import { CharTerm, runText } from '@bun-win32/terminal';
+import type { RGB } from '@bun-win32/terminal';
+
+import { clamp } from './_kit';
 
 // ── Palette (the real Claude Code look) ──────────────────────────────────────────
 const BG: RGB = [16, 16, 20];
@@ -484,7 +482,7 @@ let S: State;
 
 function initState(t: CharTerm): void {
   S = {
-    cols: t.cols,
+    cols: t.columns,
     rows: t.rows,
     scroll: 0,
     inputBuf: '',
@@ -735,7 +733,7 @@ function attractState(time: number): { session: Session; lt: number } {
 const wrapCache = makeWrapCache();
 
 function frame(t: CharTerm, time: number, _dt: number, _frameNo: number): void {
-  if (!S || S.cols !== t.cols || S.rows !== t.rows) initState(t);
+  if (!S || S.cols !== t.columns || S.rows !== t.rows) initState(t);
 
   // ── Input handling state machine (live) ──
   // Determine whether we're in attract or live control.
@@ -743,7 +741,7 @@ function frame(t: CharTerm, time: number, _dt: number, _frameNo: number): void {
   const attract = !S.hasInteracted || idle > IDLE_RESUME;
 
   // Mouse hover → highlight transcript row; wheel → scroll.
-  if (t.mouseActive) {
+  if (t.mouse.active) {
     S.lastInputTime = time;
     S.hasInteracted = true;
   }
@@ -753,7 +751,7 @@ function frame(t: CharTerm, time: number, _dt: number, _frameNo: number): void {
 
   // ── Top status / welcome line ──
   const topY = 0;
-  t.fillRect(0, topY, t.cols, 1, BAR_BG);
+  t.fillRect(0, topY, t.columns, 1, BAR_BG);
   // Slowly pulsing sparkle mark (deterministic from time).
   const pulse = 0.62 + 0.38 * (0.5 + 0.5 * Math.sin(time * 2.2));
   const spark: RGB = [
@@ -789,7 +787,7 @@ function frame(t: CharTerm, time: number, _dt: number, _frameNo: number): void {
   const transTop = 2;
   const transBottom = t.rows - inputH - hintH; // exclusive
   const transX = 2;
-  const transW = t.cols - 4;
+  const transW = t.columns - 4;
   const transRows = Math.max(1, transBottom - transTop);
 
   // ── Build transcript blocks for this frame ──
@@ -858,8 +856,8 @@ function frame(t: CharTerm, time: number, _dt: number, _frameNo: number): void {
     ? transTop // fits: welcome card hugs the chrome, content flows down
     : transBottom - stackH + S.scroll; // overflows: bottom-pin, scroll lifts older in
 
-  const hoverRow = (!attract && t.mouseInside && t.mouseY >= transTop && t.mouseY < transBottom)
-    ? t.mouseY
+  const hoverRow = (!attract && t.mouse.inside && t.mouse.y >= transTop && t.mouse.y < transBottom)
+    ? t.mouse.y
     : -1;
 
   for (let i = 0; i < blocks.length; i++) {
@@ -895,7 +893,7 @@ function frame(t: CharTerm, time: number, _dt: number, _frameNo: number): void {
   t.text(transX, hy, attract
     ? 'auto-demo · type to take over · ↑↓/wheel scroll'
     : '↵ send · ⌫ delete · ↑↓ scroll · esc interrupt', FAINT);
-  t.text(t.cols - 12, hy, `[${mode}]`, attract ? CLAY_DIM : GREEN);
+  t.text(t.columns - 12, hy, `[${mode}]`, attract ? CLAY_DIM : GREEN);
 }
 
 // Draw a block but clip its rows to [top,bottom). Since term.put guards bounds we
@@ -971,7 +969,7 @@ function onKey(key: string, t: CharTerm): void {
 let simNow = 0;
 function nowSim(): number { return simNow; }
 
-runTextDemo({
+runText({
   title: 'Claude Code',
   hud: 'TYPE · ↵ SEND · ↑↓ SCROLL',
   captureT: 9,
@@ -986,7 +984,7 @@ runTextDemo({
   resize: (t) => {
     // Preserve live transcript across resize; just refit dimensions.
     if (S) {
-      S.cols = t.cols;
+      S.cols = t.columns;
       S.rows = t.rows;
     } else {
       initState(t);

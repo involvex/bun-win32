@@ -43,7 +43,9 @@
  *
  * Run: bun run packages/all/example/orbits.ts
  */
-import { runDemo, Term, clamp, clamp01, lerp, smoothstep, mulberry32, TAU } from './_term';
+import { run, Term } from '@bun-win32/terminal';
+
+import { clamp, clamp01, lerp, smoothstep, mulberry32, TAU } from './_kit';
 
 // ── Simulation constants (normalized world units; the frame spans ~[-1,1]) ──────
 const MAX_BODIES = 360;      // a dense disk of glowing stars — a real mini-galaxy
@@ -562,7 +564,7 @@ const splatBodyTrail = (W: number, H: number, px: number, py: number, sxp: numbe
 
 // ── Frame ─────────────────────────────────────────────────────────────────────
 const frame = (t: Term, time: number, dt: number, _frameNo: number): void => {
-  const W = t.W, H = t.H, aspect = t.aspect;
+  const W = t.width, H = t.height, aspect = t.aspect;
   if (accW !== W || accH !== H) allocForSize(W, H, aspect);
 
   if (!initialized) {
@@ -582,28 +584,28 @@ const frame = (t: Term, time: number, dt: number, _frameNo: number): void => {
   projSy = sc;
 
   // ── interaction (live only; mouse fields stay quiet in capture/bench) ──
-  const seqChanged = t.mouseSeq !== lastMouseSeq;
-  lastMouseSeq = t.mouseSeq;
-  if (t.mouseActive && (seqChanged || t.mouseDown !== lastDown || t.wheel !== 0)) {
+  const seqChanged = t.mouse.sequence !== lastMouseSeq;
+  lastMouseSeq = t.mouse.sequence;
+  if (t.mouse.active && (seqChanged || t.mouse.down !== lastDown || t.mouse.wheel !== 0)) {
     lastUserT = time;
     attractActive = false;
   }
   // wheel → cycle next placement mass
-  if (t.wheel !== 0) {
-    nextMassIdx = clamp(nextMassIdx + (t.wheel > 0 ? 1 : -1), 0, MASS_STEPS.length - 1) | 0;
-    t.wheel = 0;
+  if (t.mouse.wheel !== 0) {
+    nextMassIdx = clamp(nextMassIdx + (t.mouse.wheel > 0 ? 1 : -1), 0, MASS_STEPS.length - 1) | 0;
+    t.mouse.wheel = 0;
   }
   // press / drag / release slingshot
-  const mwx = screenToWorldX(t.mouseX);
-  const mwy = screenToWorldY(t.mouseY);
-  if (t.mouseActive) {
-    if (t.mouseDown && !lastDown) {
+  const mwx = screenToWorldX(t.mouse.x);
+  const mwy = screenToWorldY(t.mouse.y);
+  if (t.mouse.active) {
+    if (t.mouse.down && !lastDown) {
       dragging = true;
       dragStartX = mwx; dragStartY = mwy;
       dragCurX = mwx; dragCurY = mwy;
-    } else if (t.mouseDown && dragging) {
+    } else if (t.mouse.down && dragging) {
       dragCurX = mwx; dragCurY = mwy;
-    } else if (!t.mouseDown && lastDown && dragging) {
+    } else if (!t.mouse.down && lastDown && dragging) {
       // release → fling: velocity ∝ (start − release) so you pull BACK to launch
       dragging = false;
       const FLING = 0.9;
@@ -612,7 +614,7 @@ const frame = (t: Term, time: number, dt: number, _frameNo: number): void => {
       addBody(dragStartX, dragStartY, vx, vy, MASS_STEPS[nextMassIdx], false);
     }
   }
-  lastDown = t.mouseDown;
+  lastDown = t.mouse.down;
 
   // resume attract after ~3s idle (live), and always in capture/bench (no input)
   if (!attractActive && time - lastUserT > 3.0) attractActive = true;
@@ -704,7 +706,7 @@ const frame = (t: Term, time: number, dt: number, _frameNo: number): void => {
   buildBloom(W, H);
 
   // ── COMPOSITE: trails + starfield + bloom + vignette + ACES → t.buf ──
-  const out = t.buf;
+  const out = t.pixels;
   const EXPOSURE = 1.10;
   // Bloom carries a gentle COOL diffraction skew (less red, more blue) so bright suns
   // radiate an astronomical halo instead of an amber fireball — the cores read as stars.
@@ -734,7 +736,7 @@ const frame = (t: Term, time: number, dt: number, _frameNo: number): void => {
   }
 
   // ── cursor ring (live, not dragging): shows where + what mass you'll place ──
-  if (t.mouseActive && t.mouseInside && !dragging) {
+  if (t.mouse.active && t.mouse.inside && !dragging) {
     drawCursorRing(t);
   }
 };
@@ -793,8 +795,8 @@ const drawGhostTrajectory = (W: number, H: number, _time: number, vx0: number, v
 
 // A thin ring at the cursor sized to the next placement mass (post-tonemap chrome).
 const drawCursorRing = (t: Term): void => {
-  const W = t.W, H = t.H;
-  const cxp = t.mouseX, cyp = t.mouseY;
+  const W = t.width, H = t.height;
+  const cxp = t.mouse.x, cyp = t.mouse.y;
   const m = MASS_STEPS[nextMassIdx];
   const rad = Math.max(2.5, radiusOf(m) * projSx * 1.5);
   const massKey = smoothstep(0.01, 1.2, m);
@@ -888,19 +890,19 @@ const onKey = (key: string, _t: Term): void => {
   }
 };
 
-runDemo({
+run({
   title: 'Orbits',
   hud: 'DRAG TO FLING A STAR - WHEEL MASS - G ATTRACTOR - C CLEAR - R RESEED',
   captureT: 6,
   mouse: true,
   targetFps: 60,
   init: (t) => {
-    allocForSize(t.W, t.H, t.aspect);
+    allocForSize(t.width, t.height, t.aspect);
     initialized = false;
     // Pre-warm: seed the system and develop ~3s of orbital trails before t=0 so the
     // very first displayed/captured frame already shows curved paths, not dots.
-    projCx = t.W * 0.5; projCy = t.H * 0.5;
-    const fit = Math.min(t.W / t.aspect, t.H) * 0.5;
+    projCx = t.width * 0.5; projCy = t.height * 0.5;
+    const fit = Math.min(t.width / t.aspect, t.height) * 0.5;
     const sc = fit / WORLD; projSx = sc * t.aspect; projSy = sc;
     seedAttractSystem();
     initialized = true;
