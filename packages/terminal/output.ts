@@ -17,22 +17,21 @@ const decimalBytes: Uint8Array[] = (() => {
   return table;
 })();
 
-const CURSOR_HOME = stringToBytes('\x1b[H');
-const CONTROL_SEQUENCE_INTRODUCER = stringToBytes('\x1b[');
-const FOREGROUND_TRUECOLOR_PREFIX = stringToBytes('\x1b[38;2;');
-const BACKGROUND_TRUECOLOR_PREFIX = stringToBytes('\x1b[48;2;');
-const TRUECOLOR_JOIN = stringToBytes(';48;2;');
-const FOREGROUND_PALETTE_PREFIX = stringToBytes('\x1b[38;5;');
 const BACKGROUND_PALETTE_PREFIX = stringToBytes('\x1b[48;5;');
-const PALETTE_JOIN = stringToBytes(';48;5;');
-const FOREGROUND_TRUECOLOR_PARAMS = stringToBytes('38;2;'); // no CSI prefix — combined with bold
 const BACKGROUND_TRUECOLOR_PARAMS = stringToBytes('48;2;');
-const BOLD_ON = stringToBytes('1');
+const BACKGROUND_TRUECOLOR_PREFIX = stringToBytes('\x1b[48;2;');
 const BOLD_OFF = stringToBytes('22');
-
-const SEMICOLON = 0x3b; // ;
+const BOLD_ON = stringToBytes('1');
+const CONTROL_SEQUENCE_INTRODUCER = stringToBytes('\x1b[');
+const CURSOR_HOME = stringToBytes('\x1b[H');
+const FOREGROUND_PALETTE_PREFIX = stringToBytes('\x1b[38;5;');
+const FOREGROUND_TRUECOLOR_PARAMS = stringToBytes('38;2;'); // no CSI prefix — combined with bold
+const FOREGROUND_TRUECOLOR_PREFIX = stringToBytes('\x1b[38;2;');
 const LETTER_H = 0x48; // H
 const LETTER_M = 0x6d; // m
+const PALETTE_JOIN = stringToBytes(';48;5;');
+const SEMICOLON = 0x3b; // ;
+const TRUECOLOR_JOIN = stringToBytes(';48;2;');
 
 export class OutputBuffer {
   #bytes = new Uint8Array(1 << 18);

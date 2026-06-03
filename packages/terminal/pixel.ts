@@ -1,11 +1,11 @@
 import { channelDelta, quantizeTo16, quantizeTo256 } from './color';
 import { PIXEL_FONT_HEIGHT, PIXEL_FONT_WIDTH, pixelFont } from './font5x7';
 import {
+  MODE_DIMENSIONS,
   asciiRampBytes,
   brailleBitLayout,
   brailleGlyphs,
   halfBlockGlyph,
-  MODE_DIMENSIONS,
   quadrantBitLayout,
   quadrantGlyphs,
   sextantBitLayout,
@@ -17,15 +17,15 @@ import { standardOutput } from './stdout';
 import type { TermDepth, TermDiff, TermMode, TermOptions } from './types';
 
 const ASCII_RAMP_LAST = asciiRampBytes.length - 1;
-const SUBPIXEL_CAPACITY = 8; // braille's 2×4 is the largest cell
 const SOLID_LUMA_SPAN = 6 * 1000; // luma span below which a multi-mode cell is treated as solid
+const SUBPIXEL_CAPACITY = 8; // braille's 2×4 is the largest cell
 
 // Per-cell sub-pixel scratch. buildFrame is synchronous and non-reentrant, so
 // module-level scratch is alloc-free and safe to share across surfaces.
-const subpixelRed = new Uint8Array(SUBPIXEL_CAPACITY);
-const subpixelGreen = new Uint8Array(SUBPIXEL_CAPACITY);
 const subpixelBlue = new Uint8Array(SUBPIXEL_CAPACITY);
+const subpixelGreen = new Uint8Array(SUBPIXEL_CAPACITY);
 const subpixelLuma = new Int32Array(SUBPIXEL_CAPACITY);
+const subpixelRed = new Uint8Array(SUBPIXEL_CAPACITY);
 
 /**
  * A 24-bit RGB framebuffer rendered to the terminal as Unicode block glyphs. The

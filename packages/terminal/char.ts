@@ -411,22 +411,27 @@ export class CharTerm {
         drawHalfBarUp(1);
         return;
       case 0x251c: // ├
+      case 0x2560: // ╠
         drawVerticalBar(1);
         drawHalfBarRight(1);
         return;
       case 0x2524: // ┤
+      case 0x2563: // ╣
         drawVerticalBar(1);
         drawHalfBarLeft(1);
         return;
       case 0x252c: // ┬
+      case 0x2566: // ╦
         drawHorizontalBar(1);
         drawHalfBarDown(1);
         return;
       case 0x2534: // ┴
+      case 0x2569: // ╩
         drawHorizontalBar(1);
         drawHalfBarUp(1);
         return;
       case 0x253c: // ┼
+      case 0x256c: // ╬
         drawHorizontalBar(1);
         drawVerticalBar(1);
         return;
