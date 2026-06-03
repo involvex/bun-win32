@@ -49,6 +49,29 @@ const decode = (output: OutputBuffer): string => Buffer.from(output.view()).toSt
 }
 
 {
+  const glyph = new Uint8Array([0xe2, 0x96, 0x80]); // ▀
+  const output = new OutputBuffer();
+  output.emitCellTruecolor(0xff0000, 0x0000ff, glyph);
+  assert('emitCellTruecolor = escape + glyph', decode(output) === '\x1b[38;2;255;0;0;48;2;0;0;255m\xe2\x96\x80', decode(output));
+}
+
+{
+  const glyph = new Uint8Array([0xe2, 0x96, 0x80]);
+  const output = new OutputBuffer();
+  output.emitCellTruecolor(0x112233, 0x445566, glyph);
+  output.reset();
+  output.emitCellTruecolor(0x112233, 0x445566, glyph);
+  assert('emitCellTruecolor skips escape but keeps glyph when pen unchanged', decode(output) === '\xe2\x96\x80', decode(output));
+}
+
+{
+  const glyph = new Uint8Array([0xe2, 0x96, 0x80]);
+  const output = new OutputBuffer();
+  output.emitCellPalette(196, 16, glyph);
+  assert('emitCellPalette = escape + glyph', decode(output) === '\x1b[38;5;196;48;5;16m\xe2\x96\x80', decode(output));
+}
+
+{
   const output = new OutputBuffer();
   output.setPaletteColor(196, 16);
   assert('combined palette', decode(output) === '\x1b[38;5;196;48;5;16m', decode(output));

@@ -8,7 +8,7 @@
 import { Term } from './pixel';
 import type { TermDepth, TermDiff, TermMode } from './types';
 
-const GOLDEN_HASH = '4a6e2109';
+const GOLDEN_HASH: string = '4a6e2109';
 
 // FNV-1a over the concatenated wire bytes of every frame of every config.
 const fnvOffset = 0x811c9dc5;

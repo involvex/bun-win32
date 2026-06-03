@@ -30,3 +30,65 @@ mode × diff × depth × content matrix). Speed may move; emitted bytes may not.
 | quad / truecolor / exact — VIDEO | 1394 |
 
 ---
+
+## Round 1 — single-reservation `setTruecolor` · KEEP
+
+**Hypothesis.** On the churn path the per-cell escape fanned out into ~12
+`putBytes`/`putDecimal`/`putByte` calls, each re-checking capacity and re-reading
+`#position`. Collapsing to one `#ensureCapacity` for the worst-case escape (36 B)
+plus direct writes through a local cursor should cut that overhead.
+
+**Change.** `output.ts` — rewrote `setTruecolor` to reserve once, then inline-copy
+the named byte-constants and the decimal LUT through a local `position`. Output
+bytes unchanged.
+
+**Result.**
+
+| scenario | before | after | Δ |
+| --- | ---: | ---: | ---: |
+| half / tc / exact — VIDEO | 1975 | 2426 | **+23%** |
+| half / tc / threshold — VIDEO | 4965 | 5523 | +11% |
+| sextant / tc / exact — VIDEO | 1185 | 1335 | +13% |
+| quad / tc / exact — VIDEO | 1394 | 1625 | +17% |
+
+STATIC and palette paths flat (they don't call `setTruecolor`). Golden green.
+
+## Round 2 — single-reservation `setPaletteColor` · KEEP (neutral)
+
+**Hypothesis.** The same treatment should help the `256`/`16` churn paths.
+
+**Change.** `output.ts` — same rewrite for `setPaletteColor`.
+
+**Result.** Flat (15356 / 2616). Palette churn is bound by per-cell *analysis*
+(quantisation + luma split), and the run-length pen already suppresses most escapes
+when neighbouring cells share a quantised colour — so escape-emission was never the
+bottleneck here. Byte-identical and removes the same call overhead, so kept for
+consistency; no measurable win claimed.
+
+## Round 3 — fused per-cell colour+glyph primitive · KEEP
+
+**Hypothesis.** Each emitted cell still paid *two* capacity checks: one in the
+colour call, one in `putBytes(glyph)`. Fusing colour-escape and glyph into a single
+reservation removes a check and a call frame per cell.
+
+**Change.** `output.ts` — extracted `#writeTruecolorEscape` / `#writePaletteEscape`
+(shared with the setters, so no duplication) and added `emitCellTruecolor` /
+`emitCellPalette`, which reserve `escape+glyph` once and write both. `pixel.ts` —
+routed all four emit paths (half-fast, half-general, multi, ascii) through them and
+deleted the now-dead `#emitColor`. Output bytes unchanged; two public methods added
+(covered in `output.test.ts`).
+
+**Result.**
+
+| scenario | R1/R2 | after | Δ vs baseline |
+| --- | ---: | ---: | ---: |
+| half / tc / exact — VIDEO | 2426 | 2653 | **+34%** |
+| quad / tc / exact — VIDEO | 1625 | 1740 | **+25%** |
+| sextant / tc / exact — VIDEO | 1335 | 1426 | **+20%** |
+| half / tc / threshold — VIDEO | 5523 | 5534 | +11% |
+| half / 16 / exact — VIDEO | 15356 | 15474 | +4% |
+| sextant / 16 / exact — VIDEO | 2616 | 2760 | +3% |
+
+STATIC flat (skip path emits nothing). Golden green; full suite green.
+
+---

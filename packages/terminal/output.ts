@@ -131,33 +131,75 @@ export class OutputBuffer {
     const needForeground = foreground !== this.#penForeground;
     const needBackground = background !== this.#penBackground;
     if (!needForeground && !needBackground) return;
-    if (needForeground) {
-      this.putBytes(FOREGROUND_TRUECOLOR_PREFIX);
-      this.putDecimal((foreground >> 16) & 0xff);
-      this.putByte(SEMICOLON);
-      this.putDecimal((foreground >> 8) & 0xff);
-      this.putByte(SEMICOLON);
-      this.putDecimal(foreground & 0xff);
-      if (needBackground) {
-        this.putBytes(TRUECOLOR_JOIN);
-        this.putDecimal((background >> 16) & 0xff);
-        this.putByte(SEMICOLON);
-        this.putDecimal((background >> 8) & 0xff);
-        this.putByte(SEMICOLON);
-        this.putDecimal(background & 0xff);
-      }
-      this.putByte(LETTER_M);
-    } else {
-      this.putBytes(BACKGROUND_TRUECOLOR_PREFIX);
-      this.putDecimal((background >> 16) & 0xff);
-      this.putByte(SEMICOLON);
-      this.putDecimal((background >> 8) & 0xff);
-      this.putByte(SEMICOLON);
-      this.putDecimal(background & 0xff);
-      this.putByte(LETTER_M);
-    }
+    // One capacity check for the whole escape (worst case `…38;2;R;G;B;48;2;R;G;Bm`
+    // = 36 bytes), then write through a local cursor — no per-token call overhead.
+    this.#ensureCapacity(0x28);
+    this.#position = this.#writeTruecolorEscape(this.#bytes, this.#position, foreground, background, needForeground, needBackground);
     this.#penForeground = foreground;
     this.#penBackground = background;
+  }
+
+  /**
+   * Fused per-cell primitive for the hot truecolour paths: emit the minimal
+   * colour escape (if the pen moved) and append `glyph`, under one capacity
+   * reservation. Equivalent to `setTruecolor` then `putBytes(glyph)`, but with a
+   * single bounds check and no intermediate call overhead.
+   */
+  emitCellTruecolor(foreground: number, background: number, glyph: Uint8Array): void {
+    const needForeground = foreground !== this.#penForeground;
+    const needBackground = background !== this.#penBackground;
+    this.#ensureCapacity(0x28 + glyph.length);
+    const target = this.#bytes;
+    let position = this.#position;
+    if (needForeground || needBackground) {
+      position = this.#writeTruecolorEscape(target, position, foreground, background, needForeground, needBackground);
+      this.#penForeground = foreground;
+      this.#penBackground = background;
+    }
+    for (let index = 0; index < glyph.length; index++) target[position++] = glyph[index];
+    this.#position = position;
+  }
+
+  // Write the minimal truecolour SGR into `target` at `start`, returning the new
+  // position. Capacity is the caller's responsibility. At least one of the two
+  // `need*` flags is always true here.
+  #writeTruecolorEscape(target: Uint8Array, start: number, foreground: number, background: number, needForeground: boolean, needBackground: boolean): number {
+    let position = start;
+    if (needForeground) {
+      for (let index = 0; index < FOREGROUND_TRUECOLOR_PREFIX.length; index++) target[position++] = FOREGROUND_TRUECOLOR_PREFIX[index];
+      let component = decimalBytes[(foreground >> 16) & 0xff];
+      for (let index = 0; index < component.length; index++) target[position++] = component[index];
+      target[position++] = SEMICOLON;
+      component = decimalBytes[(foreground >> 8) & 0xff];
+      for (let index = 0; index < component.length; index++) target[position++] = component[index];
+      target[position++] = SEMICOLON;
+      component = decimalBytes[foreground & 0xff];
+      for (let index = 0; index < component.length; index++) target[position++] = component[index];
+      if (needBackground) {
+        for (let index = 0; index < TRUECOLOR_JOIN.length; index++) target[position++] = TRUECOLOR_JOIN[index];
+        component = decimalBytes[(background >> 16) & 0xff];
+        for (let index = 0; index < component.length; index++) target[position++] = component[index];
+        target[position++] = SEMICOLON;
+        component = decimalBytes[(background >> 8) & 0xff];
+        for (let index = 0; index < component.length; index++) target[position++] = component[index];
+        target[position++] = SEMICOLON;
+        component = decimalBytes[background & 0xff];
+        for (let index = 0; index < component.length; index++) target[position++] = component[index];
+      }
+      target[position++] = LETTER_M;
+    } else {
+      for (let index = 0; index < BACKGROUND_TRUECOLOR_PREFIX.length; index++) target[position++] = BACKGROUND_TRUECOLOR_PREFIX[index];
+      let component = decimalBytes[(background >> 16) & 0xff];
+      for (let index = 0; index < component.length; index++) target[position++] = component[index];
+      target[position++] = SEMICOLON;
+      component = decimalBytes[(background >> 8) & 0xff];
+      for (let index = 0; index < component.length; index++) target[position++] = component[index];
+      target[position++] = SEMICOLON;
+      component = decimalBytes[background & 0xff];
+      for (let index = 0; index < component.length; index++) target[position++] = component[index];
+      target[position++] = LETTER_M;
+    }
+    return position;
   }
 
   /** Set the palette pen to `foreground`/`background` indices (256- or 16-colour), emitting the minimal SGR. */
@@ -165,21 +207,51 @@ export class OutputBuffer {
     const needForeground = foreground !== this.#penForeground;
     const needBackground = background !== this.#penBackground;
     if (!needForeground && !needBackground) return;
-    if (needForeground) {
-      this.putBytes(FOREGROUND_PALETTE_PREFIX);
-      this.putDecimal(foreground);
-      if (needBackground) {
-        this.putBytes(PALETTE_JOIN);
-        this.putDecimal(background);
-      }
-      this.putByte(LETTER_M);
-    } else {
-      this.putBytes(BACKGROUND_PALETTE_PREFIX);
-      this.putDecimal(background);
-      this.putByte(LETTER_M);
-    }
+    // One capacity check for the whole escape (worst case `…38;5;255;48;5;255m` =
+    // 19 bytes), then write through a local cursor — no per-token call overhead.
+    this.#ensureCapacity(0x14);
+    this.#position = this.#writePaletteEscape(this.#bytes, this.#position, foreground, background, needForeground, needBackground);
     this.#penForeground = foreground;
     this.#penBackground = background;
+  }
+
+  /** Fused per-cell palette primitive: minimal escape (if the pen moved) then `glyph`, under one reservation. The palette twin of {@link emitCellTruecolor}. */
+  emitCellPalette(foreground: number, background: number, glyph: Uint8Array): void {
+    const needForeground = foreground !== this.#penForeground;
+    const needBackground = background !== this.#penBackground;
+    this.#ensureCapacity(0x14 + glyph.length);
+    const target = this.#bytes;
+    let position = this.#position;
+    if (needForeground || needBackground) {
+      position = this.#writePaletteEscape(target, position, foreground, background, needForeground, needBackground);
+      this.#penForeground = foreground;
+      this.#penBackground = background;
+    }
+    for (let index = 0; index < glyph.length; index++) target[position++] = glyph[index];
+    this.#position = position;
+  }
+
+  // Write the minimal palette SGR into `target` at `start`, returning the new
+  // position. Capacity is the caller's responsibility; at least one `need*` is set.
+  #writePaletteEscape(target: Uint8Array, start: number, foreground: number, background: number, needForeground: boolean, needBackground: boolean): number {
+    let position = start;
+    if (needForeground) {
+      for (let index = 0; index < FOREGROUND_PALETTE_PREFIX.length; index++) target[position++] = FOREGROUND_PALETTE_PREFIX[index];
+      let component = decimalBytes[foreground];
+      for (let index = 0; index < component.length; index++) target[position++] = component[index];
+      if (needBackground) {
+        for (let index = 0; index < PALETTE_JOIN.length; index++) target[position++] = PALETTE_JOIN[index];
+        component = decimalBytes[background];
+        for (let index = 0; index < component.length; index++) target[position++] = component[index];
+      }
+      target[position++] = LETTER_M;
+    } else {
+      for (let index = 0; index < BACKGROUND_PALETTE_PREFIX.length; index++) target[position++] = BACKGROUND_PALETTE_PREFIX[index];
+      const component = decimalBytes[background];
+      for (let index = 0; index < component.length; index++) target[position++] = component[index];
+      target[position++] = LETTER_M;
+    }
+    return position;
   }
 
   /** Append a single Unicode code point as UTF-8 (1..4 bytes). */

@@ -408,11 +408,6 @@ export class Term {
     return encodePNG(this.pixels, this.width, this.height);
   }
 
-  #emitColor(isTruecolor: boolean, foreground: number, background: number): void {
-    if (isTruecolor) this.#output.setTruecolor(foreground, background);
-    else this.#output.setPaletteColor(foreground, background);
-  }
-
   // Colour-ASCII: average each cell's 1×2 sub-pixels, pick a glyph from the
   // luminance ramp, and tint it with the average colour over a black background.
   #emitAscii(): void {
@@ -466,8 +461,8 @@ export class Term {
           currentRow = row;
           currentColumn = column;
         }
-        this.#emitColor(isTruecolor, emittedForeground, blackBackground);
-        output.putBytes(asciiRampBytes[rampIndex]);
+        if (isTruecolor) output.emitCellTruecolor(emittedForeground, blackBackground, asciiRampBytes[rampIndex]);
+        else output.emitCellPalette(emittedForeground, blackBackground, asciiRampBytes[rampIndex]);
         currentColumn++;
         if (currentColumn >= columns) currentRow = -1;
       }
@@ -507,8 +502,7 @@ export class Term {
           currentRow = row;
           currentColumn = column;
         }
-        output.setTruecolor(foregroundKey, backgroundKey);
-        output.putBytes(halfBlockGlyph);
+        output.emitCellTruecolor(foregroundKey, backgroundKey, halfBlockGlyph);
         currentColumn++;
         if (currentColumn >= columns) currentRow = -1;
       }
@@ -577,8 +571,8 @@ export class Term {
           currentRow = row;
           currentColumn = column;
         }
-        this.#emitColor(isTruecolor, emittedForeground, emittedBackground);
-        output.putBytes(halfBlockGlyph);
+        if (isTruecolor) output.emitCellTruecolor(emittedForeground, emittedBackground, halfBlockGlyph);
+        else output.emitCellPalette(emittedForeground, emittedBackground, halfBlockGlyph);
         currentColumn++;
         if (currentColumn >= columns) currentRow = -1;
       }
@@ -720,8 +714,8 @@ export class Term {
           currentRow = row;
           currentColumn = column;
         }
-        this.#emitColor(isTruecolor, emittedForeground, emittedBackground);
-        output.putBytes(glyphTable[glyphMask]);
+        if (isTruecolor) output.emitCellTruecolor(emittedForeground, emittedBackground, glyphTable[glyphMask]);
+        else output.emitCellPalette(emittedForeground, emittedBackground, glyphTable[glyphMask]);
         currentColumn++;
         if (currentColumn >= columns) currentRow = -1;
       }
