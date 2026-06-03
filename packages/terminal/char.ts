@@ -3,8 +3,8 @@ import type { BoxStyle } from './boxdrawing';
 import { CHAR_FONT_HEIGHT, CHAR_FONT_WIDTH, charFont } from './font6x10';
 import { OutputBuffer } from './output';
 import { encodePNG } from './png';
-import { standardOutput } from './stdout';
-import type { MouseState, RGB } from './types';
+import { SYNCHRONIZED_OUTPUT_BEGIN, SYNCHRONIZED_OUTPUT_END, standardOutput } from './stdout';
+import type { MouseState, PresentOptions, RGB } from './types';
 
 const SPACE_CODE_POINT = 0x20;
 const DEFAULT_FOREGROUND = 0xc8c8d0;
@@ -246,10 +246,21 @@ export class CharTerm {
     return this.#output.view();
   }
 
-  /** Build and flush the frame to the terminal in one write. */
-  present(): void {
+  /** Build and flush the frame. Writes to the terminal by default; `options.sink` redirects it, `options.sync` swaps it atomically. */
+  present(options?: PresentOptions): void {
     this.buildFrame();
-    standardOutput.write(this.#output.view());
+    const bytes = this.#output.view();
+    if (options?.sink) {
+      options.sink(bytes);
+      return;
+    }
+    if (options?.sync) {
+      standardOutput.write(SYNCHRONIZED_OUTPUT_BEGIN);
+      standardOutput.write(bytes);
+      standardOutput.write(SYNCHRONIZED_OUTPUT_END);
+    } else {
+      standardOutput.write(bytes);
+    }
     standardOutput.flush();
   }
 

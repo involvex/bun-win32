@@ -13,8 +13,8 @@ import {
 } from './glyphs';
 import { OutputBuffer } from './output';
 import { encodePNG } from './png';
-import { standardOutput } from './stdout';
-import type { MouseState, TermDepth, TermDiff, TermMode, TermOptions } from './types';
+import { SYNCHRONIZED_OUTPUT_BEGIN, SYNCHRONIZED_OUTPUT_END, standardOutput } from './stdout';
+import type { MouseState, PresentOptions, TermDepth, TermDiff, TermMode, TermOptions } from './types';
 
 const { abs, max, min } = Math;
 const ASCII_RAMP_LAST = asciiRampBytes.length - 1;
@@ -376,10 +376,21 @@ export class Term {
     return this.#output.view();
   }
 
-  /** Build and flush the frame to the terminal in one write. */
-  present(): void {
+  /** Build and flush the frame. Writes to the terminal by default; `options.sink` redirects it, `options.sync` swaps it atomically. */
+  present(options?: PresentOptions): void {
     this.buildFrame();
-    standardOutput.write(this.#output.view());
+    const bytes = this.#output.view();
+    if (options?.sink) {
+      options.sink(bytes);
+      return;
+    }
+    if (options?.sync) {
+      standardOutput.write(SYNCHRONIZED_OUTPUT_BEGIN);
+      standardOutput.write(bytes);
+      standardOutput.write(SYNCHRONIZED_OUTPUT_END);
+    } else {
+      standardOutput.write(bytes);
+    }
     standardOutput.flush();
   }
 

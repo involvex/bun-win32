@@ -37,6 +37,8 @@ export interface AppSpec {
   quitOnQ?: boolean;
   /** Called when the terminal is resized, with a fresh surface; falls back to `init`. */
   resize?: (surface: Term) => void | Promise<void>;
+  /** Wrap each frame in DEC synchronized output (mode 2026) for tear-free updates. */
+  sync?: boolean;
   /** Live frame-rate cap (0 = uncapped). */
   targetFps?: number;
   /** Per-channel drift tolerance for `diff: 'threshold'` (env `TERM_THRESHOLD` overrides). */
@@ -232,7 +234,7 @@ const runLive = async (spec: AppSpec, options: TermOptions): Promise<void> => {
 
       spec.frame(surface, simulationTime, paused ? 0 : deltaTime, frame);
       if (spec.drawHud !== false) drawHud(surface, spec, fpsAverage, deltaTime * 1000, paused ? `${spec.hud ?? ''}  [PAUSED]` : spec.hud);
-      surface.present();
+      surface.present({ sync: spec.sync });
       frame++;
 
       if (durationMilliseconds > 0 && (now - startNanoseconds) / 1e6 >= durationMilliseconds) break;
@@ -284,6 +286,8 @@ export interface TextAppSpec {
   onKey?: (key: string, surface: CharTerm) => void;
   /** Called when the terminal is resized, with a fresh surface; falls back to `init`. */
   resize?: (surface: CharTerm) => void | Promise<void>;
+  /** Wrap each frame in DEC synchronized output (mode 2026) for tear-free updates. */
+  sync?: boolean;
   /** Live frame-rate cap (default 60; 0 = uncapped). */
   targetFps?: number;
   /** App title — set as the console window title. */
@@ -455,7 +459,7 @@ const runTextLive = async (spec: TextAppSpec): Promise<void> => {
 
       spec.frame(surface, simulationTime, deltaTime, frame);
       if (spec.drawFps !== false) drawFps(surface, fpsAverage, spec.hud);
-      surface.present();
+      surface.present({ sync: spec.sync });
       frame++;
 
       if (durationMilliseconds > 0 && (now - startNanoseconds) / 1e6 >= durationMilliseconds) break;

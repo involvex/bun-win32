@@ -1,5 +1,7 @@
 export { BLOCK, BOX } from './boxdrawing';
 export type { BoxStyle } from './boxdrawing';
+export { CAPABILITIES, detectCapabilities } from './capabilities';
+export type { DetectedCapabilities } from './capabilities';
 export { CharTerm } from './char';
 export { ConsoleSession, detectConsoleSize } from './console';
 export type { ConsoleSessionOptions } from './console';
@@ -10,4 +12,4 @@ export type { AppSpec, TextAppSpec } from './loop';
 export { createFrameWaiter } from './pacing';
 export { Term } from './pixel';
 export { encodePNG } from './png';
-export type { MouseState, RGB, TermDepth, TermDiff, TermMode, TermOptions } from './types';
+export type { MouseState, PresentOptions, RGB, TermDepth, TermDiff, TermMode, TermOptions } from './types';

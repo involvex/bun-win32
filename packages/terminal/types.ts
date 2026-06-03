@@ -34,3 +34,11 @@ export interface TermOptions {
   /** With `diff: 'threshold'`, the maximum per-channel drift (0..255) a cell may accumulate before it is repainted. */
   threshold?: number;
 }
+
+/** Options for `Term.present()` / `CharTerm.present()`. */
+export interface PresentOptions {
+  /** Write the diffed frame bytes to a custom sink instead of stdout (recording, sockets, remote rendering). */
+  sink?: (bytes: Uint8Array) => void;
+  /** Wrap the frame in DEC synchronized output (mode 2026) so it swaps atomically. Ignored by terminals that lack it. */
+  sync?: boolean;
+}
