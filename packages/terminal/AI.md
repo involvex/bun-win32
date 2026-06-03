@@ -94,5 +94,5 @@ Env knobs: `TERM_MODE/TERM_DIFF/TERM_DEPTH/TERM_THRESHOLD`, `TERM_COLS/TERM_ROWS
 
 - Windows only (Bun + Win32 console via `@bun-win32/kernel32`).
 - `Term` mouse coordinates are pixels; `CharTerm`'s are cells.
-- `run` defaults to uncapped fps; `runText` defaults to 60.
+- `run` / `runText` default to uncapped fps (`targetFps: Infinity`); set a finite `targetFps` to pace.
 - The console is restored on exit/crash; ESC and Ctrl-C always quit a live loop.

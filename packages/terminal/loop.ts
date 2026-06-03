@@ -43,7 +43,7 @@ export interface AppSpec {
   resize?: (surface: Term) => void | Promise<void>;
   /** Wrap each frame in DEC synchronized output (mode 2026) for tear-free updates. */
   sync?: boolean;
-  /** Live frame-rate cap (0 = uncapped). */
+  /** Frames/sec cap. `Infinity` (the default) or omitting it runs uncapped; a finite value paces with a high-resolution timer. */
   targetFps?: number;
   /** Per-channel drift tolerance for `diff: 'threshold'` (env `TERM_THRESHOLD` overrides). */
   threshold?: number;
@@ -197,8 +197,10 @@ const runLive = async (spec: AppSpec, options: TermOptions): Promise<void> => {
     },
   });
 
-  const frameWaiter = (spec.targetFps ?? 0) > 0 ? createFrameWaiter() : null;
-  const minimumFrameMilliseconds = (spec.targetFps ?? 0) > 0 ? 1000 / (spec.targetFps ?? 0) : 0;
+  const targetFps = spec.targetFps ?? Infinity;
+  const capped = targetFps > 0 && targetFps !== Infinity;
+  const frameWaiter = capped ? createFrameWaiter() : null;
+  const minimumFrameMilliseconds = capped ? 1000 / targetFps : 0;
   const durationMilliseconds = readEnvNumber('DEMO_DURATION_MS', 0);
 
   let cleaned = false;
@@ -300,7 +302,7 @@ export interface TextAppSpec {
   resize?: (surface: CharTerm) => void | Promise<void>;
   /** Wrap each frame in DEC synchronized output (mode 2026) for tear-free updates. */
   sync?: boolean;
-  /** Live frame-rate cap (default 60; 0 = uncapped). */
+  /** Frames/sec cap. `Infinity` (the default) or omitting it runs uncapped; a finite value paces with a high-resolution timer. */
   targetFps?: number;
   /** App title — set as the console window title. */
   title: string;
@@ -427,9 +429,10 @@ const runTextLive = async (spec: TextAppSpec): Promise<void> => {
     },
   });
 
-  const frameWaiter = createFrameWaiter();
-  const targetFps = spec.targetFps ?? 60;
-  const minimumFrameMilliseconds = targetFps > 0 ? 1000 / targetFps : 0;
+  const targetFps = spec.targetFps ?? Infinity;
+  const capped = targetFps > 0 && targetFps !== Infinity;
+  const frameWaiter = capped ? createFrameWaiter() : null;
+  const minimumFrameMilliseconds = capped ? 1000 / targetFps : 0;
   const durationMilliseconds = readEnvNumber('DEMO_DURATION_MS', 0);
 
   let cleaned = false;

@@ -272,7 +272,7 @@ run({
   title: 'COMMAND CENTER',
   hud: '',
   mouse: true,
-  targetFps: 0, // uncapped
+  targetFps: Infinity,
   drawHud: false,
   captureT: 6,
   quitOnQ: true,

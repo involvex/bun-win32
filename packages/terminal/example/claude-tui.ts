@@ -976,7 +976,7 @@ runText({
   // Uncapped by default so the top-right readout shows the engine's true ceiling
   // (~10k+ fps); set TERM_FPS=<n> to throttle it back (e.g. TERM_FPS=120 for a
   // calm interactive cap, TERM_FPS=60 for the old behaviour).
-  targetFps: Number(process.env.TERM_FPS) || 0,
+  targetFps: Number(process.env.TERM_FPS) || Infinity,
   mouse: true,
   init: (t) => {
     initState(t);

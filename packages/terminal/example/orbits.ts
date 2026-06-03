@@ -895,7 +895,7 @@ run({
   hud: 'DRAG TO FLING A STAR - WHEEL MASS - G ATTRACTOR - C CLEAR - R RESEED',
   captureT: 6,
   mouse: true,
-  targetFps: 0, // uncapped
+  targetFps: Infinity,
   init: (t) => {
     allocForSize(t.width, t.height, t.aspect);
     initialized = false;

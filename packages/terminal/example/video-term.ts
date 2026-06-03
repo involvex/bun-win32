@@ -65,7 +65,7 @@ let curThr = 8;
 // sim-time clock. Decode runs ~10× realtime, so the queue stays full; when it
 // fills (display paused or behind) the reader stops draining the pipe and ffmpeg
 // blocks — that backpressure is what makes pause a TRUE pause instead of buffering
-// the whole clip in RAM. The render loop is left UNCAPPED (targetFps 0) so the
+// the whole clip in RAM. The render loop is left UNCAPPED (targetFps Infinity) so the
 // async reader runs on every event-loop turn and never starves: a blocking frame
 // wait would freeze the reader for ~16ms and the OS pipe can only buffer ~64KB in
 // that window, which would underrun the queue and stutter. Smoothness instead
@@ -170,7 +170,7 @@ await run({
   title: `VIDEO ${fileName}`,
   hud: 'M mode · D diff · C depth · SPACE pause · ESC quit',
   captureT: 2,
-  targetFps: 0, // uncapped (see the LIVE note above for why the loop is not capped)
+  targetFps: Infinity, // see the LIVE note above
   drawHud: true,
   init: async (t: Term) => {
     // Sync the live-option state to however the Term was configured (env / defaults).

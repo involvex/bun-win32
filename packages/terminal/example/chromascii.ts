@@ -385,7 +385,7 @@ runText({
   title: 'chromascii — colour ASCII 3D renderer',
   hud: 'DRAG ORBIT · WHEEL ZOOM · n SHAPE · [ ] RAMP · p PALETTE · e INK',
   captureT: 5,
-  targetFps: 0, // uncapped
+  targetFps: Infinity,
   mouse: true,
   init: (t: CharTerm) => {
     scene = buildScene(t);

@@ -1105,7 +1105,7 @@ runText({
   title: 'TermOS — Desktop',
   hud: 'DRAG TITLE · CLICK FOCUS · TYPE IN NOTEPAD · DOCK LAUNCH',
   captureT: 9,
-  targetFps: 0, // uncapped
+  targetFps: Infinity,
   mouse: true,
   init,
   resize: init,

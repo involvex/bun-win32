@@ -861,7 +861,7 @@ run({
   title: 'Glyphstorm',
   hud: 'TYPE TO FORM WORDS - ENTER BURST - BACKSPACE DISSOLVE - DRAG TO STIR',
   captureT: 5,
-  targetFps: 0, // uncapped
+  targetFps: Infinity,
   mouse: true,
   pauseOnSpace: false,
   init: (t) => {
