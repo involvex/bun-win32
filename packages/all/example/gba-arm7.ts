@@ -140,6 +140,18 @@ export class Arm7 {
     this.cpsr = (this.cpsr & ~0x1f) | newMode;
   }
 
+  /** Redirect execution (used by HLE SoftReset); suppresses the post-SWI advance. */
+  forceBranch(addr: number): void {
+    this.r[15] = (addr & (this.thumb ? ~1 : ~3)) | 0;
+    this.branched = true;
+  }
+
+  /** Initialise the banked stack pointer for a mode (used to set up IRQ/SVC stacks). */
+  setBankedSp(mode: number, value: number): void {
+    if ((this.cpsr & 0x1f) === mode) this.r[13] = value | 0;
+    else this.bankR13[bankIndex(mode)] = value | 0;
+  }
+
   /** Write CPSR, switching the register bank if the mode field changed. */
   private setCpsr(v: number): void {
     const newMode = v & 0x1f;
@@ -233,7 +245,9 @@ export class Arm7 {
   /** Enter the IRQ exception (called by the system when an unmasked IRQ is pending). */
   irq(): void {
     if ((this.cpsr & F_I) !== 0) return; // IRQs disabled
-    const ret = (this.r[15] + (this.thumb ? 2 : 4)) | 0; // address to return to
+    // r[15] already points at the next instruction; the BIOS handler returns via
+    // SUBS pc,lr,#4, so the saved LR must be next-instruction + 4 (both states).
+    const ret = (this.r[15] + 4) | 0;
     const savedCpsr = this.cpsr;
     this.switchMode(MODE_IRQ);
     this.spsr = savedCpsr;
@@ -602,10 +616,10 @@ export class Arm7 {
       }
       case 0b001: return this.thumbImm(op); // format 3
       case 0b010: {
-        if ((op & 0x1c00) === 0x1000) return this.thumbAlu(op); // format 4 (010000)
-        if ((op & 0x1c00) === 0x1400) return this.thumbHiReg(op); // format 5 (010001)
-        if ((op & 0x1800) === 0x1800) return this.thumbPcLoad(op); // format 6 (01001)
-        return this.thumbRegOffset(op); // formats 7/8 (0101)
+        if (op & 0x1000) return this.thumbRegOffset(op); // formats 7/8 (0101): bit12 set
+        if (op & 0x0800) return this.thumbPcLoad(op); // format 6 (01001): bit11 set
+        if (op & 0x0400) return this.thumbHiReg(op); // format 5 (010001): bit10 set
+        return this.thumbAlu(op); // format 4 (010000)
       }
       case 0b011: return this.thumbImmOffset(op); // format 9
       case 0b100: {

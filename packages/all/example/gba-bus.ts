@@ -9,6 +9,13 @@
  * IWRAM, IO, palette, VRAM, OAM, ROM, save) with their mirroring.
  */
 import { Arm7 } from './gba-arm7';
+import { GbaPpu } from './gba-ppu';
+
+/** GBA joypad state (true = pressed). */
+export interface GbaButtons {
+  a: boolean; b: boolean; select: boolean; start: boolean;
+  right: boolean; left: boolean; up: boolean; down: boolean; r: boolean; l: boolean;
+}
 
 // IRQ bit positions (IE/IF).
 export const IRQ_VBLANK = 0;
@@ -34,8 +41,18 @@ export class Gba {
   rom: Uint8Array = new Uint8Array(0);
   readonly sram = new Uint8Array(0x20000); // 128 KiB (Flash 1 Mbit, e.g. FireRed)
 
+  // Flash command state machine (FireRed uses a 1 Mbit / 128 KiB flash, 2 banks).
+  private flashBank = 0;
+  private flashId = false;
+  private flashSeq = 0;
+  private flashWriteArm = false;
+  private flashBankArm = false;
+
   // Keypad: 10 bits, active-low (1 = released). Bit order: A B Sel Sta R L U D R L.
   keyinput = 0x3ff;
+
+  // Optional debug write tap (addr, value, byteWidth). Used by trace tooling only.
+  onWrite: ((addr: number, value: number, width: number) => void) | null = null;
 
   // DMA channel state (latched on enable).
   private readonly dmaSrc = new Uint32Array(4);
@@ -52,9 +69,25 @@ export class Gba {
   private readonly tmCtrl = new Uint16Array(4);
   private readonly tmFrac = new Int32Array(4); // prescaler accumulator
 
+  readonly ppu: GbaPpu;
+
   constructor() {
     this.cpu = new Arm7(this);
     this.cpu.onSwi = (n) => this.swi(n);
+    this.ppu = new GbaPpu(this);
+  }
+
+  /** Install a minimal BIOS IRQ dispatcher at 0x18 (we ship no copyrighted BIOS). */
+  private installBiosIrqStub(): void {
+    // Standard handler: save regs, jump to the user handler at [0x03FFFFFC], return.
+    const stub = [0xe92d500f, 0xe3a00301, 0xe28fe000, 0xe510f004, 0xe8bd500f, 0xe25ef004];
+    for (let i = 0; i < stub.length; i += 1) {
+      const a = 0x18 + i * 4;
+      this.bios[a] = stub[i]! & 0xff;
+      this.bios[a + 1] = (stub[i]! >> 8) & 0xff;
+      this.bios[a + 2] = (stub[i]! >> 16) & 0xff;
+      this.bios[a + 3] = (stub[i]! >>> 24) & 0xff;
+    }
   }
 
   loadRom(data: Uint8Array): void {
@@ -64,12 +97,16 @@ export class Gba {
 
   reset(): void {
     this.cpu.reset();
-    // Skip the BIOS boot: enter the cart at 0x08000000 in System mode.
+    this.installBiosIrqStub();
+    // Skip the BIOS boot: enter the cart at 0x08000000 in System mode, with the
+    // SP values the BIOS would have set up for User/IRQ/SVC stacks.
     this.cpu.cpsr = 0x1f;
-    this.cpu.r[13] = 0x03007f00; // typical IWRAM stack
+    this.cpu.r[13] = 0x03007f00; // user/system stack
+    this.cpu.setBankedSp(0x12, 0x03007fa0); // IRQ stack
+    this.cpu.setBankedSp(0x13, 0x03007fe0); // SVC stack
     this.cpu.r[15] = 0x08000000;
     this.io.fill(0);
-    this.writeIO16(0x130, 0x3ff); // KEYINPUT all released
+    this.keyinput = 0x3ff;
   }
 
   // ════════════════════════════════════════════════════════════════════════════
@@ -79,6 +116,42 @@ export class Gba {
     let a = addr & 0x1ffff;
     if (a >= 0x18000) a -= 0x8000; // 0x18000-0x1FFFF mirrors 0x10000-0x17FFF
     return a;
+  }
+
+  // ── Flash save (1 Mbit) ─────────────────────────────────────────────────────
+  private flashRead8(addr: number): number {
+    if (this.flashId) {
+      const a = addr & 0xffff;
+      if (a === 0) return 0x62; // Sanyo manufacturer ID (a 128 KiB part FireRed accepts)
+      if (a === 1) return 0x13; // device ID
+      return 0xff;
+    }
+    return this.sram[this.flashBank * 0x10000 + (addr & 0xffff)]!;
+  }
+  private flashWrite8(addr: number, value: number): void {
+    const a = addr & 0xffff;
+    if (this.flashWriteArm) { this.sram[this.flashBank * 0x10000 + a] = value; this.flashWriteArm = false; this.flashSeq = 0; return; }
+    if (this.flashBankArm) { this.flashBank = value & 1; this.flashBankArm = false; this.flashSeq = 0; return; }
+    if (this.flashSeq === 0 && a === 0x5555 && value === 0xaa) { this.flashSeq = 1; return; }
+    if (this.flashSeq === 1 && a === 0x2aaa && value === 0x55) { this.flashSeq = 2; return; }
+    if (this.flashSeq === 2 && a === 0x5555) {
+      switch (value) {
+        case 0x90: this.flashId = true; this.flashSeq = 0; return; // enter ID mode
+        case 0xf0: this.flashId = false; this.flashSeq = 0; return; // exit ID mode
+        case 0xa0: this.flashWriteArm = true; this.flashSeq = 0; return; // program a byte
+        case 0xb0: this.flashBankArm = true; this.flashSeq = 0; return; // bank switch
+        case 0x80: this.flashSeq = 3; return; // erase setup
+        default: this.flashSeq = 0; return;
+      }
+    }
+    if (this.flashSeq === 3 && a === 0x5555 && value === 0xaa) { this.flashSeq = 4; return; }
+    if (this.flashSeq === 4 && a === 0x2aaa && value === 0x55) { this.flashSeq = 5; return; }
+    if (this.flashSeq === 5) {
+      if (a === 0x5555 && value === 0x10) this.sram.fill(0xff); // chip erase
+      else if (value === 0x30) { const s = this.flashBank * 0x10000 + (a & 0xf000); for (let i = 0; i < 0x1000; i += 1) this.sram[s + i] = 0xff; } // sector erase
+      this.flashSeq = 0; return;
+    }
+    this.flashSeq = 0;
   }
 
   read8(addr: number): number {
@@ -93,7 +166,7 @@ export class Gba {
       case 0x7: return this.oam[addr & 0x3ff]!;
       case 0x8: case 0x9: case 0xa: case 0xb: case 0xc: case 0xd:
         return this.rom[addr & 0x1ffffff] ?? 0;
-      case 0xe: case 0xf: return this.sram[addr & 0x1ffff]!;
+      case 0xe: case 0xf: return this.flashRead8(addr);
       default: return 0;
     }
   }
@@ -111,7 +184,7 @@ export class Gba {
       case 0x8: case 0x9: case 0xa: case 0xb: case 0xc: case 0xd: {
         const o = a & 0x1ffffff; return (this.rom[o] ?? 0) | ((this.rom[o + 1] ?? 0) << 8);
       }
-      case 0xe: case 0xf: { const o = a & 0x1ffff; return this.sram[o]! | (this.sram[o + 1]! << 8); }
+      case 0xe: case 0xf: return this.flashRead8(a) | (this.flashRead8(a + 1) << 8);
       default: return 0;
     }
   }
@@ -123,6 +196,7 @@ export class Gba {
   write8(addr: number, value: number): void {
     addr >>>= 0;
     value &= 0xff;
+    if (this.onWrite) this.onWrite(addr, value, 1);
     switch ((addr >>> 24) & 0xf) {
       case 0x2: this.ewram[addr & 0x3ffff] = value; return;
       case 0x3: this.iwram[addr & 0x7fff] = value; return;
@@ -131,13 +205,14 @@ export class Gba {
       // games don't rely on byte writes here for OAM. Palette/VRAM byte write = halfword.
       case 0x5: { const o = (addr & 0x3ff) & ~1; this.palette[o] = value; this.palette[o + 1] = value; return; }
       case 0x6: { const o = this.vramOffset(addr) & ~1; this.vram[o] = value; this.vram[o + 1] = value; return; }
-      case 0xe: case 0xf: this.sram[addr & 0x1ffff] = value; return;
+      case 0xe: case 0xf: this.flashWrite8(addr, value); return;
       default: return;
     }
   }
   write16(addr: number, value: number): void {
     addr >>>= 0;
     value &= 0xffff;
+    if (this.onWrite) this.onWrite(addr, value, 2);
     const a = addr & ~1;
     switch ((a >>> 24) & 0xf) {
       case 0x2: { const o = a & 0x3ffff; this.ewram[o] = value & 0xff; this.ewram[o + 1] = value >> 8; return; }
@@ -146,7 +221,7 @@ export class Gba {
       case 0x5: { const o = a & 0x3ff; this.palette[o] = value & 0xff; this.palette[o + 1] = value >> 8; return; }
       case 0x6: { const o = this.vramOffset(a); this.vram[o] = value & 0xff; this.vram[o + 1] = value >> 8; return; }
       case 0x7: { const o = a & 0x3ff; this.oam[o] = value & 0xff; this.oam[o + 1] = value >> 8; return; }
-      case 0xe: case 0xf: { const o = a & 0x1ffff; this.sram[o] = value & 0xff; this.sram[o + 1] = value >> 8; return; }
+      case 0xe: case 0xf: this.flashWrite8(a, value & 0xff); return;
       default: return;
     }
   }
@@ -317,7 +392,29 @@ export class Gba {
   swi(comment: number): void {
     const r = this.cpu.r;
     switch (comment) {
-      case 0x01: return; // RegisterRamReset — ignore (we don't model uninit RAM)
+      case 0x00: { // SoftReset — re-enter the cart (or EWRAM) with fresh stacks.
+        const flag = this.read8(0x03007ffa);
+        for (let a = 0x7e00; a < 0x8000; a += 1) this.iwram[a] = 0; // clear top 0x200 of IWRAM
+        const entry = flag === 0 ? 0x08000000 : 0x02000000;
+        this.cpu.reset();
+        this.installBiosIrqStub();
+        this.cpu.cpsr = 0x1f; // System mode, ARM
+        this.cpu.r[13] = 0x03007f00;
+        this.cpu.setBankedSp(0x12, 0x03007fa0); // IRQ
+        this.cpu.setBankedSp(0x13, 0x03007fe0); // SVC
+        this.cpu.forceBranch(entry);
+        return;
+      }
+      case 0x01: { // RegisterRamReset — clear the selected RAM/IO regions.
+        const f = r[0]! & 0xff;
+        if (f & 0x01) this.ewram.fill(0);
+        if (f & 0x02) for (let a = 0; a < 0x7e00; a += 1) this.iwram[a] = 0; // keep top 0x200
+        if (f & 0x04) this.palette.fill(0);
+        if (f & 0x08) this.vram.fill(0);
+        if (f & 0x10) this.oam.fill(0);
+        this.writeIO16(0x00, 0x0080); // DISPCNT → forced blank (post-reset state)
+        return;
+      }
       case 0x02: this.cpu.halted = true; return; // Halt
       case 0x04: case 0x05: this.cpu.halted = true; return; // IntrWait / VBlankIntrWait
       case 0x06: { // Div: r0/r1 → r0=quot, r1=rem, r3=abs(quot)
@@ -411,5 +508,76 @@ export class Gba {
         for (let i = 0; i < len && size > 0; i += 1) { this.write8(d, this.read8(s)); s = (s + 1) >>> 0; d = (d + 1) >>> 0; size -= 1; }
       }
     }
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // Frame loop — drives the CPU, timers, and PPU through one 228-line frame
+  // ════════════════════════════════════════════════════════════════════════════
+  private setDispstatBit(bit: number, on: boolean): void {
+    let ds = this.io[0x04]! | (this.io[0x05]! << 8);
+    if (on) ds |= bit; else ds &= ~bit;
+    this.io[0x04] = ds & 0xff; this.io[0x05] = (ds >> 8) & 0xff;
+  }
+
+  /** Run the CPU for ~`target` cycles, stepping timers and honouring HALT. */
+  private runCycles(target: number): void {
+    let done = 0;
+    while (done < target) {
+      if (this.cpu.halted) { this.stepTimers(target - done); return; }
+      const c = this.cpu.step();
+      this.stepTimers(c);
+      done += c;
+    }
+  }
+
+  /** Emulate exactly one video frame, producing ppu.frame. */
+  runFrame(): void {
+    const VISIBLE = 960, HBLANK = 272; // approximate cycles (1 instr ≈ 1 unit for now)
+    for (let line = 0; line < 228; line += 1) {
+      this.io[0x06] = line & 0xff; this.io[0x07] = (line >> 8) & 0xff; // VCOUNT
+      const dispstat = this.io[0x04]! | (this.io[0x05]! << 8);
+      // VCount match.
+      const vcMatch = ((dispstat >> 8) & 0xff) === line;
+      this.setDispstatBit(0x04, vcMatch);
+      if (vcMatch && (dispstat & 0x20)) this.raiseIrq(IRQ_VCOUNT);
+
+      if (line === 0) this.ppu.frameStart();
+      if (line === 160) {
+        this.setDispstatBit(0x01, true); // VBlank flag
+        if (dispstat & 0x08) this.raiseIrq(IRQ_VBLANK);
+        this.triggerDma(1);
+      }
+      if (line === 227) this.setDispstatBit(0x01, false);
+
+      this.runCycles(VISIBLE);
+
+      // HBlank.
+      this.setDispstatBit(0x02, true);
+      if (line < 160) { this.ppu.renderScanline(line); this.triggerDma(2); }
+      if (dispstat & 0x10) this.raiseIrq(IRQ_HBLANK);
+      this.runCycles(HBLANK);
+      this.setDispstatBit(0x02, false);
+    }
+  }
+
+  /** The finished 240×160 RGBA framebuffer. */
+  get frame(): Uint8Array {
+    return this.ppu.frame;
+  }
+
+  setButtons(b: GbaButtons): void {
+    let k = 0x3ff;
+    if (b.a) k &= ~0x001;
+    if (b.b) k &= ~0x002;
+    if (b.select) k &= ~0x004;
+    if (b.start) k &= ~0x008;
+    if (b.right) k &= ~0x010;
+    if (b.left) k &= ~0x020;
+    if (b.up) k &= ~0x040;
+    if (b.down) k &= ~0x080;
+    if (b.r) k &= ~0x100;
+    if (b.l) k &= ~0x200;
+    this.keyinput = k & 0x3ff;
+    // Keypad IRQ (rare): IF bit12 when configured — left to KEYCNT logic if needed.
   }
 }
