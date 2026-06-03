@@ -1,0 +1,67 @@
+// OutputBuffer emission checks: cursor moves, combined/single SGR, and pen
+// run-length suppression. Run: `bun run packages/terminal/output.test.ts`.
+
+import { OutputBuffer } from './output';
+
+let passCount = 0;
+let failCount = 0;
+const assert = (label: string, condition: boolean, detail = ''): void => {
+  if (condition) passCount++;
+  else {
+    failCount++;
+    console.log(`FAIL: ${label}${detail ? ` — ${detail}` : ''}`);
+  }
+};
+const decode = (output: OutputBuffer): string => Buffer.from(output.view()).toString('latin1');
+
+{
+  const output = new OutputBuffer();
+  output.home();
+  assert('home is ESC[H', decode(output) === '\x1b[H');
+}
+
+{
+  const output = new OutputBuffer();
+  output.moveCursor(3, 7);
+  assert('moveCursor is 1-based ESC[r;cH', decode(output) === '\x1b[3;7H');
+}
+
+{
+  const output = new OutputBuffer();
+  output.setTruecolor(0xff0000, 0x0000ff);
+  assert('combined truecolor', decode(output) === '\x1b[38;2;255;0;0;48;2;0;0;255m', decode(output));
+}
+
+{
+  const output = new OutputBuffer();
+  output.setTruecolor(0x010203, 0x010203);
+  output.reset();
+  output.setTruecolor(0x010203, 0x0a0b0c);
+  assert('truecolor emits only changed background', decode(output) === '\x1b[48;2;10;11;12m', decode(output));
+}
+
+{
+  const output = new OutputBuffer();
+  output.setTruecolor(0x112233, 0x445566);
+  output.reset();
+  output.setTruecolor(0x112233, 0x445566);
+  assert('pen suppresses unchanged colour', decode(output) === '');
+}
+
+{
+  const output = new OutputBuffer();
+  output.setPaletteColor(196, 16);
+  assert('combined palette', decode(output) === '\x1b[38;5;196;48;5;16m', decode(output));
+}
+
+{
+  const output = new OutputBuffer();
+  output.setPaletteColor(9, 0);
+  output.resetPen();
+  output.reset();
+  output.setPaletteColor(9, 0);
+  assert('resetPen forces re-emit', decode(output) === '\x1b[38;5;9;48;5;0m', decode(output));
+}
+
+console.log(`output.test: ${passCount} pass, ${failCount} fail`);
+if (failCount > 0) process.exit(1);
