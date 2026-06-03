@@ -228,8 +228,7 @@ export class CharTerm {
           currentRow = row;
           currentColumn = column;
         }
-        output.setBoldTruecolor(cellForeground, cellBackground, cellBold);
-        output.putCodePoint(cellCharacter === 0 ? SPACE_CODE_POINT : cellCharacter);
+        output.emitCellBoldTruecolor(cellForeground, cellBackground, cellBold, cellCharacter === 0 ? SPACE_CODE_POINT : cellCharacter);
         currentColumn++;
         if (currentColumn >= columns) {
           currentColumn = -1;

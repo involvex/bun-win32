@@ -102,6 +102,20 @@ const decode = (output: OutputBuffer): string => Buffer.from(output.view()).toSt
 
 {
   const output = new OutputBuffer();
+  output.emitCellBoldTruecolor(0xff0000, 0x0000ff, 1, 0x41);
+  assert('emitCellBoldTruecolor = bold escape + ascii glyph', decode(output) === '\x1b[1;38;2;255;0;0;48;2;0;0;255mA', decode(output));
+}
+
+{
+  const output = new OutputBuffer();
+  output.emitCellBoldTruecolor(0x112233, 0x445566, 0, 0x2588);
+  output.reset();
+  output.emitCellBoldTruecolor(0x112233, 0x445566, 0, 0x2588);
+  assert('emitCellBoldTruecolor skips escape but keeps utf-8 glyph', Buffer.from(output.view()).toString('utf8') === '█', Buffer.from(output.view()).toString('utf8'));
+}
+
+{
+  const output = new OutputBuffer();
   output.putCodePoint(0x2580);
   output.putCodePoint(0x41);
   assert('putCodePoint utf-8 + ascii', Buffer.from(output.view()).toString('utf8') === '▀A', Buffer.from(output.view()).toString('utf8'));

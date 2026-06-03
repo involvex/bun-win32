@@ -289,34 +289,89 @@ export class OutputBuffer {
     const needForeground = foreground !== this.#penForeground;
     const needBackground = background !== this.#penBackground;
     if (!needBold && !needForeground && !needBackground) return;
-    this.putBytes(CONTROL_SEQUENCE_INTRODUCER);
+    // ESC[ + `22`/`1` + `;38;2;R;G;B` + `;48;2;R;G;B` + `m` ≤ 34 bytes.
+    this.#ensureCapacity(0x24);
+    this.#position = this.#writeBoldTruecolorEscape(this.#bytes, this.#position, foreground, background, bold, needBold, needForeground, needBackground);
+    if (needBold) this.#penBold = bold;
+    if (needForeground) this.#penForeground = foreground;
+    if (needBackground) this.#penBackground = background;
+  }
+
+  /**
+   * Fused per-cell primitive for the bold-truecolour TUI path: emit the minimal
+   * bold/colour escape (if the pen moved) then append `codePoint` as UTF-8, under
+   * one reservation. The {@link CharTerm} twin of {@link emitCellTruecolor}.
+   */
+  emitCellBoldTruecolor(foreground: number, background: number, bold: number, codePoint: number): void {
+    const needBold = bold !== this.#penBold;
+    const needForeground = foreground !== this.#penForeground;
+    const needBackground = background !== this.#penBackground;
+    this.#ensureCapacity(0x24 + 4);
+    const target = this.#bytes;
+    let position = this.#position;
+    if (needBold || needForeground || needBackground) {
+      position = this.#writeBoldTruecolorEscape(target, position, foreground, background, bold, needBold, needForeground, needBackground);
+      if (needBold) this.#penBold = bold;
+      if (needForeground) this.#penForeground = foreground;
+      if (needBackground) this.#penBackground = background;
+    }
+    if (codePoint < 0x80) {
+      target[position++] = codePoint;
+    } else if (codePoint < 0x800) {
+      target[position++] = 0xc0 | (codePoint >> 6);
+      target[position++] = 0x80 | (codePoint & 0x3f);
+    } else if (codePoint < 0x10000) {
+      target[position++] = 0xe0 | (codePoint >> 12);
+      target[position++] = 0x80 | ((codePoint >> 6) & 0x3f);
+      target[position++] = 0x80 | (codePoint & 0x3f);
+    } else {
+      target[position++] = 0xf0 | (codePoint >> 18);
+      target[position++] = 0x80 | ((codePoint >> 12) & 0x3f);
+      target[position++] = 0x80 | ((codePoint >> 6) & 0x3f);
+      target[position++] = 0x80 | (codePoint & 0x3f);
+    }
+    this.#position = position;
+  }
+
+  // Write the minimal bold/foreground/background SGR into `target` at `start`,
+  // returning the new position. Capacity and pen updates are the caller's; at
+  // least one `need*` flag is set.
+  #writeBoldTruecolorEscape(target: Uint8Array, start: number, foreground: number, background: number, bold: number, needBold: boolean, needForeground: boolean, needBackground: boolean): number {
+    let position = start;
+    target[position++] = 0x1b; // ESC
+    target[position++] = 0x5b; // [
     let first = true;
     if (needBold) {
-      this.putBytes(bold ? BOLD_ON : BOLD_OFF);
-      this.#penBold = bold;
+      const flag = bold ? BOLD_ON : BOLD_OFF;
+      for (let index = 0; index < flag.length; index++) target[position++] = flag[index];
       first = false;
     }
     if (needForeground) {
-      if (!first) this.putByte(SEMICOLON);
-      this.putBytes(FOREGROUND_TRUECOLOR_PARAMS);
-      this.putDecimal((foreground >> 16) & 0xff);
-      this.putByte(SEMICOLON);
-      this.putDecimal((foreground >> 8) & 0xff);
-      this.putByte(SEMICOLON);
-      this.putDecimal(foreground & 0xff);
-      this.#penForeground = foreground;
+      if (!first) target[position++] = SEMICOLON;
+      for (let index = 0; index < FOREGROUND_TRUECOLOR_PARAMS.length; index++) target[position++] = FOREGROUND_TRUECOLOR_PARAMS[index];
+      let component = decimalBytes[(foreground >> 16) & 0xff];
+      for (let index = 0; index < component.length; index++) target[position++] = component[index];
+      target[position++] = SEMICOLON;
+      component = decimalBytes[(foreground >> 8) & 0xff];
+      for (let index = 0; index < component.length; index++) target[position++] = component[index];
+      target[position++] = SEMICOLON;
+      component = decimalBytes[foreground & 0xff];
+      for (let index = 0; index < component.length; index++) target[position++] = component[index];
       first = false;
     }
     if (needBackground) {
-      if (!first) this.putByte(SEMICOLON);
-      this.putBytes(BACKGROUND_TRUECOLOR_PARAMS);
-      this.putDecimal((background >> 16) & 0xff);
-      this.putByte(SEMICOLON);
-      this.putDecimal((background >> 8) & 0xff);
-      this.putByte(SEMICOLON);
-      this.putDecimal(background & 0xff);
-      this.#penBackground = background;
+      if (!first) target[position++] = SEMICOLON;
+      for (let index = 0; index < BACKGROUND_TRUECOLOR_PARAMS.length; index++) target[position++] = BACKGROUND_TRUECOLOR_PARAMS[index];
+      let component = decimalBytes[(background >> 16) & 0xff];
+      for (let index = 0; index < component.length; index++) target[position++] = component[index];
+      target[position++] = SEMICOLON;
+      component = decimalBytes[(background >> 8) & 0xff];
+      for (let index = 0; index < component.length; index++) target[position++] = component[index];
+      target[position++] = SEMICOLON;
+      component = decimalBytes[background & 0xff];
+      for (let index = 0; index < component.length; index++) target[position++] = component[index];
     }
-    this.putByte(LETTER_M);
+    target[position++] = LETTER_M;
+    return position;
   }
 }

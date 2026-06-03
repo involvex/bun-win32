@@ -132,4 +132,40 @@ branch uses them directly and its summation loop is deleted.
 
 Golden green; full suite green.
 
+## Round 6 — strength-reduce the half-fast index arithmetic · REVERT (negative)
+
+**Hypothesis.** `#emitHalfFast` recomputes `column*3` (×2) and `cellRowBase+column`
+per cell; replacing them with `+= 3` / `++` accumulators should shave the multiplies.
+
+**Change.** Carried `topIndex`/`bottomIndex`/`cellIndex` as accumulators, with the
+skip rewritten as `if (!skip)` so the increments stay unconditional.
+
+**Result — REGRESSION.** STATIC (skip-bound) fell 40275 → **37696** (−6%); VIDEO
+flat. The accumulators create a loop-carried dependency chain (`index_n =
+index_{n-1}+3`) that *serialises* the scan, whereas `column*3` has no cross-iteration
+dependency, so the CPU computes the offsets with full instruction-level parallelism.
+The JIT already lowers constant-multiply efficiently. Reverted. **Lesson: on a
+memory-scan loop, independence beats fewer instructions.**
+
+## Round 7 — fuse the CharTerm bold-colour + glyph emit · KEEP
+
+**Hypothesis.** `CharTerm.buildFrame` never got the Round 1/3 treatment: it still
+called `setBoldTruecolor` (the old multi-call fan-out) and a separate
+`putCodePoint` per cell. Applying single-reservation + glyph fusion should pay off
+as much here as it did for `Term`.
+
+**Change.** `output.ts` — rewrote `setBoldTruecolor` to one reservation via a new
+shared `#writeBoldTruecolorEscape`, and added `emitCellBoldTruecolor`, which writes
+the bold/colour escape and the glyph's UTF-8 under one reservation. `char.ts` —
+`buildFrame` now calls the fused primitive. Output bytes unchanged (new CharTerm
+golden `6406c50a`, captured from the pre-round engine and still green after).
+
+**Result.**
+
+| scenario | before | after | Δ |
+| --- | ---: | ---: | ---: |
+| char / bold — VIDEO | 1649 | 2489 | **+51%** |
+
+Term paths untouched. Golden green (both hashes); full suite green.
+
 ---
