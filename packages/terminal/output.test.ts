@@ -63,5 +63,26 @@ const decode = (output: OutputBuffer): string => Buffer.from(output.view()).toSt
   assert('resetPen forces re-emit', decode(output) === '\x1b[38;5;9;48;5;0m', decode(output));
 }
 
+{
+  const output = new OutputBuffer();
+  output.setBoldTruecolor(0xff0000, 0x0000ff, 1);
+  assert('combined bold + truecolor', decode(output) === '\x1b[1;38;2;255;0;0;48;2;0;0;255m', decode(output));
+}
+
+{
+  const output = new OutputBuffer();
+  output.setBoldTruecolor(0xff0000, 0x0000ff, 1);
+  output.reset();
+  output.setBoldTruecolor(0xff0000, 0x0000ff, 0);
+  assert('bold-only change', decode(output) === '\x1b[22m', decode(output));
+}
+
+{
+  const output = new OutputBuffer();
+  output.putCodePoint(0x2580);
+  output.putCodePoint(0x41);
+  assert('putCodePoint utf-8 + ascii', Buffer.from(output.view()).toString('utf8') === '▀A', Buffer.from(output.view()).toString('utf8'));
+}
+
 console.log(`output.test: ${passCount} pass, ${failCount} fail`);
 if (failCount > 0) process.exit(1);

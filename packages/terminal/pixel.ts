@@ -13,6 +13,7 @@ import {
 } from './glyphs';
 import { OutputBuffer } from './output';
 import { encodePNG } from './png';
+import { standardOutput } from './stdout';
 import type { TermDepth, TermDiff, TermMode, TermOptions } from './types';
 
 const ASCII_RAMP_LAST = asciiRampBytes.length - 1;
@@ -25,8 +26,6 @@ const subpixelRed = new Uint8Array(SUBPIXEL_CAPACITY);
 const subpixelGreen = new Uint8Array(SUBPIXEL_CAPACITY);
 const subpixelBlue = new Uint8Array(SUBPIXEL_CAPACITY);
 const subpixelLuma = new Int32Array(SUBPIXEL_CAPACITY);
-
-const standardOutput = Bun.stdout.writer();
 
 /**
  * A 24-bit RGB framebuffer rendered to the terminal as Unicode block glyphs. The
