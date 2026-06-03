@@ -3,8 +3,9 @@
  *
  * Proof that the ./_term half-block TRUECOLOR engine is a real TUI toolkit, not
  * just an animation surface. The whole console becomes a modern dark dashboard:
- * a HEADER bar with a live clock, uptime and ticking system gauges (CPU / MEM /
- * NET, each a little sparkline + bar); a big LIVE TELEMETRY chart that scrolls
+ * a HEADER bar with a live clock, uptime, a colour-coded FPS / frame-cost readout
+ * and ticking system gauges (CPU / MEM / NET, each a little sparkline + bar); a
+ * big LIVE TELEMETRY chart that scrolls
  * left every frame, plotting three sine+noise streams as crisp anti-aliased
  * polylines over a soft gradient fill and a faint grid; a navigable SERVICE
  * MENU on the left where the arrow keys move the selection, the mouse HOVERS to
@@ -152,6 +153,11 @@ let selCycleAccum = 0; // attract-mode selection cycling clock
 // resettable "selection flash" — brightens the bar briefly when selection changes
 let selFlash = 0;
 
+// FPS counter + per-frame DRAW cost, both EMA-smoothed. drawMsEma is finalised at
+// the end of frame() and therefore displayed one frame late.
+let fpsEma = 60;
+let drawMsEma = 0;
+
 const onKey = (key: string, _t: Term): void => {
   everInteracted = true;
   selFlash = 1;
@@ -278,7 +284,9 @@ runDemo({
     for (let i = 0; i < 8; i++) pushLog(i * LOG_DT);
   },
   frame: (t, time, dt) => {
+    const frameStart = performance.now();
     const { W, H } = t;
+    if (dt > 0) fpsEma = fpsEma * 0.9 + (1 / dt) * 0.1;
 
     // ── advance streams + log on a fixed cadence (independent of fps) ───────────
     chartAccum += dt;
@@ -367,9 +375,10 @@ runDemo({
     const clk = clockStr(time);
     const clkW = Term.textWidth(clk, 1);
     const clkRight = PAD + headW - 6;
-    t.text(clkRight - clkW, headTop, clk, INK_HI[0], INK_HI[1], INK_HI[2], 1);
     const up = uptimeStr(time);
-    t.text(clkRight - Term.textWidth(up, 1), headTop + 9, up, INK_DIM[0], INK_DIM[1], INK_DIM[2], 1);
+    const upW = Term.textWidth(up, 1);
+    t.text(clkRight - clkW, headTop, clk, INK_HI[0], INK_HI[1], INK_HI[2], 1);
+    t.text(clkRight - upW, headTop + 9, up, INK_DIM[0], INK_DIM[1], INK_DIM[2], 1);
 
     // system gauges CPU / MEM / NET — inline in the header on WIDE grids, otherwise
     // a compact triple of mini-bars centred between the title and the clock so they
@@ -381,7 +390,7 @@ runDemo({
         ['NET', clamp01(0.3 + sampleAt(2, 0) * 0.45), VIOLET],
       ];
       const zoneL = titleX + Term.textWidth('COMMAND CENTER', 1) + 10;
-      const zoneR = clkRight - Math.max(clkW, Term.textWidth(up, 1)) - 10;
+      const zoneR = clkRight - Math.max(clkW, upW) - 10;
       const zoneW = zoneR - zoneL;
       if (wide && zoneW > 150) {
         // three stacked labelled bars across the header centre
@@ -420,13 +429,30 @@ runDemo({
     // ══ CHART PANEL ═════════════════════════════════════════════════════════════
     panel(t, colX, chartY, chartW, chartH, BG1, CYAN);
     t.text(colX + 6, chartY + 5, 'TELEMETRY', INK_HI[0], INK_HI[1], INK_HI[2], 1);
-    // legend — drawn right-to-left; falls back to bare swatches when narrow, and is
-    // skipped entirely if it would collide with the panel title.
+    // FPS counter + per-frame DRAW cost, right-aligned in the chart's title row so
+    // it is ALWAYS visible (the header gets too cramped at normal widths). FPS is
+    // colour-coded (green at the 60fps target); the MS readout shows how much
+    // headroom the engine leaves under the cap.
+    const fpsStr = `FPS ${Math.round(fpsEma)}`;
+    const msStr = `${drawMsEma.toFixed(2)}MS`;
+    const fpsW = Term.textWidth(fpsStr, 1);
+    const msW = Term.textWidth(msStr, 1);
+    const fc: [number, number, number] = fpsEma >= 55 ? LIME : fpsEma >= 30 ? AMBER : [255, 110, 110];
+    const fpsRight = colX + chartW - 6;
+    t.text(fpsRight - fpsW, chartY + 5, fpsStr, fc[0], fc[1], fc[2], 1);
+    let fpsBlockW = fpsW;
+    if (chartW > 150) {
+      // room for the MS readout too — place it just left of the FPS number
+      t.text(fpsRight - fpsW - 8 - msW, chartY + 5, msStr, INK_DIM[0], INK_DIM[1], INK_DIM[2], 1);
+      fpsBlockW = fpsW + 8 + msW;
+    }
+    // legend — drawn right-to-left, starting LEFT of the FPS block; falls back to
+    // bare swatches when narrow, and is skipped if it would collide with the title.
     {
       const titleRight = colX + 6 + Term.textWidth('TELEMETRY', 1) + 8;
       const labels = ['REQ/S', 'LATENCY', 'ERRORS'];
-      const labelled = chartW > 200; // room for text labels?
-      let lx = colX + chartW - 6;
+      const labelled = chartW > 260; // room for text labels alongside the FPS block?
+      let lx = colX + chartW - 6 - fpsBlockW - 12;
       for (let s = STREAMS - 1; s >= 0; s--) {
         if (labelled) {
           lx -= Term.textWidth(labels[s], 1);
@@ -657,5 +683,9 @@ runDemo({
       const label = Term.textWidth(full, 1) <= avail ? full : short;
       t.text(textX, fy, label, mc[0], mc[1], mc[2], 1);
     }
+
+    // record this frame's draw cost (EMA); shown one frame later as the MS readout
+    // so the headroom under the 60fps cap is visible at a glance.
+    drawMsEma = drawMsEma * 0.9 + (performance.now() - frameStart) * 0.1;
   },
 });
