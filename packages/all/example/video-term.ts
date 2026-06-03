@@ -12,8 +12,10 @@
  *
  * Two paths, both via runDemo so console setup / pacing / HUD / resize / the whole
  * TERM_MODE·TERM_DIFF·TERM_DEPTH option matrix come for free:
- *   • LIVE   — ffmpeg runs realtime (-re), looping (-stream_loop -1); a background
- *              reader keeps the latest decoded frame; each render copies it in.
+ *   • LIVE   — ffmpeg decodes (looping via -stream_loop -1) into a bounded frame
+ *              QUEUE; the render loop drains it on a SIM-TIME clock for smooth,
+ *              correctly-paced playback. SPACE freezes sim time → a true pause (the
+ *              full queue backpressures ffmpeg, so it blocks rather than buffering).
  *   • BENCH / CAPTURE_PNG — pre-decode N distinct frames to memory, then cycle them
  *              so BENCH measures the engine's true ceiling on REAL video and a
  *              CAPTURE writes a real frame to PNG for headless inspection.
@@ -46,41 +48,65 @@ const killFfmpeg = (): void => {
 process.on('exit', killFfmpeg);
 let stopped = false; // set when the demo loop ends → unblocks/abandons the reader
 
-// ── LIVE: background reader keeps the most-recent decoded frame ────────────────
-let latest: Uint8Array | null = null;
+// ── LIVE: a reader fills a bounded frame QUEUE; the render loop drains it on a
+// sim-time clock. Decode runs ~10× realtime, so the queue stays full; when it
+// fills (display paused or behind) the reader stops draining the pipe and ffmpeg
+// blocks — that backpressure is what makes pause a TRUE pause instead of buffering
+// the whole clip in RAM. The render loop is left UNCAPPED (targetFps 0) so the
+// async reader runs on every event-loop turn and never starves: a blocking frame
+// wait would freeze the reader for ~16ms and the OS pipe can only buffer ~64KB in
+// that window, which would underrun the queue and stutter. Smoothness instead
+// comes from the sim-time playhead, not from the loop cadence.
+const FPS = 60; // playback cadence (matches the ffmpeg -r below)
+const QUEUE_MAX = 60; // ~1s of look-ahead
 let frameSize = 0;
+const queue: Uint8Array[] = []; // decoded frames in order; queue[0] is frame `nextIdx`
+const pool: Uint8Array[] = []; // recycled frame buffers (avoids per-frame GC churn → jitter)
+let nextIdx = 0; // absolute index of the frame at queue[0]
+let originSet = false;
+let origin = 0; // sim time at which frame 0 is shown
+let curFrame: Uint8Array | null = null;
+let shownIdx = -1; // last index copied into t.buf (skips redundant memcpy on spin iterations)
 
 const startLive = (W: number, H: number): void => {
   frameSize = W * H * 3;
-  latest = new Uint8Array(frameSize);
+  queue.length = 0;
+  pool.length = 0;
+  nextIdx = 0;
+  originSet = false;
+  curFrame = null;
+  shownIdx = -1;
   proc = Bun.spawn({
     cmd: [
       'ffmpeg', '-hide_banner', '-loglevel', 'error',
-      '-stream_loop', '-1', '-re', '-ss', String(startSec),
+      '-stream_loop', '-1', '-ss', String(startSec),
       '-i', videoPath,
-      '-vf', vfChain(W, H), '-r', '60',
+      '-vf', vfChain(W, H), '-r', String(FPS),
       '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-',
     ],
     stdout: 'pipe',
     stderr: 'inherit',
   });
-  // Drain the pipe forever, assembling complete frames into `latest`.
+  // Assemble complete frames into the queue, applying backpressure when it's full.
   (async () => {
-    const carry = new Uint8Array(frameSize);
+    let frame = pool.pop() ?? new Uint8Array(frameSize);
     let have = 0;
     try {
       for await (const chunk of proc!.stdout as ReadableStream<Uint8Array>) {
         if (stopped) break;
         let off = 0;
         while (off < chunk.length) {
-          const need = frameSize - have;
-          const take = Math.min(need, chunk.length - off);
-          carry.set(chunk.subarray(off, off + take), have);
+          const take = Math.min(frameSize - have, chunk.length - off);
+          frame.set(chunk.subarray(off, off + take), have);
           have += take;
           off += take;
           if (have === frameSize) {
-            latest!.set(carry);
+            queue.push(frame);
             have = 0;
+            frame = pool.pop() ?? new Uint8Array(frameSize);
+            // Backpressure: when the buffer is full (paused / display behind) stop
+            // draining so the pipe fills and ffmpeg blocks rather than hoarding RAM.
+            while (!stopped && queue.length >= QUEUE_MAX) await Bun.sleep(8);
           }
         }
       }
@@ -147,11 +173,28 @@ await runDemo({
       startLive(t.W, t.H);
     }
   },
-  frame: (t: Term, _time, _dt, frame) => {
+  frame: (t: Term, time, _dt, frameNo) => {
     if (headless) {
-      if (preFrames.length > 0) t.buf.set(preFrames[frame % preFrames.length]);
-    } else if (latest) {
-      t.buf.set(latest);
+      if (preFrames.length > 0) t.buf.set(preFrames[frameNo % preFrames.length]);
+      return;
+    }
+    // LIVE: drain the queue on the sim-time clock. `time` (runDemo's simTime) stops
+    // advancing while paused, so the playhead — and the picture — freeze on SPACE.
+    if (!originSet) {
+      if (queue.length === 0) return; // nothing decoded yet → hold the (black) frame
+      origin = time;
+      originSet = true;
+    }
+    const target = Math.floor((time - origin) * FPS);
+    while (nextIdx < target && queue.length > 1) {
+      const old = queue.shift()!;
+      if (pool.length < QUEUE_MAX + 4) pool.push(old); // recycle to dodge GC jitter
+      nextIdx++;
+    }
+    curFrame = queue[0] ?? curFrame;
+    if (curFrame && nextIdx !== shownIdx) {
+      t.buf.set(curFrame);
+      shownIdx = nextIdx;
     }
   },
 });
