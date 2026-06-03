@@ -9,6 +9,11 @@
  * full, populated transcript. Live input (typing, backspace, enter, arrow/wheel
  * scroll, hover highlight) takes control on interaction and the attract show
  * resumes after a few idle seconds. No per-frame allocation in steady state.
+ *
+ * Renders UNCAPPED by default (the char-grid engine builds frames at ~10k+ fps,
+ * far past the old 60fps throttle), so the top-right readout shows the true
+ * ceiling. Set TERM_FPS=<n> to cap it — e.g. TERM_FPS=120 for a calm interactive
+ * cap, TERM_FPS=60 for the original behaviour.
  */
 import {
   runTextDemo,
@@ -970,7 +975,10 @@ runTextDemo({
   title: 'Claude Code',
   hud: 'TYPE · ↵ SEND · ↑↓ SCROLL',
   captureT: 9,
-  targetFps: 60,
+  // Uncapped by default so the top-right readout shows the engine's true ceiling
+  // (~10k+ fps); set TERM_FPS=<n> to throttle it back (e.g. TERM_FPS=120 for a
+  // calm interactive cap, TERM_FPS=60 for the old behaviour).
+  targetFps: Number(process.env.TERM_FPS) || 0,
   mouse: true,
   init: (t) => {
     initState(t);
