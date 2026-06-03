@@ -242,3 +242,13 @@ simplifications that remove real work the profiler simply couldn't separate from
 noise. Round 6 was a *measured regression* (strength-reduction serialised a scan
 loop) and was reverted. Recording the misses is the point: the next person sees that
 the index arithmetic and the dark-group accumulation were already tried.
+
+### Cross-checked against the pre-migration oracle
+
+The full `terminal.bench.ts` matrix (every mode × diff × depth, coherent + noise)
+confirms the gains hold beyond the seven optbench probes — and that nothing
+regressed. Versus the captured pre-migration oracle (`.scratch/oracle/`), coherent
+200×60: half/exact/16 (flagship) 10940 → 12896 (+18%), half/256 4512 → 7561 (+68%),
+quad/truecolor 1211 → 1821 (+50%), braille/truecolor 843 → 1302 (+54%),
+sextant/truecolor 1101 → 1540 (+40%). KB/frame is identical to the oracle at every
+cell — the byte stream never changed, only the speed of producing it.
