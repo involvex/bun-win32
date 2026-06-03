@@ -469,162 +469,176 @@ export type ENUMRESNAMEPROCW = Pointer;
 export type ENUMRESTYPEPROCA = Pointer;
 export type ENUMRESTYPEPROCW = Pointer;
 
-// Console input/screen-buffer struct decoders. The structs themselves stay
-// opaque `Pointer` aliases (caller-allocated, read via DataView per house
-// convention); these pure helpers decode the documented x64 byte layouts.
-
-/** `INPUT_RECORD` value-decode helpers. The x64 record stride is 20 bytes. */
-export const INPUT_RECORD_SIZE = 20;
+/** `INPUT_RECORD` x64 record stride, in bytes. */
+export const INPUT_RECORD_SIZE = 0x14;
 
 /** `INPUT_RECORD.EventType` discriminant. */
 export enum EventType {
-  KEY_EVENT = 0x0001,
-  MOUSE_EVENT = 0x0002,
-  WINDOW_BUFFER_SIZE_EVENT = 0x0004,
-  MENU_EVENT = 0x0008,
-  FOCUS_EVENT = 0x0010,
+  FOCUS_EVENT = 0x0000_0010,
+  KEY_EVENT = 0x0000_0001,
+  MENU_EVENT = 0x0000_0008,
+  MOUSE_EVENT = 0x0000_0002,
+  WINDOW_BUFFER_SIZE_EVENT = 0x0000_0004,
 }
 
-/** `dwControlKeyState` bit flags (KEY_EVENT_RECORD / MOUSE_EVENT_RECORD). */
+/** `dwControlKeyState` bit flags (`KEY_EVENT_RECORD` / `MOUSE_EVENT_RECORD`). */
 export enum ControlKeyState {
-  RIGHT_ALT_PRESSED = 0x0001,
-  LEFT_ALT_PRESSED = 0x0002,
-  RIGHT_CTRL_PRESSED = 0x0004,
-  LEFT_CTRL_PRESSED = 0x0008,
-  SHIFT_PRESSED = 0x0010,
-  NUMLOCK_ON = 0x0020,
-  SCROLLLOCK_ON = 0x0040,
-  CAPSLOCK_ON = 0x0080,
-  ENHANCED_KEY = 0x0100,
+  CAPSLOCK_ON = 0x0000_0080,
+  ENHANCED_KEY = 0x0000_0100,
+  LEFT_ALT_PRESSED = 0x0000_0002,
+  LEFT_CTRL_PRESSED = 0x0000_0008,
+  NUMLOCK_ON = 0x0000_0020,
+  RIGHT_ALT_PRESSED = 0x0000_0001,
+  RIGHT_CTRL_PRESSED = 0x0000_0004,
+  SCROLLLOCK_ON = 0x0000_0040,
+  SHIFT_PRESSED = 0x0000_0010,
 }
 
-/** `dwButtonState` bit flags (MOUSE_EVENT_RECORD). */
+/** `dwButtonState` bit flags (`MOUSE_EVENT_RECORD`). */
 export enum MouseButtonState {
-  FROM_LEFT_1ST_BUTTON_PRESSED = 0x0001,
-  RIGHTMOST_BUTTON_PRESSED = 0x0002,
-  FROM_LEFT_2ND_BUTTON_PRESSED = 0x0004,
-  FROM_LEFT_3RD_BUTTON_PRESSED = 0x0008,
-  FROM_LEFT_4TH_BUTTON_PRESSED = 0x0010,
+  FROM_LEFT_1ST_BUTTON_PRESSED = 0x0000_0001,
+  FROM_LEFT_2ND_BUTTON_PRESSED = 0x0000_0004,
+  FROM_LEFT_3RD_BUTTON_PRESSED = 0x0000_0008,
+  FROM_LEFT_4TH_BUTTON_PRESSED = 0x0000_0010,
+  RIGHTMOST_BUTTON_PRESSED = 0x0000_0002,
 }
 
-/** `dwEventFlags` bit flags (MOUSE_EVENT_RECORD). High word of wheel events is a signed delta. */
+/** `dwEventFlags` bit flags (`MOUSE_EVENT_RECORD`); wheel delta is the signed high word of `dwButtonState`. */
 export enum MouseEventFlags {
-  MOUSE_MOVED = 0x0001,
-  DOUBLE_CLICK = 0x0002,
-  MOUSE_WHEELED = 0x0004,
-  MOUSE_HWHEELED = 0x0008,
+  DOUBLE_CLICK = 0x0000_0002,
+  MOUSE_HWHEELED = 0x0000_0008,
+  MOUSE_MOVED = 0x0000_0001,
+  MOUSE_WHEELED = 0x0000_0004,
 }
 
-/** Decoded `KEY_EVENT_RECORD`. `char` is the UTF-16 code unit (0 for non-character keys). */
+/** Decoded `KEY_EVENT_RECORD`; `character` is the UTF-16 code unit (0 for non-character keys). */
 export interface KeyEventRecord {
+  character: number;
+  controlKeyState: number;
   keyDown: boolean;
   repeatCount: number;
   virtualKeyCode: number;
   virtualScanCode: number;
-  char: number;
-  controlKeyState: number;
 }
 
-/** Decoded `MOUSE_EVENT_RECORD`. `x`/`y` are cell coordinates; wheel delta is the signed high word of `buttonState`. */
+/** Decoded `MOUSE_EVENT_RECORD`; `positionX`/`positionY` are cell coordinates. */
 export interface MouseEventRecord {
-  x: number;
-  y: number;
   buttonState: number;
   controlKeyState: number;
   eventFlags: number;
+  positionX: number;
+  positionY: number;
 }
 
-/** Decoded `WINDOW_BUFFER_SIZE_RECORD` (the new buffer `dwSize`, in cells). */
+/** Decoded `WINDOW_BUFFER_SIZE_RECORD` (`dwSize`, in cells). */
 export interface WindowBufferSizeRecord {
-  cols: number;
+  columns: number;
   rows: number;
 }
 
-/** Decoded `INPUT_RECORD`; the populated field matches `type`. */
+/** Decoded `INPUT_RECORD`; the populated member matches `eventType`. */
 export interface InputRecord {
-  type: EventType;
-  key?: KeyEventRecord;
-  mouse?: MouseEventRecord;
-  size?: WindowBufferSizeRecord;
+  eventType: EventType;
+  keyEvent?: KeyEventRecord;
+  mouseEvent?: MouseEventRecord;
+  windowBufferSizeEvent?: WindowBufferSizeRecord;
 }
 
-/** Decoded `CONSOLE_SCREEN_BUFFER_INFO` (22 bytes). `cols`/`rows` are the visible window extent. */
+/** Decoded `CONSOLE_SCREEN_BUFFER_INFO`; `columns`/`rows` are the visible window extent. */
 export interface ConsoleScreenBufferInfo {
-  sizeX: number;
-  sizeY: number;
+  attributes: number;
+  columns: number;
   cursorX: number;
   cursorY: number;
-  attributes: number;
-  winLeft: number;
-  winTop: number;
-  winRight: number;
-  winBottom: number;
-  maxX: number;
-  maxY: number;
-  cols: number;
+  maximumWindowX: number;
+  maximumWindowY: number;
   rows: number;
+  sizeX: number;
+  sizeY: number;
+  windowBottom: number;
+  windowLeft: number;
+  windowRight: number;
+  windowTop: number;
 }
 
-/** Decode one `INPUT_RECORD` (x64 stride 20) from `buf` at `byteOffset`. */
-export function decodeInputRecord(buf: Buffer, byteOffset = 0): InputRecord {
-  const o = byteOffset;
-  const type = buf.readUInt16LE(o) as EventType;
-  switch (type) {
+/**
+ * Decode one `INPUT_RECORD` (x64 stride `INPUT_RECORD_SIZE`) from `buffer` at `byteOffset`.
+ * @example
+ * const events = Buffer.alloc(INPUT_RECORD_SIZE * count);
+ * Kernel32.ReadConsoleInputW(handle, events.ptr, count, read.ptr);
+ * const record = decodeInputRecord(events, 0);
+ * if (record.eventType === EventType.KEY_EVENT) console.log(record.keyEvent?.virtualKeyCode);
+ */
+export function decodeInputRecord(buffer: Buffer, byteOffset = 0): InputRecord {
+  const eventType = buffer.readUInt16LE(byteOffset) as EventType;
+  switch (eventType) {
     case EventType.KEY_EVENT:
       return {
-        type,
-        key: {
-          keyDown: buf.readInt32LE(o + 4) !== 0,
-          repeatCount: buf.readUInt16LE(o + 8),
-          virtualKeyCode: buf.readUInt16LE(o + 10),
-          virtualScanCode: buf.readUInt16LE(o + 12),
-          char: buf.readUInt16LE(o + 14),
-          controlKeyState: buf.readUInt32LE(o + 16),
+        eventType,
+        keyEvent: {
+          character: buffer.readUInt16LE(byteOffset + 0x0e),
+          controlKeyState: buffer.readUInt32LE(byteOffset + 0x10),
+          keyDown: buffer.readInt32LE(byteOffset + 0x04) !== 0,
+          repeatCount: buffer.readUInt16LE(byteOffset + 0x08),
+          virtualKeyCode: buffer.readUInt16LE(byteOffset + 0x0a),
+          virtualScanCode: buffer.readUInt16LE(byteOffset + 0x0c),
         },
       };
     case EventType.MOUSE_EVENT:
       return {
-        type,
-        mouse: {
-          x: buf.readInt16LE(o + 4),
-          y: buf.readInt16LE(o + 6),
-          buttonState: buf.readUInt32LE(o + 8),
-          controlKeyState: buf.readUInt32LE(o + 12),
-          eventFlags: buf.readUInt32LE(o + 16),
+        eventType,
+        mouseEvent: {
+          buttonState: buffer.readUInt32LE(byteOffset + 0x08),
+          controlKeyState: buffer.readUInt32LE(byteOffset + 0x0c),
+          eventFlags: buffer.readUInt32LE(byteOffset + 0x10),
+          positionX: buffer.readInt16LE(byteOffset + 0x04),
+          positionY: buffer.readInt16LE(byteOffset + 0x06),
         },
       };
     case EventType.WINDOW_BUFFER_SIZE_EVENT:
-      return { type, size: { cols: buf.readInt16LE(o + 4), rows: buf.readInt16LE(o + 6) } };
+      return {
+        eventType,
+        windowBufferSizeEvent: { columns: buffer.readInt16LE(byteOffset + 0x04), rows: buffer.readInt16LE(byteOffset + 0x06) },
+      };
     default:
-      return { type };
+      return { eventType };
   }
 }
 
-/** Decode a `CONSOLE_SCREEN_BUFFER_INFO` (22 bytes) from `buf` at `byteOffset`. */
-export function decodeConsoleScreenBufferInfo(buf: Buffer, byteOffset = 0): ConsoleScreenBufferInfo {
-  const o = byteOffset;
-  const winLeft = buf.readInt16LE(o + 10);
-  const winTop = buf.readInt16LE(o + 12);
-  const winRight = buf.readInt16LE(o + 14);
-  const winBottom = buf.readInt16LE(o + 16);
+/**
+ * Decode a `CONSOLE_SCREEN_BUFFER_INFO` (22 bytes) from `buffer` at `byteOffset`.
+ * @example
+ * const info = Buffer.alloc(22);
+ * Kernel32.GetConsoleScreenBufferInfo(handle, info.ptr);
+ * const { columns, rows } = decodeConsoleScreenBufferInfo(info);
+ */
+export function decodeConsoleScreenBufferInfo(buffer: Buffer, byteOffset = 0): ConsoleScreenBufferInfo {
+  const windowBottom = buffer.readInt16LE(byteOffset + 0x10);
+  const windowLeft = buffer.readInt16LE(byteOffset + 0x0a);
+  const windowRight = buffer.readInt16LE(byteOffset + 0x0e);
+  const windowTop = buffer.readInt16LE(byteOffset + 0x0c);
   return {
-    sizeX: buf.readInt16LE(o + 0),
-    sizeY: buf.readInt16LE(o + 2),
-    cursorX: buf.readInt16LE(o + 4),
-    cursorY: buf.readInt16LE(o + 6),
-    attributes: buf.readUInt16LE(o + 8),
-    winLeft,
-    winTop,
-    winRight,
-    winBottom,
-    maxX: buf.readInt16LE(o + 18),
-    maxY: buf.readInt16LE(o + 20),
-    cols: winRight - winLeft + 1,
-    rows: winBottom - winTop + 1,
+    attributes: buffer.readUInt16LE(byteOffset + 0x08),
+    columns: windowRight - windowLeft + 1,
+    cursorX: buffer.readInt16LE(byteOffset + 0x04),
+    cursorY: buffer.readInt16LE(byteOffset + 0x06),
+    maximumWindowX: buffer.readInt16LE(byteOffset + 0x12),
+    maximumWindowY: buffer.readInt16LE(byteOffset + 0x14),
+    rows: windowBottom - windowTop + 1,
+    sizeX: buffer.readInt16LE(byteOffset + 0x00),
+    sizeY: buffer.readInt16LE(byteOffset + 0x02),
+    windowBottom,
+    windowLeft,
+    windowRight,
+    windowTop,
   };
 }
 
-/** Pack a `COORD` into the by-value `DWORD` argument (low word X, high word Y) used by e.g. `SetConsoleCursorPosition`. */
+/**
+ * Pack a `COORD` into the by-value `DWORD` argument (low word X, high word Y), e.g. for `SetConsoleCursorPosition`.
+ * @example
+ * Kernel32.SetConsoleCursorPosition(handle, packCOORD(0, 0));
+ */
 export function packCOORD(x: number, y: number): DWORD {
-  return ((((y & 0xffff) << 16) | (x & 0xffff)) >>> 0) as DWORD;
+  return (((y & 0xffff) << 16) | (x & 0xffff)) >>> 0;
 }
