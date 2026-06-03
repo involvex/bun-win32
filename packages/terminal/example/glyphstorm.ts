@@ -544,12 +544,13 @@ const onKey = (key: string, t: Term): void => {
   lastInputT = nowTime;
   attractInited = false; // so attract re-seeds cleanly when it resumes
 
-  // ENTER (13/10 → arrives as '\r' / '\n'), BACKSPACE (127/8 → '\x7f'/'\b').
-  if (key === '\r' || key === '\n') {
+  // ENTER bursts the current line; BACKSPACE dissolves the last glyph. The engine
+  // delivers these as named keys (not raw control characters).
+  if (key === 'enter') {
     burstLine();
     return;
   }
-  if (key === '\x7f' || key === '\b') {
+  if (key === 'backspace') {
     dissolveLast();
     return;
   }
@@ -595,6 +596,9 @@ const frame = (t: Term, time: number, dt: number): void => {
 
   // — decay HDR buffer for silky trails —
   const fade = Math.pow(0.84, dt * 60);
+  // Deposits below are per-frame; scale them to a per-second rate so the HDR buffer
+  // reaches the same equilibrium brightness at any frame rate (uncapped included).
+  const depositScale = dt * 60;
   for (let i = 0; i < accR.length; i++) {
     accR[i] *= fade;
     accG[i] *= fade;
@@ -748,9 +752,9 @@ const frame = (t: Term, time: number, dt: number): void => {
     // colour pure; brightness comes from `intensity` (so the tonemap below can lift
     // dense spines toward white while sparse cells keep their colour).
     const col = hsv(hue, sat, 1.0);
-    const cr = (col[0] / 255) * intensity;
-    const cg = (col[1] / 255) * intensity;
-    const cb = (col[2] / 255) * intensity;
+    const cr = (col[0] / 255) * intensity * depositScale;
+    const cg = (col[1] / 255) * intensity * depositScale;
+    const cb = (col[2] / 255) * intensity * depositScale;
 
     const tx = fx - ix;
     const ty = fy - iy;
@@ -864,6 +868,7 @@ run({
   targetFps: Infinity,
   mouse: true,
   pauseOnSpace: false,
+  quitOnQ: false, // it's a typing demo — 'q' is a letter; ESC / Ctrl-C still quit
   init: (t) => {
     allocAccum(t.width, t.height);
     // Pre-warm the attract script so the first displayed/captured frame is already a
