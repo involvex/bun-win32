@@ -8,9 +8,10 @@
  *
  * Run: bun run packages/all/example/gameboy-tty.logic.test.ts
  */
-import { Term } from './_term';
-import { loadCgbAcid2 } from './gameboy-cgb-rom';
-import { loadAcid2 } from './gameboy-rom';
+import { Term } from '@bun-win32/terminal';
+
+import { loadCgbAcid2 } from '../../all/example/gameboy-cgb-rom';
+import { loadAcid2 } from '../../all/example/gameboy-rom';
 import { GameBoy, blitToTerm, cgbColor, __mapperForTest } from './gameboy-tty';
 
 let failures = 0;
@@ -53,8 +54,8 @@ function makeFakeRom(type: number, romBanks: number, ramCode: number): Uint8Arra
   const t = new Term(160, 72); // exact 1:1 (160 cols × 144 px)
   blitToTerm(t, gb.frame);
   let nonBezel = 0;
-  for (let i = 0; i < t.buf.length; i += 3) {
-    if (!(t.buf[i] === 12 && t.buf[i + 1] === 18 && t.buf[i + 2] === 14)) nonBezel += 1;
+  for (let i = 0; i < t.pixels.length; i += 3) {
+    if (!(t.pixels[i] === 12 && t.pixels[i + 1] === 18 && t.pixels[i + 2] === 14)) nonBezel += 1;
   }
   check('blit writes many non-bezel pixels', nonBezel > 1000);
 }
