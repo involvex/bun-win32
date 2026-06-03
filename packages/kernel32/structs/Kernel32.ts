@@ -2551,7 +2551,7 @@ class Kernel32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createwaitabletimerexw
-  public static CreateWaitableTimerExW(lpTimerAttributes: LPVOID, lpTimerName: LPWSTR, dwFlags: DWORD, dwDesiredAccess: DWORD): HANDLE {
+  public static CreateWaitableTimerExW(lpTimerAttributes: LPVOID | NULL, lpTimerName: LPWSTR | NULL, dwFlags: DWORD, dwDesiredAccess: DWORD): HANDLE {
     return Kernel32.Load('CreateWaitableTimerExW')(lpTimerAttributes, lpTimerName, dwFlags, dwDesiredAccess);
   }
 
@@ -7822,7 +7822,7 @@ class Kernel32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setwaitabletimer
-  public static SetWaitableTimer(hTimer: HANDLE, lpDueTime: LPVOID, lPeriod: INT, pfnCompletionRoutine: LPVOID, lpArgToCompletionRoutine: LPVOID, fResume: BOOL): BOOL {
+  public static SetWaitableTimer(hTimer: HANDLE, lpDueTime: LPVOID, lPeriod: INT, pfnCompletionRoutine: LPVOID | NULL, lpArgToCompletionRoutine: LPVOID | NULL, fResume: BOOL): BOOL {
     return Kernel32.Load('SetWaitableTimer')(hTimer, lpDueTime, lPeriod, pfnCompletionRoutine, lpArgToCompletionRoutine, fResume);
   }
 
