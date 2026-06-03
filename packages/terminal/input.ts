@@ -4,9 +4,10 @@ import Kernel32, {
   INPUT_RECORD_SIZE,
   MouseButtonState,
   MouseEventFlags,
-  STD_HANDLE,
   decodeInputRecord,
 } from '@bun-win32/kernel32';
+
+import { closeConsoleHandle, openConsoleInputHandle } from './console';
 
 const { min } = Math;
 
@@ -51,8 +52,8 @@ const VIRTUAL_KEY_NAMES: Record<number, string> = {
   0x7b: 'f12',
 };
 
-Kernel32.Preload(['FlushConsoleInputBuffer', 'GetConsoleMode', 'GetNumberOfConsoleInputEvents', 'GetStdHandle', 'ReadConsoleInputW', 'SetConsoleMode']);
-const { FlushConsoleInputBuffer, GetConsoleMode, GetNumberOfConsoleInputEvents, GetStdHandle, ReadConsoleInputW, SetConsoleMode } = Kernel32;
+Kernel32.Preload(['FlushConsoleInputBuffer', 'GetConsoleMode', 'GetNumberOfConsoleInputEvents', 'ReadConsoleInputW', 'SetConsoleMode']);
+const { FlushConsoleInputBuffer, GetConsoleMode, GetNumberOfConsoleInputEvents, ReadConsoleInputW, SetConsoleMode } = Kernel32;
 
 /** A keyboard event. `down` distinguishes press from release (only the FFI backend reports releases). */
 export interface KeyEvent {
@@ -79,7 +80,11 @@ export interface PointerEvent {
 }
 
 export interface InputHandlers {
+  /** Window focus gained (`true`) or lost (`false`). */
+  focus?: (focused: boolean) => void;
   key?: (event: KeyEvent) => void;
+  /** A run of pasted/injected text (characters delivered with no physical key). Opt-in: with no handler, pasted characters arrive as ordinary key events. */
+  paste?: (text: string) => void;
   pointer?: (event: PointerEvent) => void;
   resize?: (columns: number, rows: number) => void;
 }
@@ -100,13 +105,14 @@ export class ConsoleInput {
 
   #handlers: InputHandlers;
 
+  #pasteBuffer = '';
   #pendingCount = Buffer.alloc(4);
   #readCount = Buffer.alloc(4);
   #records = Buffer.alloc(INPUT_RECORD_SIZE * READ_BATCH);
 
   constructor(handlers: InputHandlers) {
     this.#handlers = handlers;
-    this.#handle = GetStdHandle(STD_HANDLE.INPUT);
+    this.#handle = openConsoleInputHandle();
     const modeBuffer = Buffer.alloc(4);
     this.#savedMode = GetConsoleMode(this.#handle, modeBuffer.ptr) ? modeBuffer.readUInt32LE(0) : 0;
     SetConsoleMode(this.#handle, RAW_INPUT_MODE);
@@ -125,12 +131,28 @@ export class ConsoleInput {
       for (let index = 0; index < read; index++) this.#dispatch(index * INPUT_RECORD_SIZE);
       pending -= read;
     }
+    this.#flushPaste();
+  }
+
+  // Emit any accumulated pasted text as a single event. Pasted/injected characters
+  // arrive with no physical key (virtual-key code 0); when a paste handler is
+  // registered they are coalesced here instead of dispatched as key events.
+  #flushPaste(): void {
+    if (this.#pasteBuffer.length === 0) return;
+    const text = this.#pasteBuffer;
+    this.#pasteBuffer = '';
+    this.#handlers.paste?.(text);
   }
 
   #dispatch(byteOffset: number): void {
     const record = decodeInputRecord(this.#records, byteOffset);
     if (record.eventType === EventType.KEY_EVENT) {
       const event = record.keyEvent!;
+      if (this.#handlers.paste !== undefined && event.virtualKeyCode === 0 && event.character !== 0) {
+        if (event.keyDown) this.#pasteBuffer += String.fromCharCode(event.character);
+        return; // swallow both press and release of injected text
+      }
+      this.#flushPaste();
       const controlKeyState = event.controlKeyState;
       const alt = (controlKeyState & (ControlKeyState.LEFT_ALT_PRESSED | ControlKeyState.RIGHT_ALT_PRESSED)) !== 0;
       const ctrl = (controlKeyState & (ControlKeyState.LEFT_CTRL_PRESSED | ControlKeyState.RIGHT_CTRL_PRESSED)) !== 0;
@@ -150,6 +172,7 @@ export class ConsoleInput {
         virtualKeyCode: event.virtualKeyCode,
       });
     } else if (record.eventType === EventType.MOUSE_EVENT) {
+      this.#flushPaste();
       const event = record.mouseEvent!;
       const wheeled = (event.eventFlags & MouseEventFlags.MOUSE_WHEELED) !== 0;
       const wheelHighWord = event.buttonState >>> 16;
@@ -163,13 +186,18 @@ export class ConsoleInput {
         wheel: wheeled ? (wheelDelta > 0 ? 1 : -1) : 0,
       });
     } else if (record.eventType === EventType.WINDOW_BUFFER_SIZE_EVENT) {
+      this.#flushPaste();
       const event = record.windowBufferSizeEvent!;
       this.#handlers.resize?.(event.columns, event.rows);
+    } else if (record.eventType === EventType.FOCUS_EVENT) {
+      this.#flushPaste();
+      this.#handlers.focus?.(record.focusEvent!.setFocus);
     }
   }
 
-  /** Restore the console input mode to its pre-session state. */
+  /** Restore the console input mode to its pre-session state and close the console handle. */
   restore(): void {
     SetConsoleMode(this.#handle, this.#savedMode);
+    closeConsoleHandle(this.#handle);
   }
 }

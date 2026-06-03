@@ -29,8 +29,12 @@ export interface AppSpec {
   mode?: TermMode;
   /** Enable mouse reporting; the loop then maintains `surface.mouse`. */
   mouse?: boolean;
+  /** Window focus gained (`true`) or lost (`false`). */
+  onFocus?: (focused: boolean, surface: Term) => void;
   /** Handle a key press (lowercased). ESC and Ctrl-C always quit. */
   onKey?: (key: string, surface: Term) => void;
+  /** Handle a run of pasted text. */
+  onPaste?: (text: string, surface: Term) => void;
   /** Whether the spacebar toggles pause (default true). */
   pauseOnSpace?: boolean;
   /** Whether `q` quits (default true). */
@@ -153,6 +157,9 @@ const runLive = async (spec: AppSpec, options: TermOptions): Promise<void> => {
   let pendingRows = -1;
 
   const input = new ConsoleInput({
+    // Only register paste when the app wants it — otherwise pasted characters stay
+    // ordinary key events (see ConsoleInput's opt-in coalescing).
+    focus: spec.onFocus ? (focused) => spec.onFocus!(focused, surface) : undefined,
     key: (event) => {
       if (!event.down) return;
       if (event.key === 'esc' || (event.ctrl && event.key === 'c')) {
@@ -171,6 +178,7 @@ const runLive = async (spec: AppSpec, options: TermOptions): Promise<void> => {
       }
       spec.onKey?.(lower, surface);
     },
+    paste: spec.onPaste ? (text) => spec.onPaste!(text, surface) : undefined,
     pointer: (event) => {
       const pixelsPerColumn = surface.width / surface.columns;
       const pixelsPerRow = surface.height / surface.rows;
@@ -282,8 +290,12 @@ export interface TextAppSpec {
   init?: (surface: CharTerm) => void | Promise<void>;
   /** Enable mouse reporting; the loop then maintains `surface.mouse` (in cells). */
   mouse?: boolean;
+  /** Window focus gained (`true`) or lost (`false`). */
+  onFocus?: (focused: boolean, surface: CharTerm) => void;
   /** Handle a key press (case-preserved; `esc`/`enter`/arrows/…). Ctrl-C always quits. */
   onKey?: (key: string, surface: CharTerm) => void;
+  /** Handle a run of pasted text. */
+  onPaste?: (text: string, surface: CharTerm) => void;
   /** Called when the terminal is resized, with a fresh surface; falls back to `init`. */
   resize?: (surface: CharTerm) => void | Promise<void>;
   /** Wrap each frame in DEC synchronized output (mode 2026) for tear-free updates. */
@@ -389,6 +401,7 @@ const runTextLive = async (spec: TextAppSpec): Promise<void> => {
   let pendingRows = -1;
 
   const input = new ConsoleInput({
+    focus: spec.onFocus ? (focused) => spec.onFocus!(focused, surface) : undefined,
     key: (event) => {
       if (!event.down) return;
       if (event.ctrl && event.key === 'c') {
@@ -397,6 +410,7 @@ const runTextLive = async (spec: TextAppSpec): Promise<void> => {
       }
       spec.onKey?.(event.key, surface);
     },
+    paste: spec.onPaste ? (text) => spec.onPaste!(text, surface) : undefined,
     pointer: (event) => {
       const mouse = surface.mouse;
       mouse.x = max(0, min(surface.columns - 1, event.cellX));

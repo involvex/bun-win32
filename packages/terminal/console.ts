@@ -1,4 +1,4 @@
-import Kernel32, { ConsoleMode, STD_HANDLE, decodeConsoleScreenBufferInfo } from '@bun-win32/kernel32';
+import Kernel32, { ConsoleMode, FileAccess, FileCreationDisposition, FileShareMode, decodeConsoleScreenBufferInfo } from '@bun-win32/kernel32';
 
 import { readEnvNumber } from './env';
 import { standardOutput } from './stdout';
@@ -19,8 +19,27 @@ const MOUSE_ON = '\x1b[?1003h\x1b[?1006h';
 const RESET = '\x1b[0m';
 const SHOW_CURSOR = '\x1b[?25h';
 
-Kernel32.Preload(['GetConsoleMode', 'GetConsoleOutputCP', 'GetConsoleScreenBufferInfo', 'GetStdHandle', 'SetConsoleMode', 'SetConsoleOutputCP', 'SetConsoleTitleW']);
-const { GetConsoleMode, GetConsoleOutputCP, GetConsoleScreenBufferInfo, GetStdHandle, SetConsoleMode, SetConsoleOutputCP, SetConsoleTitleW } = Kernel32;
+Kernel32.Preload(['CloseHandle', 'CreateFileW', 'GetConsoleMode', 'GetConsoleOutputCP', 'GetConsoleScreenBufferInfo', 'SetConsoleMode', 'SetConsoleOutputCP', 'SetConsoleTitleW']);
+const { CloseHandle, CreateFileW, GetConsoleMode, GetConsoleOutputCP, GetConsoleScreenBufferInfo, SetConsoleMode, SetConsoleOutputCP, SetConsoleTitleW } = Kernel32;
+
+// Bun redirects the standard handles, so GetStdHandle(STD_INPUT/STD_OUTPUT) returns
+// INVALID_HANDLE — the console FFI then silently no-ops (no input, no size). Open the
+// real console device files instead; they work regardless of std-handle redirection.
+const CONSOLE_ACCESS = (FileAccess.GENERIC_READ | FileAccess.GENERIC_WRITE) >>> 0;
+const CONSOLE_INPUT_PATH = Buffer.from('CONIN$\0', 'utf16le');
+const CONSOLE_OUTPUT_PATH = Buffer.from('CONOUT$\0', 'utf16le');
+const CONSOLE_SHARE = (FileShareMode.FILE_SHARE_READ | FileShareMode.FILE_SHARE_WRITE) >>> 0;
+
+/** Open a handle to the real console input buffer (`CONIN$`). Caller closes it with {@link closeConsoleHandle}. */
+export const openConsoleInputHandle = (): bigint => CreateFileW(CONSOLE_INPUT_PATH.ptr, CONSOLE_ACCESS, CONSOLE_SHARE, null, FileCreationDisposition.OPEN_EXISTING, 0, 0n);
+
+/** Open a handle to the real console screen buffer (`CONOUT$`). Caller closes it with {@link closeConsoleHandle}. */
+export const openConsoleOutputHandle = (): bigint => CreateFileW(CONSOLE_OUTPUT_PATH.ptr, CONSOLE_ACCESS, CONSOLE_SHARE, null, FileCreationDisposition.OPEN_EXISTING, 0, 0n);
+
+/** Close a handle returned by {@link openConsoleInputHandle} / {@link openConsoleOutputHandle}. */
+export const closeConsoleHandle = (handle: bigint): void => {
+  CloseHandle(handle);
+};
 
 export interface ConsoleSessionOptions {
   /** Enable xterm mouse reporting (all-motion + SGR coordinates). */
@@ -47,7 +66,7 @@ export class ConsoleSession {
   #savedMode: number;
 
   constructor(options?: ConsoleSessionOptions) {
-    this.#handle = GetStdHandle(STD_HANDLE.OUTPUT);
+    this.#handle = openConsoleOutputHandle();
     const modeBuffer = Buffer.alloc(4);
     this.#savedMode = GetConsoleMode(this.#handle, modeBuffer.ptr) ? modeBuffer.readUInt32LE(0) : 0;
     SetConsoleMode(this.#handle, this.#savedMode | ConsoleMode.ENABLE_PROCESSED_OUTPUT | ConsoleMode.ENABLE_VIRTUAL_TERMINAL_PROCESSING);
@@ -70,6 +89,7 @@ export class ConsoleSession {
     this.#write((this.#mouse ? MOUSE_OFF : '') + RESET + AUTOWRAP_ON + SHOW_CURSOR + ALTERNATE_SCREEN_OFF);
     SetConsoleMode(this.#handle, this.#savedMode);
     SetConsoleOutputCP(this.#savedCodePage);
+    closeConsoleHandle(this.#handle);
   }
 }
 
@@ -83,11 +103,13 @@ export const detectConsoleSize = (): { columns: number; rows: number } => {
   let rows = readEnvNumber('TERM_ROWS', NaN);
   if (!Number.isFinite(columns) || !Number.isFinite(rows)) {
     const buffer = Buffer.alloc(22);
-    if (GetConsoleScreenBufferInfo(GetStdHandle(STD_HANDLE.OUTPUT), buffer.ptr)) {
+    const handle = openConsoleOutputHandle();
+    if (GetConsoleScreenBufferInfo(handle, buffer.ptr)) {
       const info = decodeConsoleScreenBufferInfo(buffer);
       if (!Number.isFinite(columns)) columns = info.columns;
       if (!Number.isFinite(rows)) rows = info.rows;
     }
+    closeConsoleHandle(handle);
   }
   if (!Number.isFinite(columns)) columns = 120;
   if (!Number.isFinite(rows)) rows = 40;
