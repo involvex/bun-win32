@@ -608,22 +608,40 @@ export class Term {
         const pixelColumnBase = column * pixelWidth;
         let minimumLuma = 0x7fffffff;
         let maximumLuma = -1;
+        let totalRed = 0;
+        let totalGreen = 0;
+        let totalBlue = 0;
+        // Every sub-cell mode that reaches here is 2 pixels wide (quad 2×2,
+        // sextant 2×3, braille 2×4); only the height varies. Unrolling the
+        // two-wide inner pair drops the column loop, its bounds check, and the
+        // per-subpixel index multiply. The running totals make the solid-cell
+        // branch a divide with no second pass.
         for (let subRow = 0; subRow < pixelHeight; subRow++) {
           const rowOffset = ((pixelRowBase + subRow) * width + pixelColumnBase) * 3;
-          for (let subColumn = 0; subColumn < pixelWidth; subColumn++) {
-            const offset = rowOffset + subColumn * 3;
-            const subRed = pixels[offset];
-            const subGreen = pixels[offset + 1];
-            const subBlue = pixels[offset + 2];
-            const subIndex = subRow * pixelWidth + subColumn;
-            subpixelRed[subIndex] = subRed;
-            subpixelGreen[subIndex] = subGreen;
-            subpixelBlue[subIndex] = subBlue;
-            const luma = subRed * 299 + subGreen * 587 + subBlue * 114;
-            subpixelLuma[subIndex] = luma;
-            if (luma < minimumLuma) minimumLuma = luma;
-            if (luma > maximumLuma) maximumLuma = luma;
-          }
+          const subIndex = subRow << 1;
+          const leftRed = pixels[rowOffset];
+          const leftGreen = pixels[rowOffset + 1];
+          const leftBlue = pixels[rowOffset + 2];
+          subpixelRed[subIndex] = leftRed;
+          subpixelGreen[subIndex] = leftGreen;
+          subpixelBlue[subIndex] = leftBlue;
+          const leftLuma = leftRed * 299 + leftGreen * 587 + leftBlue * 114;
+          subpixelLuma[subIndex] = leftLuma;
+          if (leftLuma < minimumLuma) minimumLuma = leftLuma;
+          if (leftLuma > maximumLuma) maximumLuma = leftLuma;
+          const rightRed = pixels[rowOffset + 3];
+          const rightGreen = pixels[rowOffset + 4];
+          const rightBlue = pixels[rowOffset + 5];
+          subpixelRed[subIndex + 1] = rightRed;
+          subpixelGreen[subIndex + 1] = rightGreen;
+          subpixelBlue[subIndex + 1] = rightBlue;
+          const rightLuma = rightRed * 299 + rightGreen * 587 + rightBlue * 114;
+          subpixelLuma[subIndex + 1] = rightLuma;
+          if (rightLuma < minimumLuma) minimumLuma = rightLuma;
+          if (rightLuma > maximumLuma) maximumLuma = rightLuma;
+          totalRed += leftRed + rightRed;
+          totalGreen += leftGreen + rightGreen;
+          totalBlue += leftBlue + rightBlue;
         }
         let foregroundRed: number;
         let foregroundGreen: number;
@@ -633,17 +651,9 @@ export class Term {
         let backgroundBlue: number;
         let glyphMask: number;
         if (maximumLuma - minimumLuma < SOLID_LUMA_SPAN) {
-          let sumRed = 0;
-          let sumGreen = 0;
-          let sumBlue = 0;
-          for (let subIndex = 0; subIndex < subpixelCount; subIndex++) {
-            sumRed += subpixelRed[subIndex];
-            sumGreen += subpixelGreen[subIndex];
-            sumBlue += subpixelBlue[subIndex];
-          }
-          foregroundRed = backgroundRed = (sumRed / subpixelCount) | 0;
-          foregroundGreen = backgroundGreen = (sumGreen / subpixelCount) | 0;
-          foregroundBlue = backgroundBlue = (sumBlue / subpixelCount) | 0;
+          foregroundRed = backgroundRed = (totalRed / subpixelCount) | 0;
+          foregroundGreen = backgroundGreen = (totalGreen / subpixelCount) | 0;
+          foregroundBlue = backgroundBlue = (totalBlue / subpixelCount) | 0;
           glyphMask = 0;
         } else {
           const midLuma = (minimumLuma + maximumLuma) >> 1;

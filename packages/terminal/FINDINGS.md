@@ -91,4 +91,45 @@ deleted the now-dead `#emitColor`. Output bytes unchanged; two public methods ad
 
 STATIC flat (skip path emits nothing). Golden green; full suite green.
 
+## Round 4 — unroll the two-wide multi-mode gather · KEEP
+
+**Hypothesis.** `#emitMulti`'s sub-pixel gather ran a variable-bound inner column
+loop. But every mode that reaches it is exactly 2 pixels wide (quad 2×2, sextant
+2×3, braille 2×4) — only the height varies. Hardcoding width 2 and unrolling the
+inner pair removes the loop, its bounds check, and the `subRow*pixelWidth+subColumn`
+index multiply.
+
+**Change.** `pixel.ts` — `#emitMulti` gather rewritten as an explicit left/right
+pair per row (`subIndex = subRow << 1`).
+
+**Result.**
+
+| scenario | before | after | Δ |
+| --- | ---: | ---: | ---: |
+| quad / tc / exact — VIDEO | 1740 | 1804 | +4% |
+| sextant / tc / exact — VIDEO | 1426 | 1517 | +6% |
+| sextant / 16 / exact — VIDEO | 2760 | 3022 | **+9%** |
+
+Half paths untouched (different emit). Golden green; modes-decode test green.
+
+## Round 5 — accumulate totals in the gather, drop the solid re-pass · KEEP
+
+**Hypothesis.** In coherent content many cells fall under `SOLID_LUMA_SPAN` and take
+the solid branch, which then re-loops the sub-pixels just to sum them. The gather
+already visits each sub-pixel, so accumulating running totals there lets the solid
+branch divide with no second pass (identical average → byte-identical).
+
+**Change.** `pixel.ts` — `#emitMulti` gather keeps `totalRed/Green/Blue`; the solid
+branch uses them directly and its summation loop is deleted.
+
+**Result.**
+
+| scenario | before | after | Δ vs baseline |
+| --- | ---: | ---: | ---: |
+| quad / tc / exact — VIDEO | 1804 | 1897 | **+36%** |
+| sextant / tc / exact — VIDEO | 1517 | 1565 | **+32%** |
+| sextant / 16 / exact — VIDEO | 3022 | 3189 | **+19%** |
+
+Golden green; full suite green.
+
 ---
