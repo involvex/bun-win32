@@ -9,6 +9,13 @@ import type { RGB, TermDepth, TermDiff, TermMode, TermOptions } from './types';
 
 const { max, min, round } = Math;
 
+// Live showcase controls (pixel `run` loop): F2/F3/F4 cycle the sub-cell mode,
+// colour depth, and diff strategy so a demo can flip to ASCII / 16-colour / etc.
+// mid-run. The surface reconfigures and the demo re-inits at the new resolution.
+const DEPTH_CYCLE: TermDepth[] = ['truecolor', '256', '16'];
+const DIFF_CYCLE: TermDiff[] = ['exact', 'threshold', 'none'];
+const MODE_CYCLE: TermMode[] = ['half', 'quad', 'sextant', 'braille', 'ascii'];
+
 /** Per-app configuration for the pixel surface (`run`). */
 export interface AppSpec {
   /** Seconds of simulation to advance before a CAPTURE_PNG. */
@@ -155,6 +162,8 @@ const runLive = async (spec: AppSpec, options: TermOptions): Promise<void> => {
   let running = true;
   let pendingColumns = -1;
   let pendingRows = -1;
+  let reconfigurePending = false;
+  const reconfigureRequest: TermOptions = {};
 
   const input = new ConsoleInput({
     // Only register paste when the app wants it — otherwise pasted characters stay
@@ -174,6 +183,22 @@ const runLive = async (spec: AppSpec, options: TermOptions): Promise<void> => {
       if (event.key === 'space') {
         if (spec.pauseOnSpace !== false) paused = !paused;
         spec.onKey?.('space', surface);
+        return;
+      }
+      // Reserved live-showcase keys (applied in the loop body, where re-init can await).
+      if (event.key === 'f2') {
+        reconfigureRequest.mode = MODE_CYCLE[(MODE_CYCLE.indexOf(surface.mode) + 1) % MODE_CYCLE.length];
+        reconfigurePending = true;
+        return;
+      }
+      if (event.key === 'f3') {
+        reconfigureRequest.depth = DEPTH_CYCLE[(DEPTH_CYCLE.indexOf(surface.depth) + 1) % DEPTH_CYCLE.length];
+        reconfigurePending = true;
+        return;
+      }
+      if (event.key === 'f4') {
+        reconfigureRequest.diff = DIFF_CYCLE[(DIFF_CYCLE.indexOf(surface.diff) + 1) % DIFF_CYCLE.length];
+        reconfigurePending = true;
         return;
       }
       spec.onKey?.(lower, surface);
@@ -232,6 +257,15 @@ const runLive = async (spec: AppSpec, options: TermOptions): Promise<void> => {
         }
         pendingColumns = -1;
         pendingRows = -1;
+      }
+      if (reconfigurePending) {
+        reconfigurePending = false;
+        surface.reconfigure(reconfigureRequest);
+        reconfigureRequest.depth = undefined;
+        reconfigureRequest.diff = undefined;
+        reconfigureRequest.mode = undefined;
+        if (spec.resize) await spec.resize(surface);
+        else await spec.init?.(surface);
       }
 
       const now = Bun.nanoseconds();

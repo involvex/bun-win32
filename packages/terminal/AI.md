@@ -95,4 +95,5 @@ Env knobs: `TERM_MODE/TERM_DIFF/TERM_DEPTH/TERM_THRESHOLD`, `TERM_COLS/TERM_ROWS
 - Windows only (Bun + Win32 console via `@bun-win32/kernel32`).
 - `Term` mouse coordinates are pixels; `CharTerm`'s are cells.
 - `run` / `runText` default to uncapped fps (`targetFps: Infinity`); set a finite `targetFps` to pace.
+- In a `run` (pixel) live loop, **F2 / F3 / F4** cycle the sub-cell mode / colour depth / diff strategy on the fly (the surface reconfigures and the demo re-inits); handy for showing the engine's range mid-run.
 - The console is restored on exit/crash; ESC and Ctrl-C always quit a live loop.
