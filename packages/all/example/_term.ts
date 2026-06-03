@@ -20,6 +20,19 @@
  * zlib container) so a frame can be inspected headlessly, and a BENCH mode that
  * reports the raw frame-production ceiling as JSON. No native addon, no deps.
  *
+ * The engine is configurable so the SAME code can drive a quiet interactive CLI,
+ * a text UI, a 60fps procedural scene, full-motion video, or a hyper-detailed
+ * game — three orthogonal axes, all with backward-compatible defaults:
+ *   • MODE — sub-cell packing. half (1×2, default, photo-grade) · quad (2×2) ·
+ *     sextant (2×3) · braille (2×4). The higher modes quantise each cell to two
+ *     colours + the best Unicode glyph, trading CPU for 2×/3×/4× resolution.
+ *   • DIFF — exact (repaint changed cells, default) · threshold (also skip cells
+ *     that drifted ≤ N per channel — huge on coherent video/game frames) · none.
+ *   • DEPTH — truecolor (default) · 256 · 16. Fewer bits ⇒ far fewer bytes/frame,
+ *     so a 16-colour stream reaches tens of thousands of fps on coherent content.
+ * Configure via `new Term(cols, rows, { mode, diff, depth, threshold })`, the
+ * DemoSpec fields, or the TERM_* env knobs below.
+ *
  * Demos call `runDemo({ title, frame })`. Env knobs:
  *   DEMO_DURATION_MS=<ms>     live mode auto-exit
  *   CAPTURE_PNG=<abs path>    render one deterministic frame to PNG and exit
@@ -27,6 +40,10 @@
  *   CAPTURE_FPS=<n>           fixed sim timestep for capture/bench     (default 60)
  *   CAPTURE_FRAMES=<n>        write n PNGs (path.0.png …) across [0,CAPTURE_T]
  *   TERM_COLS / TERM_ROWS     force the grid size (deterministic capture)
+ *   TERM_MODE=half|quad|sextant|braille     sub-cell packing / resolution
+ *   TERM_DIFF=exact|threshold|none          frame diff strategy
+ *   TERM_DEPTH=truecolor|256|16             colour depth of the escapes
+ *   TERM_THRESHOLD=<0..255>                 drift tolerance for TERM_DIFF=threshold
  *   BENCH=1 [BENCH_FRAMES=n]  measure frame-production FPS, print JSON, exit
  *
  * Engine/APIs: @bun-win32/kernel32 (console handle/mode/CP/title) via ../index.
@@ -271,14 +288,212 @@ export const encodePNG = (rgb: Uint8Array, w: number, h: number): Uint8Array => 
   return png;
 };
 
+// ── Render modes & encoder options ─────────────────────────────────────────────
+// A character cell can pack more than the classic 1×2 upper-half-block. The
+// higher modes quantise each cell to TWO colours (a foreground + a background)
+// and pick the Unicode glyph whose lit sub-cells best match the pixels — trading
+// a little CPU for 2×/3×/4× the spatial resolution.
+//   half    1×2  upper-half-block ▀            — fastest, the default, photo-grade
+//   quad    2×2  quadrant blocks  ▘▝▖▗▌▐▀▄▚▞…   — 2× horizontal detail
+//   sextant 2×3  legacy sextants  (U+1FB00)    — 2×3 detail (Unicode 13)
+//   braille 2×4  braille dots     (U+2800)     — 2×4 detail, fine etched look
+export type TermMode = 'half' | 'quad' | 'sextant' | 'braille';
+// Diff strategy: exact = repaint changed cells; threshold = also skip cells whose
+// colour drifted by ≤ `threshold` per channel (huge win on video/photographic
+// content); none = repaint every cell every frame (robust on flaky terminals).
+export type TermDiff = 'exact' | 'threshold' | 'none';
+// Colour depth of the emitted escapes. Fewer bits → far fewer bytes per frame.
+export type TermDepth = 'truecolor' | '256' | '16';
+export interface TermOptions {
+  mode?: TermMode;
+  diff?: TermDiff;
+  depth?: TermDepth;
+  /** diff='threshold': max per-channel delta (0..255) a cell may drift before repaint. */
+  threshold?: number;
+}
+/** [pxW, pxH] sub-pixels packed into one character cell. */
+const MODE_DIMS: Record<TermMode, readonly [number, number]> = {
+  half: [1, 2],
+  quad: [2, 2],
+  sextant: [2, 3],
+  braille: [2, 4],
+};
+
+const bytesOf = (s: string): Uint8Array => {
+  const b = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i);
+  return b;
+};
+
+// Decimal byte sequences for 0..255 — kills the per-cell integer→string + division
+// work that dominated the old colour-emit path.
+const DEC: Uint8Array[] = (() => {
+  const a: Uint8Array[] = new Array(256);
+  for (let n = 0; n < 256; n++) a[n] = bytesOf('' + n);
+  return a;
+})();
+
+// Static SGR prefixes (truecolour + 256/16-colour), copied wholesale per cell.
+const B_FG_TC = bytesOf('\x1b[38;2;');
+const B_BG_TC = bytesOf('\x1b[48;2;');
+const B_MID_TC = bytesOf(';48;2;'); // combined fg→bg join (one escape sets both)
+const B_FG_IDX = bytesOf('\x1b[38;5;');
+const B_BG_IDX = bytesOf('\x1b[48;5;');
+const B_MID_IDX = bytesOf(';48;5;');
+const B_CSI = bytesOf('\x1b[');
+const HOME_BYTES = bytesOf(HOME);
+
+/** UTF-8 encode a single code point (≤4 bytes). */
+const cpToUtf8 = (cp: number): Uint8Array => {
+  if (cp < 0x80) return Uint8Array.of(cp);
+  if (cp < 0x800) return Uint8Array.of(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f));
+  if (cp < 0x10000) return Uint8Array.of(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+  return Uint8Array.of(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+};
+
+// ── Glyph code-point tables, indexed by the lit sub-cell bitmask ───────────────
+const HALF_GLYPH = cpToUtf8(0x2580); // ▀
+
+// Quadrant blocks. bit0=TL bit1=TR bit2=BL bit3=BR.
+const QUAD_CP = [0x20, 0x2598, 0x259d, 0x2580, 0x2596, 0x258c, 0x259e, 0x259b, 0x2597, 0x259a, 0x2590, 0x259c, 0x2584, 0x2599, 0x259f, 0x2588];
+const QUAD_BYTES = QUAD_CP.map(cpToUtf8);
+
+// Legacy-computing sextants (Unicode 13). bit0=TL bit1=TR bit2=ML bit3=MR bit4=BL
+// bit5=BR — this matches the Unicode sextant bit-value convention exactly, so the
+// glyph for mask v is U+1FB00 + v, except blank/full/left-col/right-col which
+// reuse pre-existing block characters.
+const sextantCp = (v: number): number => {
+  if (v === 0) return 0x20; // blank
+  if (v === 63) return 0x2588; // █ full
+  if (v === 21) return 0x258c; // ▌ left column  (TL+ML+BL)
+  if (v === 42) return 0x2590; // ▐ right column (TR+MR+BR)
+  return 0x1fb00 + (v - 1 - (v > 21 ? 1 : 0) - (v > 42 ? 1 : 0));
+};
+const SEXT_BYTES = (() => {
+  const a: Uint8Array[] = new Array(64);
+  for (let v = 0; v < 64; v++) a[v] = cpToUtf8(sextantCp(v));
+  return a;
+})();
+
+// Braille (U+2800). The mask IS the dot pattern, so glyph = U+2800 + mask.
+const BRAILLE_BYTES = (() => {
+  const a: Uint8Array[] = new Array(256);
+  for (let v = 0; v < 256; v++) a[v] = cpToUtf8(0x2800 + v);
+  return a;
+})();
+
+// Sub-cell index (sy*pxW+sx) → glyph bit position, per mode. Only braille's dot
+// numbering is non-row-major.
+const QUAD_BIT = [0, 1, 2, 3];
+const SEXT_BIT = [0, 1, 2, 3, 4, 5];
+const BRAILLE_BIT = [0, 3, 1, 4, 2, 5, 6, 7]; // dots 1,4,2,5,3,6,7,8
+
+// ── Colour-depth quantisers ────────────────────────────────────────────────────
+// xterm 256-colour: 6×6×6 cube (16..231) + 24-step grey ramp (232..255).
+const CUBE = [0, 95, 135, 175, 215, 255];
+const CH6 = new Uint8Array(256);
+for (let v = 0; v < 256; v++) {
+  let best = 0;
+  let bd = 1e9;
+  for (let i = 0; i < 6; i++) {
+    const d = v - CUBE[i];
+    const ad = d < 0 ? -d : d;
+    if (ad < bd) {
+      bd = ad;
+      best = i;
+    }
+  }
+  CH6[v] = best;
+}
+const quant256Exact = (r: number, g: number, b: number): number => {
+  const mx = r > g ? (r > b ? r : b) : g > b ? g : b;
+  const mn = r < g ? (r < b ? r : b) : g < b ? g : b;
+  if (mx - mn < 8) {
+    // near-grey → use the smoother 24-step grey ramp
+    const gray = (r * 19595 + g * 38470 + b * 7471) >> 16;
+    if (gray < 4) return 16;
+    if (gray > 246) return 231;
+    let lvl = (((gray - 8) / 10) + 0.5) | 0;
+    if (lvl < 0) lvl = 0;
+    else if (lvl > 23) lvl = 23;
+    return 232 + lvl;
+  }
+  return 16 + 36 * CH6[r] + 6 * CH6[g] + CH6[b];
+};
+// Bake the (branchy) 256-colour mapping into a 15-bit LUT so the hot path is a
+// single table lookup — same shape as the 16-colour LUT below.
+const LUT256 = new Uint8Array(32768);
+for (let r5 = 0; r5 < 32; r5++) {
+  for (let g5 = 0; g5 < 32; g5++) {
+    for (let b5 = 0; b5 < 32; b5++) {
+      LUT256[(r5 << 10) | (g5 << 5) | b5] = quant256Exact((r5 << 3) | (r5 >> 2), (g5 << 3) | (g5 >> 2), (b5 << 3) | (b5 >> 2));
+    }
+  }
+}
+const quant256 = (r: number, g: number, b: number): number => LUT256[((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)];
+// 16-colour ANSI palette, with a 15-bit (32³) nearest-colour lookup table.
+const PAL16: ReadonlyArray<readonly [number, number, number]> = [
+  [0, 0, 0], [128, 0, 0], [0, 128, 0], [128, 128, 0], [0, 0, 128], [128, 0, 128], [0, 128, 128], [192, 192, 192],
+  [128, 128, 128], [255, 0, 0], [0, 255, 0], [255, 255, 0], [0, 0, 255], [255, 0, 255], [0, 255, 255], [255, 255, 255],
+];
+const LUT16 = new Uint8Array(32768);
+for (let r5 = 0; r5 < 32; r5++) {
+  for (let g5 = 0; g5 < 32; g5++) {
+    for (let b5 = 0; b5 < 32; b5++) {
+      const r = (r5 << 3) | (r5 >> 2);
+      const g = (g5 << 3) | (g5 >> 2);
+      const b = (b5 << 3) | (b5 >> 2);
+      let best = 0;
+      let bd = 1e18;
+      for (let i = 0; i < 16; i++) {
+        const p = PAL16[i];
+        const dr = r - p[0], dg = g - p[1], db = b - p[2];
+        const d = dr * dr + dg * dg + db * db;
+        if (d < bd) {
+          bd = d;
+          best = i;
+        }
+      }
+      LUT16[(r5 << 10) | (g5 << 5) | b5] = best;
+    }
+  }
+}
+const quant16 = (r: number, g: number, b: number): number => LUT16[((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)];
+
+/** Max per-channel |Δ| between a packed RGB and loose r,g,b — the threshold metric. */
+const chDelta = (packed: number, r: number, g: number, b: number): number => {
+  let d = ((packed >> 16) & 255) - r;
+  let m = d < 0 ? -d : d;
+  d = ((packed >> 8) & 255) - g;
+  if (d < 0) d = -d;
+  if (d > m) m = d;
+  d = (packed & 255) - b;
+  if (d < 0) d = -d;
+  if (d > m) m = d;
+  return m;
+};
+
+// Per-cell sub-pixel scratch (≤8 sub-pixels = braille's 2×4). buildFrame is
+// synchronous and non-reentrant, so module-level scratch is safe and alloc-free.
+const SUBR = new Uint8Array(8);
+const SUBG = new Uint8Array(8);
+const SUBB = new Uint8Array(8);
+const SUBL = new Int32Array(8);
+
 // ── The framebuffer / renderer ─────────────────────────────────────────────────
 export class Term {
   readonly cols: number;
   readonly rows: number;
-  readonly W: number; // pixel grid width  = cols
-  readonly H: number; // pixel grid height = rows*2
+  readonly W: number; // pixel grid width  = cols * pxW
+  readonly H: number; // pixel grid height = rows * pxH
   readonly aspect: number; // W / H
   readonly buf: Uint8Array; // RGB, length W*H*3
+
+  // Encoder configuration (read by the HUD; immutable for a Term's lifetime).
+  readonly mode: TermMode;
+  readonly diff: TermDiff;
+  readonly depth: TermDepth;
+  readonly threshold: number;
 
   // Mouse state (only populated when the demo opts in via `mouse: true`; updated
   // from xterm SGR mouse reports parsed off stdin). Coordinates are in PIXELS.
@@ -290,25 +505,64 @@ export class Term {
   mouseSeq = 0; // increments on every mouse event (demos detect movement/idle via this)
   wheel = 0; // accumulated wheel ticks (+up / −down); demo may read and reset
 
-  private prevTop: Int32Array;
-  private prevBot: Int32Array;
+  // Sub-cell packing for the active mode.
+  private readonly pxW: number;
+  private readonly pxH: number;
+  private readonly subN: number;
+  private readonly bitLayout: ReadonlyArray<number> | null; // null = half (constant glyph)
+  private readonly glyphTable: Uint8Array[] | null; // null = half
+
+  // Per-cell diff cache. For diff='exact'/'none' these hold the last EMITTED key
+  // (packed RGB for truecolour, palette index otherwise); for diff='threshold'
+  // prevFg/prevBg hold the last-SENT source RGB so drift is bounded to `threshold`.
+  private prevFg: Int32Array;
+  private prevBg: Int32Array;
+  private prevGlyph: Int32Array; // last-emitted glyph mask per cell (half: unused)
   private firstFrame = true;
-  private _fg = -1;
-  private _bg = -1;
+  // SGR pen state — the colours the terminal currently holds (persist across frames).
+  private penFg = -1;
+  private penBg = -1;
 
   // Fast output byte buffer.
   private out = new Uint8Array(1 << 18);
   private outPos = 0;
 
-  constructor(cols: number, rows: number) {
+  constructor(cols: number, rows: number, opts?: TermOptions) {
+    this.mode = opts?.mode ?? 'half';
+    this.diff = opts?.diff ?? 'exact';
+    this.depth = opts?.depth ?? 'truecolor';
+    this.threshold = opts?.threshold ?? 8;
+    const [pw, ph] = MODE_DIMS[this.mode];
+    this.pxW = pw;
+    this.pxH = ph;
+    this.subN = pw * ph;
     this.cols = cols;
     this.rows = rows;
-    this.W = cols;
-    this.H = rows * 2;
+    this.W = cols * pw;
+    this.H = rows * ph;
     this.aspect = this.W / this.H;
     this.buf = new Uint8Array(this.W * this.H * 3);
-    this.prevTop = new Int32Array(cols * rows).fill(-1);
-    this.prevBot = new Int32Array(cols * rows).fill(-1);
+    const cells = cols * rows;
+    this.prevFg = new Int32Array(cells).fill(-1);
+    this.prevBg = new Int32Array(cells).fill(-1);
+    this.prevGlyph = new Int32Array(cells).fill(-1);
+    switch (this.mode) {
+      case 'quad':
+        this.bitLayout = QUAD_BIT;
+        this.glyphTable = QUAD_BYTES;
+        break;
+      case 'sextant':
+        this.bitLayout = SEXT_BIT;
+        this.glyphTable = SEXT_BYTES;
+        break;
+      case 'braille':
+        this.bitLayout = BRAILLE_BIT;
+        this.glyphTable = BRAILLE_BYTES;
+        break;
+      default:
+        this.bitLayout = null;
+        this.glyphTable = null;
+    }
   }
 
   // — pixel ops (bounds-checked; hot enough to inline-ish) —
@@ -424,14 +678,117 @@ export class Term {
     this.outPos = p;
   }
 
+  /** Append a small byte array (escape prefix, decimal, glyph) to the out buffer. */
+  private putBytes(b: Uint8Array): void {
+    const n = b.length;
+    this.ensure(n);
+    const o = this.out;
+    let p = this.outPos;
+    for (let i = 0; i < n; i++) o[p++] = b[i];
+    this.outPos = p;
+  }
+  /** Append the decimal byte sequence for a colour component (0..255), table-driven. */
+  private putDec(n: number): void {
+    this.putBytes(DEC[n]);
+  }
+  /** Emit a cursor move to 1-based (row,col): ESC[row;colH. */
+  private emitCursor(row: number, col: number): void {
+    this.putBytes(B_CSI);
+    this.putUint(row);
+    this.putByte(59); // ;
+    this.putUint(col);
+    this.putByte(72); // H
+  }
+  /**
+   * Emit the minimal SGR to set the pen to (fg,bg). When BOTH differ from the
+   * current pen they go out as ONE combined escape (`…38;2;…;48;2;…m`), halving
+   * the per-cell escape overhead vs two sequences. `fg`/`bg` are packed RGB for
+   * truecolour, palette indices otherwise.
+   */
+  private putColor(fg: number, bg: number): void {
+    const needFg = fg !== this.penFg;
+    const needBg = bg !== this.penBg;
+    if (!needFg && !needBg) return;
+    if (this.depth === 'truecolor') {
+      if (needFg) {
+        this.putBytes(B_FG_TC);
+        this.putDec((fg >> 16) & 255);
+        this.putByte(59);
+        this.putDec((fg >> 8) & 255);
+        this.putByte(59);
+        this.putDec(fg & 255);
+        if (needBg) {
+          this.putBytes(B_MID_TC);
+          this.putDec((bg >> 16) & 255);
+          this.putByte(59);
+          this.putDec((bg >> 8) & 255);
+          this.putByte(59);
+          this.putDec(bg & 255);
+        }
+        this.putByte(109); // m
+      } else {
+        this.putBytes(B_BG_TC);
+        this.putDec((bg >> 16) & 255);
+        this.putByte(59);
+        this.putDec((bg >> 8) & 255);
+        this.putByte(59);
+        this.putDec(bg & 255);
+        this.putByte(109);
+      }
+    } else {
+      // palette index (256 or 16 colour)
+      if (needFg) {
+        this.putBytes(B_FG_IDX);
+        this.putDec(fg);
+        if (needBg) {
+          this.putBytes(B_MID_IDX);
+          this.putDec(bg);
+        }
+        this.putByte(109);
+      } else {
+        this.putBytes(B_BG_IDX);
+        this.putDec(bg);
+        this.putByte(109);
+      }
+    }
+    this.penFg = fg;
+    this.penBg = bg;
+  }
+
   /** Build the diffed frame into the byte buffer (no I/O). Returns byte length. */
   buildFrame(): number {
-    const { cols, rows, W, buf, prevTop, prevBot } = this;
     this.outPos = 0;
-    this.putAscii(HOME);
-    let curRow = 0, curCol = 0;
-    let fg = this._fg, bg = this._bg;
-    const first = this.firstFrame;
+    this.putBytes(HOME_BYTES);
+    if (this.mode === 'half') this.emitHalf();
+    else this.emitMulti();
+    this.firstFrame = false;
+    return this.outPos;
+  }
+
+  /**
+   * The bytes produced by the most recent buildFrame(), as a view (no copy) over
+   * the internal buffer — valid until the next buildFrame/present. Use this to
+   * record frames, pipe to a socket, or write your own flush.
+   */
+  frameBytes(): Uint8Array {
+    return this.out.subarray(0, this.outPos);
+  }
+
+  /** Classic 1×2 upper-half-block (top pixel → fg, bottom → bg). */
+  private emitHalf(): void {
+    // Specialise the overwhelmingly-common truecolour + exact/none case into a
+    // minimal-work loop (cheap key compare → continue); palette / threshold take
+    // the general path where the extra quantise/drift maths actually earns its keep.
+    if (this.depth === 'truecolor' && this.diff !== 'threshold') this.emitHalfFast();
+    else this.emitHalfGeneral();
+  }
+
+  /** Hottest path: half-block, truecolour, exact (or none) diff. */
+  private emitHalfFast(): void {
+    const { cols, rows, W, buf, prevFg, prevBg } = this;
+    const skip = !this.firstFrame && this.diff !== 'none';
+    let curRow = 0;
+    let curCol = 0;
     for (let r = 0; r < rows; r++) {
       const topBase = r * 2 * W * 3;
       const botBase = (r * 2 + 1) * W * 3;
@@ -439,53 +796,196 @@ export class Term {
       for (let c = 0; c < cols; c++) {
         const ti = topBase + c * 3;
         const bi = botBase + c * 3;
-        const topKey = (buf[ti] << 16) | (buf[ti + 1] << 8) | buf[ti + 2];
-        const botKey = (buf[bi] << 16) | (buf[bi + 1] << 8) | buf[bi + 2];
+        const fgKey = (buf[ti] << 16) | (buf[ti + 1] << 8) | buf[ti + 2];
+        const bgKey = (buf[bi] << 16) | (buf[bi + 1] << 8) | buf[bi + 2];
         const idx = cellBase + c;
-        if (!first && prevTop[idx] === topKey && prevBot[idx] === botKey) continue;
-        prevTop[idx] = topKey;
-        prevBot[idx] = botKey;
+        if (skip && prevFg[idx] === fgKey && prevBg[idx] === bgKey) continue;
+        prevFg[idx] = fgKey;
+        prevBg[idx] = bgKey;
         if (curRow !== r || curCol !== c) {
-          this.putAscii(`${ESC}[`);
-          this.putUint(r + 1);
-          this.putByte(59); // ;
-          this.putUint(c + 1);
-          this.putByte(72); // H
+          this.emitCursor(r + 1, c + 1);
           curRow = r;
           curCol = c;
         }
-        if (fg !== topKey) {
-          this.putAscii(`${ESC}[38;2;`);
-          this.putUint((topKey >> 16) & 255);
-          this.putByte(59);
-          this.putUint((topKey >> 8) & 255);
-          this.putByte(59);
-          this.putUint(topKey & 255);
-          this.putByte(109); // m
-          fg = topKey;
-        }
-        if (bg !== botKey) {
-          this.putAscii(`${ESC}[48;2;`);
-          this.putUint((botKey >> 16) & 255);
-          this.putByte(59);
-          this.putUint((botKey >> 8) & 255);
-          this.putByte(59);
-          this.putUint(botKey & 255);
-          this.putByte(109);
-          bg = botKey;
-        }
-        // '▀' U+2580 → E2 96 80
-        this.putByte(0xe2);
-        this.putByte(0x96);
-        this.putByte(0x80);
+        this.putColor(fgKey, bgKey);
+        this.putBytes(HALF_GLYPH);
         curCol++;
-        if (curCol >= cols) curRow = -1; // autowrap is off → force a move next
+        if (curCol >= cols) curRow = -1; // autowrap off → force a move next
       }
     }
-    this._fg = fg;
-    this._bg = bg;
-    this.firstFrame = false;
-    return this.outPos;
+  }
+
+  /** General half-block path: palette depths and/or threshold diffing. */
+  private emitHalfGeneral(): void {
+    const { cols, rows, W, buf, prevFg, prevBg } = this;
+    const first = this.firstFrame;
+    const truecolor = this.depth === 'truecolor';
+    const d256 = this.depth === '256';
+    const thr = this.diff === 'threshold' ? this.threshold : -1;
+    const none = this.diff === 'none';
+    let curRow = 0;
+    let curCol = 0;
+    for (let r = 0; r < rows; r++) {
+      const topBase = r * 2 * W * 3;
+      const botBase = (r * 2 + 1) * W * 3;
+      const cellBase = r * cols;
+      for (let c = 0; c < cols; c++) {
+        const ti = topBase + c * 3;
+        const bi = botBase + c * 3;
+        const tr = buf[ti], tg = buf[ti + 1], tb = buf[ti + 2];
+        const br = buf[bi], bg = buf[bi + 1], bb = buf[bi + 2];
+        const fgRgb = (tr << 16) | (tg << 8) | tb;
+        const bgRgb = (br << 16) | (bg << 8) | bb;
+        const emitFg = truecolor ? fgRgb : d256 ? quant256(tr, tg, tb) : quant16(tr, tg, tb);
+        const emitBg = truecolor ? bgRgb : d256 ? quant256(br, bg, bb) : quant16(br, bg, bb);
+        const idx = cellBase + c;
+        if (!first && !none) {
+          if (thr < 0) {
+            if (prevFg[idx] === emitFg && prevBg[idx] === emitBg) continue;
+            prevFg[idx] = emitFg;
+            prevBg[idx] = emitBg;
+          } else {
+            const pf = prevFg[idx];
+            const pb = prevBg[idx];
+            if (pf >= 0 && pb >= 0 && chDelta(pf, tr, tg, tb) <= thr && chDelta(pb, br, bg, bb) <= thr) continue;
+            prevFg[idx] = fgRgb;
+            prevBg[idx] = bgRgb;
+          }
+        } else if (thr < 0) {
+          prevFg[idx] = emitFg;
+          prevBg[idx] = emitBg;
+        } else {
+          prevFg[idx] = fgRgb;
+          prevBg[idx] = bgRgb;
+        }
+        if (curRow !== r || curCol !== c) {
+          this.emitCursor(r + 1, c + 1);
+          curRow = r;
+          curCol = c;
+        }
+        this.putColor(emitFg, emitBg);
+        this.putBytes(HALF_GLYPH);
+        curCol++;
+        if (curCol >= cols) curRow = -1;
+      }
+    }
+  }
+
+  /**
+   * General path for quad/sextant/braille: gather the cell's sub-pixels, split
+   * them into a bright (fg) and dark (bg) group at the mid-luma, average each
+   * group, and pick the glyph whose lit sub-cells match the bright group.
+   */
+  private emitMulti(): void {
+    const { cols, rows, W, buf, pxW, pxH, subN, prevFg, prevBg, prevGlyph } = this;
+    const bitLayout = this.bitLayout!;
+    const glyphTable = this.glyphTable!;
+    const first = this.firstFrame;
+    const truecolor = this.depth === 'truecolor';
+    const d256 = this.depth === '256';
+    const thr = this.diff === 'threshold' ? this.threshold : -1;
+    const none = this.diff === 'none';
+    const solidL = 6 * 1000; // luma span below which a cell is treated as solid
+    let curRow = 0;
+    let curCol = 0;
+    for (let r = 0; r < rows; r++) {
+      const cellBase = r * cols;
+      const pyBase = r * pxH;
+      for (let c = 0; c < cols; c++) {
+        const pxBase = c * pxW;
+        // Gather sub-pixels + per-sub luma; track min/max luma.
+        let mnL = 0x7fffffff;
+        let mxL = -1;
+        for (let sy = 0; sy < pxH; sy++) {
+          const rowOff = ((pyBase + sy) * W + pxBase) * 3;
+          for (let sx = 0; sx < pxW; sx++) {
+            const o = rowOff + sx * 3;
+            const rr = buf[o], gg = buf[o + 1], bbv = buf[o + 2];
+            const si = sy * pxW + sx;
+            SUBR[si] = rr;
+            SUBG[si] = gg;
+            SUBB[si] = bbv;
+            const l = rr * 299 + gg * 587 + bbv * 114;
+            SUBL[si] = l;
+            if (l < mnL) mnL = l;
+            if (l > mxL) mxL = l;
+          }
+        }
+        let fgr: number, fgg: number, fgb: number, bgr: number, bgg: number, bgb: number, mask: number;
+        if (mxL - mnL < solidL) {
+          // Solid cell → blank glyph, colour carried entirely by the background.
+          let sr = 0, sg = 0, sb = 0;
+          for (let s = 0; s < subN; s++) {
+            sr += SUBR[s];
+            sg += SUBG[s];
+            sb += SUBB[s];
+          }
+          fgr = bgr = (sr / subN) | 0;
+          fgg = bgg = (sg / subN) | 0;
+          fgb = bgb = (sb / subN) | 0;
+          mask = 0;
+        } else {
+          const midL = (mnL + mxL) >> 1;
+          let fr = 0, fg2 = 0, fb = 0, fn = 0;
+          let xr = 0, xg = 0, xb = 0, xn = 0;
+          mask = 0;
+          for (let s = 0; s < subN; s++) {
+            if (SUBL[s] >= midL) {
+              fr += SUBR[s];
+              fg2 += SUBG[s];
+              fb += SUBB[s];
+              fn++;
+              mask |= 1 << bitLayout[s];
+            } else {
+              xr += SUBR[s];
+              xg += SUBG[s];
+              xb += SUBB[s];
+              xn++;
+            }
+          }
+          fgr = (fr / fn) | 0;
+          fgg = (fg2 / fn) | 0;
+          fgb = (fb / fn) | 0;
+          bgr = (xr / xn) | 0;
+          bgg = (xg / xn) | 0;
+          bgb = (xb / xn) | 0;
+        }
+        const fgRgb = (fgr << 16) | (fgg << 8) | fgb;
+        const bgRgb = (bgr << 16) | (bgg << 8) | bgb;
+        const emitFg = truecolor ? fgRgb : d256 ? quant256(fgr, fgg, fgb) : quant16(fgr, fgg, fgb);
+        const emitBg = truecolor ? bgRgb : d256 ? quant256(bgr, bgg, bgb) : quant16(bgr, bgg, bgb);
+        const idx = cellBase + c;
+        if (!first && !none) {
+          if (thr < 0) {
+            if (prevGlyph[idx] === mask && prevFg[idx] === emitFg && prevBg[idx] === emitBg) continue;
+            prevFg[idx] = emitFg;
+            prevBg[idx] = emitBg;
+          } else {
+            const pf = prevFg[idx];
+            const pb = prevBg[idx];
+            if (prevGlyph[idx] === mask && pf >= 0 && pb >= 0 && chDelta(pf, fgr, fgg, fgb) <= thr && chDelta(pb, bgr, bgg, bgb) <= thr) continue;
+            prevFg[idx] = fgRgb;
+            prevBg[idx] = bgRgb;
+          }
+        } else if (thr < 0) {
+          prevFg[idx] = emitFg;
+          prevBg[idx] = emitBg;
+        } else {
+          prevFg[idx] = fgRgb;
+          prevBg[idx] = bgRgb;
+        }
+        prevGlyph[idx] = mask;
+        if (curRow !== r || curCol !== c) {
+          this.emitCursor(r + 1, c + 1);
+          curRow = r;
+          curCol = c;
+        }
+        this.putColor(emitFg, emitBg);
+        this.putBytes(glyphTable[mask]);
+        curCol++;
+        if (curCol >= cols) curRow = -1;
+      }
+    }
   }
 
   /** Build + flush the frame to the terminal in one write. */
@@ -497,8 +997,11 @@ export class Term {
   /** Force the next frame to fully repaint (after a resize / screen disturbance). */
   invalidate(): void {
     this.firstFrame = true;
-    this._fg = -1;
-    this._bg = -1;
+    this.penFg = -1;
+    this.penBg = -1;
+    this.prevFg.fill(-1);
+    this.prevBg.fill(-1);
+    this.prevGlyph.fill(-1);
   }
 
   /** Encode the current pixel buffer to a PNG byte array. */
@@ -629,11 +1132,33 @@ export interface DemoSpec {
    * space as a literal character set this false and handle 'space' in onKey.
    */
   pauseOnSpace?: boolean;
+  /** Sub-cell packing: 'half' (default) | 'quad' | 'sextant' | 'braille'. Env: TERM_MODE. */
+  mode?: TermMode;
+  /** Diff strategy: 'exact' (default) | 'threshold' | 'none'. Env: TERM_DIFF. */
+  diff?: TermDiff;
+  /** Colour depth: 'truecolor' (default) | '256' | '16'. Env: TERM_DEPTH. */
+  depth?: TermDepth;
+  /** Per-channel drift tolerance for diff='threshold' (0..255, default 8). Env: TERM_THRESHOLD. */
+  threshold?: number;
 }
+
+/** Merge per-demo defaults with env overrides (env wins) into Term options. */
+const resolveOptions = (spec: DemoSpec): TermOptions => {
+  const pick = <T extends string>(envKey: string, valid: readonly T[], fallback: T | undefined): T | undefined => {
+    const v = env(envKey) as T | undefined;
+    return v !== undefined && valid.includes(v) ? v : fallback;
+  };
+  const mode = pick<TermMode>('TERM_MODE', ['half', 'quad', 'sextant', 'braille'], spec.mode);
+  const diff = pick<TermDiff>('TERM_DIFF', ['exact', 'threshold', 'none'], spec.diff);
+  const depth = pick<TermDepth>('TERM_DEPTH', ['truecolor', '256', '16'], spec.depth);
+  const threshold = env('TERM_THRESHOLD') !== undefined ? envNum('TERM_THRESHOLD', 8) : spec.threshold;
+  return { mode, diff, depth, threshold };
+};
 
 const drawHud = (t: Term, spec: DemoSpec, fps: number, ms: number, extra?: string): void => {
   const line1 = `${spec.title.toUpperCase()}`;
-  const line2 = `FPS ${fps.toFixed(0).padStart(3)}  ${ms.toFixed(1)}MS  ${t.W}X${t.H}`;
+  const tag = `${t.mode.toUpperCase()}${t.diff !== 'exact' ? '/' + t.diff.toUpperCase() : ''}${t.depth !== 'truecolor' ? '/' + t.depth : ''}`;
+  const line2 = `FPS ${fps.toFixed(0).padStart(3)}  ${ms.toFixed(1)}MS  ${t.W}X${t.H}  ${tag}`;
   const line3 = extra ?? spec.hud ?? '';
   const w = Math.max(Term.textWidth(line1), Term.textWidth(line2), Term.textWidth(line3)) + 6;
   const hpx = line3 ? 30 : 22;
@@ -650,6 +1175,7 @@ export async function runDemo(spec: DemoSpec): Promise<void> {
   const bench = env('BENCH') === '1';
   const captureFps = envNum('CAPTURE_FPS', 60);
   const fixedDt = 1 / captureFps;
+  const opts = resolveOptions(spec);
 
   // ── Capture: deterministic, headless, writes PNG(s) and exits ──────────────
   if (capturePath) {
@@ -658,7 +1184,7 @@ export async function runDemo(spec: DemoSpec): Promise<void> {
       const r = envNum('TERM_ROWS', 50);
       return { cols: Math.max(20, c | 0), rows: Math.max(8, r | 0) };
     })();
-    const t = new Term(cols, rows);
+    const t = new Term(cols, rows, opts);
     await spec.init?.(t);
     const captureT = envNum('CAPTURE_T', spec.captureT ?? 4);
     const nFrames = Math.max(1, envNum('CAPTURE_FRAMES', 1));
@@ -699,7 +1225,7 @@ export async function runDemo(spec: DemoSpec): Promise<void> {
   if (bench) {
     const cols = Math.max(20, envNum('TERM_COLS', 160) | 0);
     const rows = Math.max(8, envNum('TERM_ROWS', 50) | 0);
-    const t = new Term(cols, rows);
+    const t = new Term(cols, rows, opts);
     await spec.init?.(t);
     const N = Math.max(60, envNum('BENCH_FRAMES', 600) | 0);
     // Warm up.
@@ -724,7 +1250,7 @@ export async function runDemo(spec: DemoSpec): Promise<void> {
   // ── Live ────────────────────────────────────────────────────────────────────
   setupConsole(spec.title, spec.mouse === true);
   const { cols, rows } = detectSize();
-  let t = new Term(cols, rows);
+  let t = new Term(cols, rows, opts);
   await spec.init?.(t);
 
   let paused = false;
@@ -739,8 +1265,10 @@ export async function runDemo(spec: DemoSpec): Promise<void> {
     const motion = (b & 32) !== 0;
     const wheel = (b & 64) !== 0;
     const button = b & 3;
-    t.mouseX = Math.max(0, Math.min(t.W - 1, col - 1)); // 1 cell = 1 px wide
-    t.mouseY = Math.max(0, Math.min(t.H - 1, (row - 1) * 2)); // 1 cell = 2 px tall
+    const pxw = t.W / t.cols; // sub-pixels per cell (mode-dependent)
+    const pxh = t.H / t.rows;
+    t.mouseX = Math.max(0, Math.min(t.W - 1, ((col - 1) * pxw) | 0));
+    t.mouseY = Math.max(0, Math.min(t.H - 1, ((row - 1) * pxh) | 0));
     t.mouseInside = true;
     t.mouseActive = true;
     t.mouseSeq++;
@@ -845,7 +1373,7 @@ export async function runDemo(spec: DemoSpec): Promise<void> {
       // it. Demos read t.W/t.H every frame, so the picture always fills the window.
       const sz = detectSize();
       if (sz.cols !== t.cols || sz.rows !== t.rows) {
-        t = new Term(sz.cols, sz.rows);
+        t = new Term(sz.cols, sz.rows, opts);
         if (spec.resize) await spec.resize(t);
         else await spec.init?.(t);
         process.stdout.write(CLEAR + HOME);
