@@ -196,7 +196,7 @@ class Cabinet extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/fdi/nf-fdi-fdiiscabinet
-  public static FDIIsCabinet(hfdi: HFDI, hf: INT_PTR, pfdici: PFDICABINETINFO): BOOL {
+  public static FDIIsCabinet(hfdi: HFDI, hf: INT_PTR, pfdici: PFDICABINETINFO | NULL): BOOL {
     return Cabinet.Load('FDIIsCabinet')(hfdi, hf, pfdici);
   }
 

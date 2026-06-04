@@ -290,7 +290,7 @@ class SspiCli extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/ntsecpkg/nf-ntsecpkg-credunmarshaltargetinfo
-  public static CredUnmarshalTargetInfo(Buffer: PUSHORT, BufferSize: ULONG, RetTargetInfo: PCREDENTIAL_TARGET_INFORMATIONW): NTSTATUS {
+  public static CredUnmarshalTargetInfo(Buffer: PUSHORT, BufferSize: ULONG, RetTargetInfo: PCREDENTIAL_TARGET_INFORMATIONW | NULL): NTSTATUS {
     return SspiCli.Load('CredUnmarshalTargetInfo')(Buffer, BufferSize, RetTargetInfo);
   }
 
@@ -720,7 +720,7 @@ class SspiCli extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/sspi/nf-sspi-sspiencodeauthidentityasstrings
-  public static SspiEncodeAuthIdentityAsStrings(pAuthIdentity: PSEC_WINNT_AUTH_IDENTITY_OPAQUE, pUserName: PCWSTR, pDomainName: PCWSTR, pPackedCredentialsString: PCWSTR | NULL): SECURITY_STATUS {
+  public static SspiEncodeAuthIdentityAsStrings(pAuthIdentity: PSEC_WINNT_AUTH_IDENTITY_OPAQUE, pUserName: PCWSTR | NULL, pDomainName: PCWSTR | NULL, pPackedCredentialsString: PCWSTR | NULL): SECURITY_STATUS {
     return SspiCli.Load('SspiEncodeAuthIdentityAsStrings')(pAuthIdentity, pUserName, pDomainName, pPackedCredentialsString);
   }
 

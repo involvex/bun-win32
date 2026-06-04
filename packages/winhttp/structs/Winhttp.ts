@@ -168,7 +168,7 @@ class Winhttp extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/winhttp/nf-winhttp-winhttpdetectautoproxyconfigurl
-  public static WinHttpDetectAutoProxyConfigUrl(dwAutoDetectFlags: DWORD, ppwstrAutoConfigUrl: LPVOID): BOOL {
+  public static WinHttpDetectAutoProxyConfigUrl(dwAutoDetectFlags: DWORD, ppwstrAutoConfigUrl: LPVOID | NULL): BOOL {
     return Winhttp.Load('WinHttpDetectAutoProxyConfigUrl')(dwAutoDetectFlags, ppwstrAutoConfigUrl);
   }
 
@@ -342,7 +342,7 @@ class Winhttp extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/winhttp/nf-winhttp-winhttpsetoption
-  public static WinHttpSetOption(hInternet: HINTERNET | 0n, dwOption: DWORD, lpBuffer: LPVOID, dwBufferLength: DWORD): BOOL {
+  public static WinHttpSetOption(hInternet: HINTERNET | 0n, dwOption: DWORD, lpBuffer: LPVOID | NULL, dwBufferLength: DWORD): BOOL {
     return Winhttp.Load('WinHttpSetOption')(hInternet, dwOption, lpBuffer, dwBufferLength);
   }
 

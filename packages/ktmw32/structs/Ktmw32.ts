@@ -270,7 +270,7 @@ class Ktmw32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/ktmw32/nf-ktmw32-singlephasereject
-  public static SinglePhaseReject(EnlistmentHandle: HANDLE, TmVirtualClock: PLARGE_INTEGER): BOOL {
+  public static SinglePhaseReject(EnlistmentHandle: HANDLE, TmVirtualClock: PLARGE_INTEGER | NULL): BOOL {
     return Ktmw32.Load('SinglePhaseReject')(EnlistmentHandle, TmVirtualClock);
   }
 }

@@ -389,7 +389,7 @@ class Dnsapi extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/windns/nf-windns-dnsvalidateserverstatus
-  public static DnsValidateServerStatus(server: PSOCKADDR, queryName: PCWSTR, serverStatus: PDWORD): DNS_STATUS {
+  public static DnsValidateServerStatus(server: PSOCKADDR, queryName: PCWSTR | NULL, serverStatus: PDWORD): DNS_STATUS {
     return Dnsapi.Load('DnsValidateServerStatus')(server, queryName, serverStatus);
   }
 

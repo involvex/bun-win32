@@ -1106,17 +1106,17 @@ class Gdiplus extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/gdiplusflat/nf-gdiplusflat-gdipconverttoemfplus
-  public static GdipConvertToEmfPlus(refGraphics: GpGraphics, metafile: GpMetafile, conversionFailureFlag: LPINT, emfType: EmfType, description: LPWSTR, out_metafile: Pointer): Status {
+  public static GdipConvertToEmfPlus(refGraphics: GpGraphics, metafile: GpMetafile, conversionFailureFlag: LPINT, emfType: EmfType, description: LPWSTR, out_metafile: Pointer | NULL): Status {
     return Gdiplus.Load('GdipConvertToEmfPlus')(refGraphics, metafile, conversionFailureFlag, emfType, description, out_metafile);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/gdiplusflat/nf-gdiplusflat-gdipconverttoemfplustofile
-  public static GdipConvertToEmfPlusToFile(refGraphics: GpGraphics, metafile: GpMetafile, conversionFailureFlag: LPINT, filename: LPWSTR, emfType: EmfType, description: LPWSTR, out_metafile: Pointer): Status {
+  public static GdipConvertToEmfPlusToFile(refGraphics: GpGraphics, metafile: GpMetafile, conversionFailureFlag: LPINT, filename: LPWSTR, emfType: EmfType, description: LPWSTR, out_metafile: Pointer | NULL): Status {
     return Gdiplus.Load('GdipConvertToEmfPlusToFile')(refGraphics, metafile, conversionFailureFlag, filename, emfType, description, out_metafile);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/gdiplusflat/nf-gdiplusflat-gdipconverttoemfplustostream
-  public static GdipConvertToEmfPlusToStream(refGraphics: GpGraphics, metafile: GpMetafile, conversionFailureFlag: LPINT, stream: IStream, emfType: EmfType, description: LPWSTR, out_metafile: Pointer): Status {
+  public static GdipConvertToEmfPlusToStream(refGraphics: GpGraphics, metafile: GpMetafile, conversionFailureFlag: LPINT, stream: IStream, emfType: EmfType, description: LPWSTR, out_metafile: Pointer | NULL): Status {
     return Gdiplus.Load('GdipConvertToEmfPlusToStream')(refGraphics, metafile, conversionFailureFlag, stream, emfType, description, out_metafile);
   }
 

@@ -266,12 +266,12 @@ class Winspool extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/printdocs/addmonitor
-  public static AddMonitorA(pName: LPSTR | NULL, Level: DWORD, pMonitorInfo: LPBYTE): BOOL {
+  public static AddMonitorA(pName: LPSTR | NULL, Level: DWORD, pMonitorInfo: LPBYTE | NULL): BOOL {
     return Winspool.Load('AddMonitorA')(pName, Level, pMonitorInfo);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/printdocs/addmonitor
-  public static AddMonitorW(pName: LPWSTR | NULL, Level: DWORD, pMonitorInfo: LPBYTE): BOOL {
+  public static AddMonitorW(pName: LPWSTR | NULL, Level: DWORD, pMonitorInfo: LPBYTE | NULL): BOOL {
     return Winspool.Load('AddMonitorW')(pName, Level, pMonitorInfo);
   }
 
@@ -416,7 +416,7 @@ class Winspool extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/prnasnot/nf-prnasnot-createprintasyncnotifychannel
-  public static CreatePrintAsyncNotifyChannel(pszName: LPCWSTR, pNotificationType: LPVOID, eUserFilter: DWORD, eConversationStyle: DWORD, pCallback: LPVOID, ppIAsynchNotification: LPVOID): HRESULT {
+  public static CreatePrintAsyncNotifyChannel(pszName: LPCWSTR | NULL, pNotificationType: LPVOID, eUserFilter: DWORD, eConversationStyle: DWORD, pCallback: LPVOID | NULL, ppIAsynchNotification: LPVOID): HRESULT {
     return Winspool.Load('CreatePrintAsyncNotifyChannel')(pszName, pNotificationType, eUserFilter, eConversationStyle, pCallback, ppIAsynchNotification);
   }
 
@@ -551,12 +551,12 @@ class Winspool extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-devicecapabilitiesa
-  public static DeviceCapabilitiesA(pDevice: LPCSTR, pPort: LPCSTR, fwCapability: WORD, pOutput: LPSTR | NULL, pDevMode: PDEVMODEA | NULL): INT {
+  public static DeviceCapabilitiesA(pDevice: LPCSTR, pPort: LPCSTR | NULL, fwCapability: WORD, pOutput: LPSTR | NULL, pDevMode: PDEVMODEA | NULL): INT {
     return Winspool.Load('DeviceCapabilitiesA')(pDevice, pPort, fwCapability, pOutput, pDevMode);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-devicecapabilitiesw
-  public static DeviceCapabilitiesW(pDevice: LPCWSTR, pPort: LPCWSTR, fwCapability: WORD, pOutput: LPWSTR | NULL, pDevMode: PDEVMODEW | NULL): INT {
+  public static DeviceCapabilitiesW(pDevice: LPCWSTR, pPort: LPCWSTR | NULL, fwCapability: WORD, pOutput: LPWSTR | NULL, pDevMode: PDEVMODEW | NULL): INT {
     return Winspool.Load('DeviceCapabilitiesW')(pDevice, pPort, fwCapability, pOutput, pDevMode);
   }
 
@@ -877,7 +877,7 @@ class Winspool extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/printdocs/installprinterdriverfrompackage
-  public static InstallPrinterDriverFromPackageA(pszServer: LPCSTR | NULL, pszInfPath: LPCSTR, pszDriverName: LPCSTR, pszEnvironment: LPCSTR, dwFlags: DWORD): HRESULT {
+  public static InstallPrinterDriverFromPackageA(pszServer: LPCSTR | NULL, pszInfPath: LPCSTR | NULL, pszDriverName: LPCSTR, pszEnvironment: LPCSTR | NULL, dwFlags: DWORD): HRESULT {
     return Winspool.Load('InstallPrinterDriverFromPackageA')(pszServer, pszInfPath, pszDriverName, pszEnvironment, dwFlags);
   }
 
@@ -887,7 +887,7 @@ class Winspool extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/printdocs/isvaliddevmode
-  public static IsValidDevmodeA(pDevmode: PDEVMODEA, DevmodeSize: SIZE_T): BOOL {
+  public static IsValidDevmodeA(pDevmode: PDEVMODEA | NULL, DevmodeSize: SIZE_T): BOOL {
     return Winspool.Load('IsValidDevmodeA')(pDevmode, DevmodeSize);
   }
 
@@ -897,7 +897,7 @@ class Winspool extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/printdocs/openprinter2
-  public static OpenPrinter2A(pPrinterName: LPCSTR, phPrinter: LPHANDLE, pDefault: LPPRINTER_DEFAULTSA | NULL, pOptions: PPRINTER_OPTIONSA | NULL): BOOL {
+  public static OpenPrinter2A(pPrinterName: LPCSTR | NULL, phPrinter: LPHANDLE, pDefault: LPPRINTER_DEFAULTSA | NULL, pOptions: PPRINTER_OPTIONSA | NULL): BOOL {
     return Winspool.Load('OpenPrinter2A')(pPrinterName, phPrinter, pDefault, pOptions);
   }
 
@@ -937,7 +937,7 @@ class Winspool extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/prnasnot/nf-prnasnot-registerforprintasyncnotifications
-  public static RegisterForPrintAsyncNotifications(pszName: LPCWSTR, pNotificationType: LPVOID, eUserFilter: DWORD, eConversationStyle: DWORD, pCallback: LPVOID, phNotify: LPHANDLE): HRESULT {
+  public static RegisterForPrintAsyncNotifications(pszName: LPCWSTR | NULL, pNotificationType: LPVOID, eUserFilter: DWORD, eConversationStyle: DWORD, pCallback: LPVOID, phNotify: LPHANDLE): HRESULT {
     return Winspool.Load('RegisterForPrintAsyncNotifications')(pszName, pNotificationType, eUserFilter, eConversationStyle, pCallback, phNotify);
   }
 

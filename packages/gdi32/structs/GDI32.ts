@@ -657,7 +657,7 @@ class GDI32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-createdibsection
-  public static CreateDIBSection(hdc: HDC, pbmi: BITMAPINFO_, usage: UINT, ppvBits: LPVOID, hSection: HANDLE | 0n, offset: DWORD): HBITMAP {
+  public static CreateDIBSection(hdc: HDC | 0n, pbmi: BITMAPINFO_, usage: UINT, ppvBits: LPVOID, hSection: HANDLE | 0n, offset: DWORD): HBITMAP {
     return GDI32.Load('CreateDIBSection')(hdc, pbmi, usage, ppvBits, hSection, offset);
   }
 
@@ -932,17 +932,17 @@ class GDI32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-enumicmprofilesa
-  public static EnumICMProfilesA(hdc: HDC, proc: ICMENUMPROCA, param: LPVOID): int {
+  public static EnumICMProfilesA(hdc: HDC, proc: ICMENUMPROCA, param: LPVOID | NULL): int {
     return GDI32.Load('EnumICMProfilesA')(hdc, proc, param);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-enumicmprofilesw
-  public static EnumICMProfilesW(hdc: HDC, proc: ICMENUMPROCW, param: LPVOID): int {
+  public static EnumICMProfilesW(hdc: HDC, proc: ICMENUMPROCW, param: LPVOID | NULL): int {
     return GDI32.Load('EnumICMProfilesW')(hdc, proc, param);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-enummetafile
-  public static EnumMetaFile(hdc: HDC, hmf: HMETAFILE, proc: MFENUMPROC, param: LPVOID): BOOL {
+  public static EnumMetaFile(hdc: HDC, hmf: HMETAFILE, proc: MFENUMPROC, param: LPVOID | NULL): BOOL {
     return GDI32.Load('EnumMetaFile')(hdc, hmf, proc, param);
   }
 
@@ -1382,7 +1382,7 @@ class GDI32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-getpaletteentries
-  public static GetPaletteEntries(hpal: HPALETTE, iStart: UINT, cEntries: UINT, pPalEntries: LPPALETTEENTRY): UINT {
+  public static GetPaletteEntries(hpal: HPALETTE, iStart: UINT, cEntries: UINT, pPalEntries: LPPALETTEENTRY | NULL): UINT {
     return GDI32.Load('GetPaletteEntries')(hpal, iStart, cEntries, pPalEntries);
   }
 
@@ -1547,7 +1547,7 @@ class GDI32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-linedda
-  public static LineDDA(xStart: int, yStart: int, xEnd: int, yEnd: int, lpProc: LINEDDAPROC, data: LPVOID): BOOL {
+  public static LineDDA(xStart: int, yStart: int, xEnd: int, yEnd: int, lpProc: LINEDDAPROC, data: LPVOID | NULL): BOOL {
     return GDI32.Load('LineDDA')(xStart, yStart, xEnd, yEnd, lpProc, data);
   }
 

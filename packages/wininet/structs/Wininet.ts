@@ -853,7 +853,7 @@ class Wininet extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/wininet/nf-wininet-interneterrordlg
-  public static InternetErrorDlg(hWnd: HWND, hRequest: HINTERNET, dwError: DWORD, dwFlags: DWORD, lppvData: LPVOID | NULL): DWORD {
+  public static InternetErrorDlg(hWnd: HWND, hRequest: HINTERNET | 0n, dwError: DWORD, dwFlags: DWORD, lppvData: LPVOID | NULL): DWORD {
     return Wininet.Load('InternetErrorDlg')(hWnd, hRequest, dwError, dwFlags, lppvData);
   }
 
@@ -868,7 +868,7 @@ class Wininet extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/wininet/nf-wininet-internetfreecookies
-  public static InternetFreeCookies(pCookies: PINTERNET_COOKIE2, dwCookieCount: DWORD): void {
+  public static InternetFreeCookies(pCookies: PINTERNET_COOKIE2 | NULL, dwCookieCount: DWORD): void {
     return Wininet.Load('InternetFreeCookies')(pCookies, dwCookieCount);
   }
 
@@ -973,7 +973,7 @@ class Wininet extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/wininet/nf-wininet-internetopena
-  public static InternetOpenA(lpszAgent: LPCSTR, dwAccessType: DWORD, lpszProxy: LPCSTR | NULL, lpszProxyBypass: LPCSTR | NULL, dwFlags: DWORD): HINTERNET {
+  public static InternetOpenA(lpszAgent: LPCSTR | NULL, dwAccessType: DWORD, lpszProxy: LPCSTR | NULL, lpszProxyBypass: LPCSTR | NULL, dwFlags: DWORD): HINTERNET {
     return Wininet.Load('InternetOpenA')(lpszAgent, dwAccessType, lpszProxy, lpszProxyBypass, dwFlags);
   }
 
@@ -988,7 +988,7 @@ class Wininet extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/wininet/nf-wininet-internetopenw
-  public static InternetOpenW(lpszAgent: LPCWSTR, dwAccessType: DWORD, lpszProxy: LPCWSTR | NULL, lpszProxyBypass: LPCWSTR | NULL, dwFlags: DWORD): HINTERNET {
+  public static InternetOpenW(lpszAgent: LPCWSTR | NULL, dwAccessType: DWORD, lpszProxy: LPCWSTR | NULL, lpszProxyBypass: LPCWSTR | NULL, dwFlags: DWORD): HINTERNET {
     return Wininet.Load('InternetOpenW')(lpszAgent, dwAccessType, lpszProxy, lpszProxyBypass, dwFlags);
   }
 

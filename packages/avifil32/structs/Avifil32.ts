@@ -227,7 +227,7 @@ class Avifil32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/vfw/nf-vfw-avifilereaddata
-  public static AVIFileReadData(pfile: PAVIFILE, ckid: DWORD, lpData: LPVOID, lpcbData: LPLONG): HRESULT {
+  public static AVIFileReadData(pfile: PAVIFILE, ckid: DWORD, lpData: LPVOID | NULL, lpcbData: LPLONG): HRESULT {
     return Avifil32.Load('AVIFileReadData')(pfile, ckid, lpData, lpcbData);
   }
 
@@ -287,7 +287,7 @@ class Avifil32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/vfw/nf-vfw-avisavev
-  public static AVISaveV(szFile: LPCTSTR, pclsidHandler: LPCLSID | NULL, lpfnCallback: AVISAVECALLBACK | NULL, nStreams: INT, ppavi: Pointer, plpOptions: Pointer): HRESULT {
+  public static AVISaveV(szFile: LPCTSTR, pclsidHandler: LPCLSID | NULL, lpfnCallback: AVISAVECALLBACK | NULL, nStreams: INT, ppavi: Pointer, plpOptions: Pointer | NULL): HRESULT {
     return Avifil32.Load('AVISaveV')(szFile, pclsidHandler, lpfnCallback, nStreams, ppavi, plpOptions);
   }
 

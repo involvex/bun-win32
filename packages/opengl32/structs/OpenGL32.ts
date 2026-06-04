@@ -1593,7 +1593,7 @@ class OpenGL32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/opengl/glnormalpointer
-  public static glNormalPointer(type: GLenum, stride: GLsizei, pointer: GLvoid_): void {
+  public static glNormalPointer(type: GLenum, stride: GLsizei, pointer: GLvoid_ | NULL): void {
     return OpenGL32.Load('glNormalPointer')(type, stride, pointer);
   }
 

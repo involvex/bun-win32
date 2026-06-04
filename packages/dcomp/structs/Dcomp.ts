@@ -89,7 +89,7 @@ class Dcomp extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/dcomp/nf-dcomp-dcompositioncreatedevice
-  public static DCompositionCreateDevice(dxgiDevice: IDXGIDevice, iid: REFIID, dcompositionDevice: LPLPVOID): HRESULT {
+  public static DCompositionCreateDevice(dxgiDevice: IDXGIDevice | NULL, iid: REFIID, dcompositionDevice: LPLPVOID): HRESULT {
     return Dcomp.Load('DCompositionCreateDevice')(dxgiDevice, iid, dcompositionDevice);
   }
 
@@ -124,7 +124,7 @@ class Dcomp extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/dcomp/nf-dcomp-dcompositionwaitforcompositorclock
-  public static DCompositionWaitForCompositorClock(count: UINT, handles: PHANDLE, timeoutInMs: DWORD): DWORD {
+  public static DCompositionWaitForCompositorClock(count: UINT, handles: PHANDLE | NULL, timeoutInMs: DWORD): DWORD {
     return Dcomp.Load('DCompositionWaitForCompositorClock')(count, handles, timeoutInMs);
   }
 

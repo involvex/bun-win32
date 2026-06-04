@@ -252,17 +252,17 @@ class Ws2_32 extends Win32 {
   } as const satisfies Record<string, FFIFunction>;
 
   // https://learn.microsoft.com/en-us/windows/win32/api/ws2tcpip/nf-ws2tcpip-freeaddrinfoex
-  public static FreeAddrInfoEx(pAddrInfoEx: PADDRINFOEXA): void {
+  public static FreeAddrInfoEx(pAddrInfoEx: PADDRINFOEXA | NULL): void {
     return Ws2_32.Load('FreeAddrInfoEx')(pAddrInfoEx);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/ws2tcpip/nf-ws2tcpip-freeaddrinfoexw
-  public static FreeAddrInfoExW(pAddrInfoEx: PADDRINFOEXW): void {
+  public static FreeAddrInfoExW(pAddrInfoEx: PADDRINFOEXW | NULL): void {
     return Ws2_32.Load('FreeAddrInfoExW')(pAddrInfoEx);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/ws2tcpip/nf-ws2tcpip-freeaddrinfow
-  public static FreeAddrInfoW(pAddrInfo: PADDRINFOW): void {
+  public static FreeAddrInfoW(pAddrInfo: PADDRINFOW | NULL): void {
     return Ws2_32.Load('FreeAddrInfoW')(pAddrInfo);
   }
 
@@ -857,7 +857,7 @@ class Ws2_32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/ws2spi/nf-ws2spi-wscenumprotocols
-  public static WSCEnumProtocols(lpiProtocols: LPINT | NULL, lpProtocolBuffer: LPWSAPROTOCOL_INFOW, lpdwBufferLength: LPDWORD, lpErrno: LPINT): INT {
+  public static WSCEnumProtocols(lpiProtocols: LPINT | NULL, lpProtocolBuffer: LPWSAPROTOCOL_INFOW | NULL, lpdwBufferLength: LPDWORD, lpErrno: LPINT): INT {
     return Ws2_32.Load('WSCEnumProtocols')(lpiProtocols, lpProtocolBuffer, lpdwBufferLength, lpErrno);
   }
 
@@ -1012,7 +1012,7 @@ class Ws2_32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/ws2tcpip/nf-ws2tcpip-freeaddrinfo
-  public static freeaddrinfo(pAddrInfo: PADDRINFOA): void {
+  public static freeaddrinfo(pAddrInfo: PADDRINFOA | NULL): void {
     return Ws2_32.Load('freeaddrinfo')(pAddrInfo);
   }
 

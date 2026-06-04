@@ -845,7 +845,7 @@ class Rpcrt4 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/rpcdce/nf-rpcdce-rpcobjectinqtype
-  public static RpcObjectInqType(ObjectUuid: PUUID, TypeUuid: PUUID): RPC_STATUS {
+  public static RpcObjectInqType(ObjectUuid: PUUID, TypeUuid: PUUID | NULL): RPC_STATUS {
     return Rpcrt4.Load('RpcObjectInqType')(ObjectUuid, TypeUuid);
   }
 
@@ -1027,12 +1027,12 @@ class Rpcrt4 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/rpcdce/nf-rpcdce-rpcserversubscribefornotification
-  public static RpcServerSubscribeForNotification(Binding: RPC_BINDING_HANDLE, Notification: number, NotificationType: number, NotificationCallBack: RPC_NOTIFICATION_CALLBACK): RPC_STATUS {
+  public static RpcServerSubscribeForNotification(Binding: RPC_BINDING_HANDLE | 0n, Notification: number, NotificationType: number, NotificationCallBack: RPC_NOTIFICATION_CALLBACK): RPC_STATUS {
     return Rpcrt4.Load('RpcServerSubscribeForNotification')(Binding, Notification, NotificationType, NotificationCallBack);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/rpcdce/nf-rpcdce-rpcservertestcancel
-  public static RpcServerTestCancel(BindingHandle: RPC_BINDING_HANDLE): RPC_STATUS {
+  public static RpcServerTestCancel(BindingHandle: RPC_BINDING_HANDLE | 0n): RPC_STATUS {
     return Rpcrt4.Load('RpcServerTestCancel')(BindingHandle);
   }
 
@@ -1047,7 +1047,7 @@ class Rpcrt4 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/rpcdce/nf-rpcdce-rpcserverunsubscribefornotification
-  public static RpcServerUnsubscribeForNotification(Binding: RPC_BINDING_HANDLE, NotificationType: number, NotificationsQueued: PVOID): RPC_STATUS {
+  public static RpcServerUnsubscribeForNotification(Binding: RPC_BINDING_HANDLE | 0n, NotificationType: number, NotificationsQueued: PVOID): RPC_STATUS {
     return Rpcrt4.Load('RpcServerUnsubscribeForNotification')(Binding, NotificationType, NotificationsQueued);
   }
 
@@ -1192,7 +1192,7 @@ class Rpcrt4 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/rpcdce/nf-rpcdce-rpcsscontextlockexclusive
-  public static RpcSsContextLockExclusive(ServerBindingHandle: RPC_BINDING_HANDLE, UserContext: PVOID): VOID {
+  public static RpcSsContextLockExclusive(ServerBindingHandle: RPC_BINDING_HANDLE | 0n, UserContext: PVOID): VOID {
     return Rpcrt4.Load('RpcSsContextLockExclusive')(ServerBindingHandle, UserContext);
   }
 

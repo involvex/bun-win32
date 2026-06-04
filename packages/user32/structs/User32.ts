@@ -914,7 +914,7 @@ class User32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-cascadewindows
-  public static CascadeWindows(hwndParent: HWND | 0n, wHow: UINT, lpRect: LPRECT | NULL, cKids: UINT, lpKids: LPVOID): WORD {
+  public static CascadeWindows(hwndParent: HWND | 0n, wHow: UINT, lpRect: LPRECT | NULL, cKids: UINT, lpKids: LPVOID | NULL): WORD {
     return User32.Load('CascadeWindows')(hwndParent, wHow, lpRect, cKids, lpKids);
   }
 
@@ -1931,7 +1931,7 @@ class User32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getkeyboardlayoutlist
-  public static GetKeyboardLayoutList(nBuff: int, lpList: LPVOID): int {
+  public static GetKeyboardLayoutList(nBuff: int, lpList: LPVOID | NULL): int {
     return User32.Load('GetKeyboardLayoutList')(nBuff, lpList);
   }
 
@@ -2831,12 +2831,12 @@ class User32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-msgwaitformultipleobjects
-  public static MsgWaitForMultipleObjects(nCount: DWORD, pHandles: LPHANDLE, fWaitAll: BOOL, dwMilliseconds: DWORD, dwWakeMask: DWORD): DWORD {
+  public static MsgWaitForMultipleObjects(nCount: DWORD, pHandles: LPHANDLE | NULL, fWaitAll: BOOL, dwMilliseconds: DWORD, dwWakeMask: DWORD): DWORD {
     return User32.Load('MsgWaitForMultipleObjects')(nCount, pHandles, fWaitAll, dwMilliseconds, dwWakeMask);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-msgwaitformultipleobjectsex
-  public static MsgWaitForMultipleObjectsEx(nCount: DWORD, pHandles: LPHANDLE, dwMilliseconds: DWORD, dwWakeMask: DWORD, dwFlags: DWORD): DWORD {
+  public static MsgWaitForMultipleObjectsEx(nCount: DWORD, pHandles: LPHANDLE | NULL, dwMilliseconds: DWORD, dwWakeMask: DWORD, dwFlags: DWORD): DWORD {
     return User32.Load('MsgWaitForMultipleObjectsEx')(nCount, pHandles, dwMilliseconds, dwWakeMask, dwFlags);
   }
 
@@ -2931,7 +2931,7 @@ class User32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-privateextracticonsw
-  public static PrivateExtractIconsW(szFileName: LPCWSTR, nIconIndex: int, cxIcon: int, cyIcon: int, phicon: LPVOID, piconid: LPDWORD, nIcons: UINT, flags: UINT): UINT {
+  public static PrivateExtractIconsW(szFileName: LPCWSTR, nIconIndex: int, cxIcon: int, cyIcon: int, phicon: LPVOID | NULL, piconid: LPDWORD | NULL, nIcons: UINT, flags: UINT): UINT {
     return User32.Load('PrivateExtractIconsW')(szFileName, nIconIndex, cxIcon, cyIcon, phicon, piconid, nIcons, flags);
   }
 
@@ -3528,22 +3528,22 @@ class User32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-tilewindows
-  public static TileWindows(hwndParent: HWND | 0n, wHow: UINT, lpRect: LPRECT | NULL, cKids: UINT, lpKids: LPVOID): WORD {
+  public static TileWindows(hwndParent: HWND | 0n, wHow: UINT, lpRect: LPRECT | NULL, cKids: UINT, lpKids: LPVOID | NULL): WORD {
     return User32.Load('TileWindows')(hwndParent, wHow, lpRect, cKids, lpKids);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-toascii
-  public static ToAscii(uVirtKey: UINT, uScanCode: UINT, lpKeyState: LPBYTE, lpChar: LPWORD, uFlags: UINT): int {
+  public static ToAscii(uVirtKey: UINT, uScanCode: UINT, lpKeyState: LPBYTE | NULL, lpChar: LPWORD, uFlags: UINT): int {
     return User32.Load('ToAscii')(uVirtKey, uScanCode, lpKeyState, lpChar, uFlags);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-toasciiex
-  public static ToAsciiEx(uVirtKey: UINT, uScanCode: UINT, lpKeyState: LPBYTE, lpChar: LPWORD, uFlags: UINT, dwhkl: HKL | 0n): int {
+  public static ToAsciiEx(uVirtKey: UINT, uScanCode: UINT, lpKeyState: LPBYTE | NULL, lpChar: LPWORD, uFlags: UINT, dwhkl: HKL | 0n): int {
     return User32.Load('ToAsciiEx')(uVirtKey, uScanCode, lpKeyState, lpChar, uFlags, dwhkl);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-tounicode
-  public static ToUnicode(wVirtKey: UINT, wScanCode: UINT, lpKeyState: LPBYTE, pwszBuff: LPWSTR, cchBuff: int, wFlags: UINT): int {
+  public static ToUnicode(wVirtKey: UINT, wScanCode: UINT, lpKeyState: LPBYTE | NULL, pwszBuff: LPWSTR, cchBuff: int, wFlags: UINT): int {
     return User32.Load('ToUnicode')(wVirtKey, wScanCode, lpKeyState, pwszBuff, cchBuff, wFlags);
   }
 
@@ -3708,7 +3708,7 @@ class User32 extends Win32 {
   }
 
   // Undocumented: Obsolete function
-  public static ChangeMenuW(hMenu: HMENU, cmd: UINT, lpszNewItem: LPCWSTR, cmdInsert: UINT, flags: UINT): BOOL {
+  public static ChangeMenuW(hMenu: HMENU, cmd: UINT, lpszNewItem: LPCWSTR | NULL, cmdInsert: UINT, flags: UINT): BOOL {
     return User32.Load('ChangeMenuW')(hMenu, cmd, lpszNewItem, cmdInsert, flags);
   }
 

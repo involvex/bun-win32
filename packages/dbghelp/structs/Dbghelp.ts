@@ -569,12 +569,12 @@ class Dbghelp extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/dbghelp/nf-dbghelp-symgetlinefrominlinecontext
-  public static SymGetLineFromInlineContext(hProcess: HANDLE, qwAddr: DWORD64, InlineContext: ULONG, qwModuleBaseAddress: DWORD64, pdwDisplacement: PDWORD, Line64: PIMAGEHLP_LINE64): BOOL {
+  public static SymGetLineFromInlineContext(hProcess: HANDLE, qwAddr: DWORD64, InlineContext: ULONG, qwModuleBaseAddress: DWORD64 | 0n, pdwDisplacement: PDWORD, Line64: PIMAGEHLP_LINE64): BOOL {
     return Dbghelp.Load('SymGetLineFromInlineContext')(hProcess, qwAddr, InlineContext, qwModuleBaseAddress, pdwDisplacement, Line64);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/dbghelp/nf-dbghelp-symgetlinefrominlinecontextw
-  public static SymGetLineFromInlineContextW(hProcess: HANDLE, dwAddr: DWORD64, InlineContext: ULONG, qwModuleBaseAddress: DWORD64, pdwDisplacement: PDWORD, Line: PIMAGEHLP_LINEW64): BOOL {
+  public static SymGetLineFromInlineContextW(hProcess: HANDLE, dwAddr: DWORD64, InlineContext: ULONG, qwModuleBaseAddress: DWORD64 | 0n, pdwDisplacement: PDWORD, Line: PIMAGEHLP_LINEW64): BOOL {
     return Dbghelp.Load('SymGetLineFromInlineContextW')(hProcess, dwAddr, InlineContext, qwModuleBaseAddress, pdwDisplacement, Line);
   }
 
@@ -829,12 +829,12 @@ class Dbghelp extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/dbghelp/nf-dbghelp-symsearch
-  public static SymSearch(hProcess: HANDLE, BaseOfDll: ULONG64, Index: DWORD, SymTag: DWORD, Mask: LPCSTR | NULL, Address: DWORD64, EnumSymbolsCallback: PSYM_ENUMERATESYMBOLS_CALLBACK, UserContext: PVOID | NULL, Options: DWORD): BOOL {
+  public static SymSearch(hProcess: HANDLE, BaseOfDll: ULONG64, Index: DWORD, SymTag: DWORD, Mask: LPCSTR | NULL, Address: DWORD64 | 0n, EnumSymbolsCallback: PSYM_ENUMERATESYMBOLS_CALLBACK, UserContext: PVOID | NULL, Options: DWORD): BOOL {
     return Dbghelp.Load('SymSearch')(hProcess, BaseOfDll, Index, SymTag, Mask, Address, EnumSymbolsCallback, UserContext, Options);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/dbghelp/nf-dbghelp-symsearchw
-  public static SymSearchW(hProcess: HANDLE, BaseOfDll: ULONG64, Index: DWORD, SymTag: DWORD, Mask: LPCWSTR | NULL, Address: DWORD64, EnumSymbolsCallback: PSYM_ENUMERATESYMBOLS_CALLBACKW, UserContext: PVOID | NULL, Options: DWORD): BOOL {
+  public static SymSearchW(hProcess: HANDLE, BaseOfDll: ULONG64, Index: DWORD, SymTag: DWORD, Mask: LPCWSTR | NULL, Address: DWORD64 | 0n, EnumSymbolsCallback: PSYM_ENUMERATESYMBOLS_CALLBACKW, UserContext: PVOID | NULL, Options: DWORD): BOOL {
     return Dbghelp.Load('SymSearchW')(hProcess, BaseOfDll, Index, SymTag, Mask, Address, EnumSymbolsCallback, UserContext, Options);
   }
 

@@ -825,22 +825,22 @@ class Msi extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/msi/nf-msi-msiextractpatchxmldataa
-  public static MsiExtractPatchXMLDataA(szPatchPath: LPCSTR, dwReserved: DWORD, szXMLData: LPSTR | NULL, pcchXMLData: LPDWORD): UINT {
+  public static MsiExtractPatchXMLDataA(szPatchPath: LPCSTR, dwReserved: DWORD, szXMLData: LPSTR | NULL, pcchXMLData: LPDWORD | NULL): UINT {
     return Msi.Load('MsiExtractPatchXMLDataA')(szPatchPath, dwReserved, szXMLData, pcchXMLData);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/msi/nf-msi-msiextractpatchxmldataw
-  public static MsiExtractPatchXMLDataW(szPatchPath: LPCWSTR, dwReserved: DWORD, szXMLData: LPWSTR | NULL, pcchXMLData: LPDWORD): UINT {
+  public static MsiExtractPatchXMLDataW(szPatchPath: LPCWSTR, dwReserved: DWORD, szXMLData: LPWSTR | NULL, pcchXMLData: LPDWORD | NULL): UINT {
     return Msi.Load('MsiExtractPatchXMLDataW')(szPatchPath, dwReserved, szXMLData, pcchXMLData);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/msiquery/nf-msiquery-msiformatrecorda
-  public static MsiFormatRecordA(hInstall: MSIHANDLE | 0, hRecord: MSIHANDLE, szResultBuf: LPSTR | NULL, pcchResultBuf: LPDWORD): UINT {
+  public static MsiFormatRecordA(hInstall: MSIHANDLE | 0, hRecord: MSIHANDLE, szResultBuf: LPSTR | NULL, pcchResultBuf: LPDWORD | NULL): UINT {
     return Msi.Load('MsiFormatRecordA')(hInstall, hRecord, szResultBuf, pcchResultBuf);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/msiquery/nf-msiquery-msiformatrecordw
-  public static MsiFormatRecordW(hInstall: MSIHANDLE | 0, hRecord: MSIHANDLE, szResultBuf: LPWSTR | NULL, pcchResultBuf: LPDWORD): UINT {
+  public static MsiFormatRecordW(hInstall: MSIHANDLE | 0, hRecord: MSIHANDLE, szResultBuf: LPWSTR | NULL, pcchResultBuf: LPDWORD | NULL): UINT {
     return Msi.Load('MsiFormatRecordW')(hInstall, hRecord, szResultBuf, pcchResultBuf);
   }
 
@@ -990,7 +990,7 @@ class Msi extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/msi/nf-msi-msigetpatchinfoa
-  public static MsiGetPatchInfoA(szPatch: LPCSTR, szAttribute: LPCSTR, lpValueBuf: LPSTR | NULL, pcchValueBuf: LPDWORD): UINT {
+  public static MsiGetPatchInfoA(szPatch: LPCSTR, szAttribute: LPCSTR, lpValueBuf: LPSTR | NULL, pcchValueBuf: LPDWORD | NULL): UINT {
     return Msi.Load('MsiGetPatchInfoA')(szPatch, szAttribute, lpValueBuf, pcchValueBuf);
   }
 
@@ -1005,7 +1005,7 @@ class Msi extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/msi/nf-msi-msigetpatchinfow
-  public static MsiGetPatchInfoW(szPatch: LPCWSTR, szAttribute: LPCWSTR, lpValueBuf: LPWSTR | NULL, pcchValueBuf: LPDWORD): UINT {
+  public static MsiGetPatchInfoW(szPatch: LPCWSTR, szAttribute: LPCWSTR, lpValueBuf: LPWSTR | NULL, pcchValueBuf: LPDWORD | NULL): UINT {
     return Msi.Load('MsiGetPatchInfoW')(szPatch, szAttribute, lpValueBuf, pcchValueBuf);
   }
 
@@ -1088,12 +1088,12 @@ class Msi extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/msiquery/nf-msiquery-msigetpropertya
-  public static MsiGetPropertyA(hInstall: MSIHANDLE, szName: LPCSTR, szValueBuf: LPSTR | NULL, pcchValueBuf: LPDWORD): UINT {
+  public static MsiGetPropertyA(hInstall: MSIHANDLE, szName: LPCSTR, szValueBuf: LPSTR | NULL, pcchValueBuf: LPDWORD | NULL): UINT {
     return Msi.Load('MsiGetPropertyA')(hInstall, szName, szValueBuf, pcchValueBuf);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/msiquery/nf-msiquery-msigetpropertyw
-  public static MsiGetPropertyW(hInstall: MSIHANDLE, szName: LPCWSTR, szValueBuf: LPWSTR | NULL, pcchValueBuf: LPDWORD): UINT {
+  public static MsiGetPropertyW(hInstall: MSIHANDLE, szName: LPCWSTR, szValueBuf: LPWSTR | NULL, pcchValueBuf: LPDWORD | NULL): UINT {
     return Msi.Load('MsiGetPropertyW')(hInstall, szName, szValueBuf, pcchValueBuf);
   }
 
@@ -1108,12 +1108,12 @@ class Msi extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/msiquery/nf-msiquery-msigetsourcepatha
-  public static MsiGetSourcePathA(hInstall: MSIHANDLE, szFolder: LPCSTR, szPathBuf: LPSTR | NULL, pcchPathBuf: LPDWORD): UINT {
+  public static MsiGetSourcePathA(hInstall: MSIHANDLE, szFolder: LPCSTR, szPathBuf: LPSTR | NULL, pcchPathBuf: LPDWORD | NULL): UINT {
     return Msi.Load('MsiGetSourcePathA')(hInstall, szFolder, szPathBuf, pcchPathBuf);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/msiquery/nf-msiquery-msigetsourcepathw
-  public static MsiGetSourcePathW(hInstall: MSIHANDLE, szFolder: LPCWSTR, szPathBuf: LPWSTR | NULL, pcchPathBuf: LPDWORD): UINT {
+  public static MsiGetSourcePathW(hInstall: MSIHANDLE, szFolder: LPCWSTR, szPathBuf: LPWSTR | NULL, pcchPathBuf: LPDWORD | NULL): UINT {
     return Msi.Load('MsiGetSourcePathW')(hInstall, szFolder, szPathBuf, pcchPathBuf);
   }
 
@@ -1128,12 +1128,12 @@ class Msi extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/msiquery/nf-msiquery-msigettargetpatha
-  public static MsiGetTargetPathA(hInstall: MSIHANDLE, szFolder: LPCSTR, szPathBuf: LPSTR | NULL, pcchPathBuf: LPDWORD): UINT {
+  public static MsiGetTargetPathA(hInstall: MSIHANDLE, szFolder: LPCSTR, szPathBuf: LPSTR | NULL, pcchPathBuf: LPDWORD | NULL): UINT {
     return Msi.Load('MsiGetTargetPathA')(hInstall, szFolder, szPathBuf, pcchPathBuf);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/msiquery/nf-msiquery-msigettargetpathw
-  public static MsiGetTargetPathW(hInstall: MSIHANDLE, szFolder: LPCWSTR, szPathBuf: LPWSTR | NULL, pcchPathBuf: LPDWORD): UINT {
+  public static MsiGetTargetPathW(hInstall: MSIHANDLE, szFolder: LPCWSTR, szPathBuf: LPWSTR | NULL, pcchPathBuf: LPDWORD | NULL): UINT {
     return Msi.Load('MsiGetTargetPathW')(hInstall, szFolder, szPathBuf, pcchPathBuf);
   }
 
@@ -1429,12 +1429,12 @@ class Msi extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/msiquery/nf-msiquery-msirecordgetstringa
-  public static MsiRecordGetStringA(hRecord: MSIHANDLE, iField: UINT, szValueBuf: LPSTR | NULL, pcchValueBuf: LPDWORD): UINT {
+  public static MsiRecordGetStringA(hRecord: MSIHANDLE, iField: UINT, szValueBuf: LPSTR | NULL, pcchValueBuf: LPDWORD | NULL): UINT {
     return Msi.Load('MsiRecordGetStringA')(hRecord, iField, szValueBuf, pcchValueBuf);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/msiquery/nf-msiquery-msirecordgetstringw
-  public static MsiRecordGetStringW(hRecord: MSIHANDLE, iField: UINT, szValueBuf: LPWSTR | NULL, pcchValueBuf: LPDWORD): UINT {
+  public static MsiRecordGetStringW(hRecord: MSIHANDLE, iField: UINT, szValueBuf: LPWSTR | NULL, pcchValueBuf: LPDWORD | NULL): UINT {
     return Msi.Load('MsiRecordGetStringW')(hRecord, iField, szValueBuf, pcchValueBuf);
   }
 
@@ -1841,12 +1841,12 @@ class Msi extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/msiquery/nf-msiquery-msiviewgeterrora
-  public static MsiViewGetErrorA(hView: MSIHANDLE, szColumnNameBuffer: LPSTR | NULL, pcchBuf: LPDWORD): MSIDBERROR {
+  public static MsiViewGetErrorA(hView: MSIHANDLE, szColumnNameBuffer: LPSTR | NULL, pcchBuf: LPDWORD | NULL): MSIDBERROR {
     return Msi.Load('MsiViewGetErrorA')(hView, szColumnNameBuffer, pcchBuf);
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/msiquery/nf-msiquery-msiviewgeterrorw
-  public static MsiViewGetErrorW(hView: MSIHANDLE, szColumnNameBuffer: LPWSTR | NULL, pcchBuf: LPDWORD): MSIDBERROR {
+  public static MsiViewGetErrorW(hView: MSIHANDLE, szColumnNameBuffer: LPWSTR | NULL, pcchBuf: LPDWORD | NULL): MSIDBERROR {
     return Msi.Load('MsiViewGetErrorW')(hView, szColumnNameBuffer, pcchBuf);
   }
 

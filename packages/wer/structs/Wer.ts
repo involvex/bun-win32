@@ -173,7 +173,7 @@ class Wer extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/werapi/nf-werapi-werstoreclose
-  public static WerStoreClose(hReportStore: HREPORTSTORE): void {
+  public static WerStoreClose(hReportStore: HREPORTSTORE | 0n): void {
     return Wer.Load('WerStoreClose')(hReportStore);
   }
 

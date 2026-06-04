@@ -1015,7 +1015,7 @@ class Ntdll extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntopenthread
-  public static NtOpenThread(ThreadHandle: PHANDLE, DesiredAccess: ACCESS_MASK, ObjectAttributes: POBJECT_ATTRIBUTES, ClientId: PCLIENT_ID): NTSTATUS {
+  public static NtOpenThread(ThreadHandle: PHANDLE, DesiredAccess: ACCESS_MASK, ObjectAttributes: POBJECT_ATTRIBUTES, ClientId: PCLIENT_ID | NULL): NTSTATUS {
     return Ntdll.Load('NtOpenThread')(ThreadHandle, DesiredAccess, ObjectAttributes, ClientId);
   }
 
@@ -1422,7 +1422,7 @@ class Ntdll extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsettimerresolution
-  public static NtSetTimerResolution(DesiredTime: ULONG, SetResolution: BOOLEAN, ActualTime: PULONG): NTSTATUS {
+  public static NtSetTimerResolution(DesiredTime: ULONG, SetResolution: BOOLEAN, ActualTime: PULONG | NULL): NTSTATUS {
     return Ntdll.Load('NtSetTimerResolution')(DesiredTime, SetResolution, ActualTime);
   }
 

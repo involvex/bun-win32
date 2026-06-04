@@ -245,7 +245,7 @@ class Mf extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/evr/nf-evr-mfcreatevideorenderer
-  public static MFCreateVideoRenderer(riidRenderer: REFIID, ppVideoRenderer: LPLPVOID): HRESULT {
+  public static MFCreateVideoRenderer(riidRenderer: REFIID, ppVideoRenderer: LPLPVOID | NULL): HRESULT {
     return Mf.Load('MFCreateVideoRenderer')(riidRenderer, ppVideoRenderer);
   }
 

@@ -463,7 +463,7 @@ class Ole32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/ole2/nf-ole2-oleconvertolestreamtoistorage
-  public static OleConvertOLESTREAMToIStorage(lpolestream: LPOLESTREAM, pstg: LPSTORAGE, ptd: DVTARGETDEVICE): HRESULT {
+  public static OleConvertOLESTREAMToIStorage(lpolestream: LPOLESTREAM, pstg: LPSTORAGE, ptd: DVTARGETDEVICE | NULL): HRESULT {
     return Ole32.Load('OleConvertOLESTREAMToIStorage')(lpolestream, pstg, ptd);
   }
 
@@ -473,7 +473,7 @@ class Ole32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/ole2/nf-ole2-olecreate
-  public static OleCreate(rclsid: REFCLSID, riid: REFIID, renderopt: DWORD, pFormatEtc: LPFORMATETC, pClientSite: LPOLECLIENTSITE, pStg: LPSTORAGE, ppvObj: LPLPVOID): HRESULT {
+  public static OleCreate(rclsid: REFCLSID, riid: REFIID, renderopt: DWORD, pFormatEtc: LPFORMATETC | NULL, pClientSite: LPOLECLIENTSITE | NULL, pStg: LPSTORAGE, ppvObj: LPLPVOID): HRESULT {
     return Ole32.Load('OleCreate')(rclsid, riid, renderopt, pFormatEtc, pClientSite, pStg, ppvObj);
   }
 
@@ -529,7 +529,7 @@ class Ole32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/ole2/nf-ole2-olecreatefromfile
-  public static OleCreateFromFile(rclsid: REFCLSID, lpszFileName: LPCOLESTR, riid: REFIID, renderopt: DWORD, lpFormatEtc: LPFORMATETC, pClientSite: LPOLECLIENTSITE, pStg: LPSTORAGE, ppvObj: LPLPVOID): HRESULT {
+  public static OleCreateFromFile(rclsid: REFCLSID, lpszFileName: LPCOLESTR, riid: REFIID, renderopt: DWORD, lpFormatEtc: LPFORMATETC | NULL, pClientSite: LPOLECLIENTSITE | NULL, pStg: LPSTORAGE, ppvObj: LPLPVOID): HRESULT {
     return Ole32.Load('OleCreateFromFile')(rclsid, lpszFileName, riid, renderopt, lpFormatEtc, pClientSite, pStg, ppvObj);
   }
 
@@ -642,7 +642,7 @@ class Ole32 extends Win32 {
   }
 
   // https://learn.microsoft.com/en-us/windows/win32/api/ole2/nf-ole2-oledraw
-  public static OleDraw(pUnknown: LPUNKNOWN, dwAspect: DWORD, hdcDraw: HDC, lprcBounds: LPCRECT): HRESULT {
+  public static OleDraw(pUnknown: LPUNKNOWN, dwAspect: DWORD, hdcDraw: HDC, lprcBounds: LPCRECT | NULL): HRESULT {
     return Ole32.Load('OleDraw')(pUnknown, dwAspect, hdcDraw, lprcBounds);
   }
 
