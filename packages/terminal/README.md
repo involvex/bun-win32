@@ -6,15 +6,15 @@ Extreme-performance terminal rendering engine — pixel framebuffer + TUI, FFI i
 
 Two surfaces share one zero-allocation core that streams diffed frames over a single write:
 
-- **`Term`** — a 24-bit RGB framebuffer rendered as Unicode block glyphs (`half`/`quad`/`sextant`/`braille`/`ascii`), at tens of thousands of frames per second of frame production.
+- **`Term`** — a 24-bit RGB framebuffer rendered as Unicode block glyphs (`half`/`quad`/`sextant`/`octant`/`braille`/`ascii`), at tens of thousands of frames per second of frame production.
 - **`CharTerm`** — a character-cell grid for terminal user interfaces (box drawing, shading, bold).
 
 Input arrives through `ReadConsoleInputW` (real key **up/down** + repeat + modifiers, mouse, resize) — beyond what ANSI stdin can report. Drive a surface directly, or hand a spec to `run` / `runText` for a managed live loop with headless `CAPTURE_PNG` and `BENCH` modes.
 
 ## Features
 
-- Sub-cell modes (`half`/`quad`/`sextant`/`braille`/`ascii`), diff strategies (`exact`/`threshold`/`none`), colour depths (`truecolor`/`256`/`16`).
-- Drawing: `setPixel`/`add`/`blend`/`plate`/`text` plus `line`/`rect`/`circle`/`blit` and a clip rectangle.
+- Sub-cell modes (`half`/`quad`/`sextant`/`octant`/`braille`/`ascii`), diff strategies (`exact`/`threshold`/`none`), colour depths (`truecolor`/`256`/`16`) with optional ordered (Bayer) dithering.
+- Drawing: `setPixel`/`addPixel`/`blendPixel`/`plate`/`text`, shapes `line`/`rect`/`fillRect`/`circle`/`fillCircle`/`addCircle` (soft additive glow)/`blit`, and a clip rectangle.
 - FFI keyboard (key up/down) + mouse + window-resize + focus + paste events; high-resolution frame pacing.
 - Damage regions (`markDamage`) for partial redraws on mostly-static surfaces.
 - DEC synchronized output (tear-free), a pluggable frame sink (record / pipe), and PNG export.
@@ -49,11 +49,12 @@ await run({
 
 ## Examples
 
-Twenty-six runnable demos live in `example/` (games, TUIs, video, procedural scenes):
+Twenty-seven runnable demos live in `example/` (games, TUIs, video, procedural scenes):
 
 ```sh
 bun run example/raycaster-term.ts     # a playable raycaster (game)
 bun run example/term-dashboard.ts     # an interactive command-center (TUI)
+bun run example/emberfield.ts         # octant + dithering + addCircle glow showcase
 TERM_MODE=braille bun run example/fineprint.ts   # the resolution test-card
 ```
 

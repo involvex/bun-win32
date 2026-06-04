@@ -1,11 +1,12 @@
-import { channelDelta, quantizeTo16, quantizeTo256 } from './color';
+import { bayerThreshold, channelDelta, quantizeTo16, quantizeTo16Dithered, quantizeTo256, quantizeTo256Dithered } from './color';
 import { PIXEL_FONT_HEIGHT, PIXEL_FONT_WIDTH, pixelFont } from './font5x7';
 import {
   MODE_DIMENSIONS,
   asciiRampBytes,
   brailleBitLayout,
   brailleGlyphs,
-  halfBlockGlyph,
+  octantBitLayout,
+  octantGlyphs,
   quadrantBitLayout,
   quadrantGlyphs,
   sextantBitLayout,
@@ -14,7 +15,7 @@ import {
 import { OutputBuffer } from './output';
 import { encodePNG } from './png';
 import { SYNCHRONIZED_OUTPUT_BEGIN, SYNCHRONIZED_OUTPUT_END, standardOutput } from './stdout';
-import type { MouseState, PresentOptions, TermDepth, TermDiff, TermMode, TermOptions } from './types';
+import type { MouseState, PresentOptions, TermDepth, TermDiff, TermDither, TermMode, TermOptions } from './types';
 
 const { abs, ceil, max, min } = Math;
 const ASCII_RAMP_LAST = asciiRampBytes.length - 1;
@@ -55,6 +56,7 @@ export class Term {
 
   depth: TermDepth;
   diff: TermDiff;
+  dither: TermDither;
   mode: TermMode;
   threshold: number;
 
@@ -95,6 +97,7 @@ export class Term {
     this.rows = rows;
     this.depth = options?.depth ?? 'truecolor';
     this.diff = options?.diff ?? 'exact';
+    this.dither = options?.dither ?? 'none';
     this.mode = options?.mode ?? 'half';
     this.threshold = options?.threshold ?? 8;
     this.#selectMode();
@@ -118,6 +121,10 @@ export class Term {
       case 'braille':
         this.#bitLayout = brailleBitLayout;
         this.#glyphTable = brailleGlyphs;
+        break;
+      case 'octant':
+        this.#bitLayout = octantBitLayout;
+        this.#glyphTable = octantGlyphs;
         break;
       case 'quad':
         this.#bitLayout = quadrantBitLayout;
@@ -143,6 +150,7 @@ export class Term {
     if (options.mode !== undefined) this.mode = options.mode;
     if (options.diff !== undefined) this.diff = options.diff;
     if (options.depth !== undefined) this.depth = options.depth;
+    if (options.dither !== undefined) this.dither = options.dither;
     if (options.threshold !== undefined) this.threshold = options.threshold;
     this.#selectMode();
     const width = this.columns * this.#pixelWidth;
@@ -242,6 +250,18 @@ export class Term {
     this.pixels[index + 2] = blue < 0 ? 0 : blue > 255 ? 255 : blue;
   }
 
+  #addPlot(x: number, y: number, red: number, green: number, blue: number): void {
+    if (x < this.#clipLeft || y < this.#clipTop || x >= this.#clipRight || y >= this.#clipBottom) return;
+    const index = (y * this.width + x) * 3;
+    const pixels = this.pixels;
+    const sumRed = pixels[index] + red;
+    const sumGreen = pixels[index + 1] + green;
+    const sumBlue = pixels[index + 2] + blue;
+    pixels[index] = sumRed > 255 ? 255 : sumRed;
+    pixels[index + 1] = sumGreen > 255 ? 255 : sumGreen;
+    pixels[index + 2] = sumBlue > 255 ? 255 : sumBlue;
+  }
+
   /** Draw a 1px line with a Bresenham trace (respects the clip rectangle). */
   line(startX: number, startY: number, endX: number, endY: number, red: number, green: number, blue: number): void {
     let x = startX | 0;
@@ -322,6 +342,36 @@ export class Term {
     for (let offsetY = -extent; offsetY <= extent; offsetY++) {
       for (let offsetX = -extent; offsetX <= extent; offsetX++) {
         if (offsetX * offsetX + offsetY * offsetY <= radiusSquared) this.#plot(cx + offsetX, cy + offsetY, red, green, blue);
+      }
+    }
+  }
+
+  /**
+   * Additively splat a soft radial disk — the bloom / glow / particle primitive. The
+   * centre adds `(red, green, blue) × intensity`, falling off smoothly (quadratically)
+   * to nothing at `radius`. Channels saturate at 255; respects the clip rectangle.
+   * Stack several for light accumulation. Use {@link fillCircle} for a hard-edged disk.
+   *
+   * @example
+   * surface.addCircle(mouseX, mouseY, 12, 255, 180, 80); // a warm glow under the cursor
+   */
+  addCircle(centerX: number, centerY: number, radius: number, red: number, green: number, blue: number, intensity = 1): void {
+    const extent = radius | 0;
+    if (extent <= 0 || intensity <= 0) return;
+    const centerXInteger = centerX | 0;
+    const centerYInteger = centerY | 0;
+    const radiusSquared = radius * radius;
+    const inverseRadiusSquared = 1 / radiusSquared;
+    const peakRed = red * intensity;
+    const peakGreen = green * intensity;
+    const peakBlue = blue * intensity;
+    for (let offsetY = -extent; offsetY <= extent; offsetY++) {
+      const offsetYSquared = offsetY * offsetY;
+      for (let offsetX = -extent; offsetX <= extent; offsetX++) {
+        const distanceSquared = offsetX * offsetX + offsetYSquared;
+        if (distanceSquared >= radiusSquared) continue;
+        const weight = 1 - distanceSquared * inverseRadiusSquared;
+        this.#addPlot(centerXInteger + offsetX, centerYInteger + offsetY, peakRed * weight, peakGreen * weight, peakBlue * weight);
       }
     }
   }
@@ -463,6 +513,7 @@ export class Term {
     const isFirstFrame = this.#firstFrame;
     const isTruecolor = this.depth === 'truecolor';
     const is256 = this.depth === '256';
+    const dithering = !isTruecolor && this.dither === 'ordered';
     const thresholdLimit = this.diff === 'threshold' ? this.threshold : -1;
     const repaintAll = this.diff === 'none';
     const blackBackground = isTruecolor ? 0 : is256 ? quantizeTo256(0, 0, 0) : quantizeTo16(0, 0, 0);
@@ -483,7 +534,16 @@ export class Term {
         if (rampIndex < 0) rampIndex = 0;
         else if (rampIndex > ASCII_RAMP_LAST) rampIndex = ASCII_RAMP_LAST;
         const foregroundRgb = (red << 16) | (green << 8) | blue;
-        const emittedForeground = isTruecolor ? foregroundRgb : is256 ? quantizeTo256(red, green, blue) : quantizeTo16(red, green, blue);
+        const bayer = dithering ? bayerThreshold(column, row) : 0;
+        const emittedForeground = isTruecolor
+          ? foregroundRgb
+          : is256
+            ? dithering
+              ? quantizeTo256Dithered(red, green, blue, bayer)
+              : quantizeTo256(red, green, blue)
+            : dithering
+              ? quantizeTo16Dithered(red, green, blue, bayer)
+              : quantizeTo16(red, green, blue);
         const cellIndex = cellRowBase + column;
         if (!isFirstFrame && !repaintAll) {
           if (thresholdLimit < 0) {
@@ -546,7 +606,7 @@ export class Term {
           currentRow = row;
           currentColumn = column;
         }
-        output.emitCellTruecolor(foregroundKey, backgroundKey, halfBlockGlyph);
+        output.emitCellTruecolorHalfBlock(foregroundKey, backgroundKey);
         currentColumn++;
         if (currentColumn >= columns) currentRow = -1;
       }
@@ -563,6 +623,7 @@ export class Term {
     const isFirstFrame = this.#firstFrame;
     const isTruecolor = this.depth === 'truecolor';
     const is256 = this.depth === '256';
+    const dithering = !isTruecolor && this.dither === 'ordered';
     const thresholdLimit = this.diff === 'threshold' ? this.threshold : -1;
     const repaintAll = this.diff === 'none';
     let currentRow = 0;
@@ -582,9 +643,28 @@ export class Term {
         const bottomBlue = pixels[bottomIndex + 2];
         // The packed source RGB is only the stored key for truecolour (where it IS
         // the emitted value) and for threshold diffing. Palette + exact/none never
-        // touches it, so don't pack it there.
-        const emittedForeground = isTruecolor ? (topRed << 16) | (topGreen << 8) | topBlue : is256 ? quantizeTo256(topRed, topGreen, topBlue) : quantizeTo16(topRed, topGreen, topBlue);
-        const emittedBackground = isTruecolor ? (bottomRed << 16) | (bottomGreen << 8) | bottomBlue : is256 ? quantizeTo256(bottomRed, bottomGreen, bottomBlue) : quantizeTo16(bottomRed, bottomGreen, bottomBlue);
+        // touches it, so don't pack it there. The half-block's two sub-pixels dither
+        // at their own scanlines (top = 2·row, bottom = 2·row+1).
+        const bayerForeground = dithering ? bayerThreshold(column, row * 2) : 0;
+        const bayerBackground = dithering ? bayerThreshold(column, row * 2 + 1) : 0;
+        const emittedForeground = isTruecolor
+          ? (topRed << 16) | (topGreen << 8) | topBlue
+          : is256
+            ? dithering
+              ? quantizeTo256Dithered(topRed, topGreen, topBlue, bayerForeground)
+              : quantizeTo256(topRed, topGreen, topBlue)
+            : dithering
+              ? quantizeTo16Dithered(topRed, topGreen, topBlue, bayerForeground)
+              : quantizeTo16(topRed, topGreen, topBlue);
+        const emittedBackground = isTruecolor
+          ? (bottomRed << 16) | (bottomGreen << 8) | bottomBlue
+          : is256
+            ? dithering
+              ? quantizeTo256Dithered(bottomRed, bottomGreen, bottomBlue, bayerBackground)
+              : quantizeTo256(bottomRed, bottomGreen, bottomBlue)
+            : dithering
+              ? quantizeTo16Dithered(bottomRed, bottomGreen, bottomBlue, bayerBackground)
+              : quantizeTo16(bottomRed, bottomGreen, bottomBlue);
         const cellIndex = cellRowBase + column;
         if (!isFirstFrame && !repaintAll) {
           if (thresholdLimit < 0) {
@@ -616,8 +696,8 @@ export class Term {
           currentRow = row;
           currentColumn = column;
         }
-        if (isTruecolor) output.emitCellTruecolor(emittedForeground, emittedBackground, halfBlockGlyph);
-        else output.emitCellPalette(emittedForeground, emittedBackground, halfBlockGlyph);
+        if (isTruecolor) output.emitCellTruecolorHalfBlock(emittedForeground, emittedBackground);
+        else output.emitCellPaletteHalfBlock(emittedForeground, emittedBackground);
         currentColumn++;
         if (currentColumn >= columns) currentRow = -1;
       }
@@ -642,6 +722,7 @@ export class Term {
     const isFirstFrame = this.#firstFrame;
     const isTruecolor = this.depth === 'truecolor';
     const is256 = this.depth === '256';
+    const dithering = !isTruecolor && this.dither === 'ordered';
     const thresholdLimit = this.diff === 'threshold' ? this.threshold : -1;
     const repaintAll = this.diff === 'none';
     let currentRow = 0;
@@ -728,9 +809,28 @@ export class Term {
           backgroundBlue = ((totalBlue - brightBlue) / darkCount) | 0;
         }
         // As in #emitHalfGeneral: the packed averaged RGB is the stored key only for
-        // truecolour and threshold; palette + exact/none never reads it.
-        const emittedForeground = isTruecolor ? (foregroundRed << 16) | (foregroundGreen << 8) | foregroundBlue : is256 ? quantizeTo256(foregroundRed, foregroundGreen, foregroundBlue) : quantizeTo16(foregroundRed, foregroundGreen, foregroundBlue);
-        const emittedBackground = isTruecolor ? (backgroundRed << 16) | (backgroundGreen << 8) | backgroundBlue : is256 ? quantizeTo256(backgroundRed, backgroundGreen, backgroundBlue) : quantizeTo16(backgroundRed, backgroundGreen, backgroundBlue);
+        // truecolour and threshold; palette + exact/none never reads it. The cell's two
+        // group colours dither at decorrelated Bayer phases (background offset by 4 rows).
+        const bayerForeground = dithering ? bayerThreshold(column, row) : 0;
+        const bayerBackground = dithering ? bayerThreshold(column, row + 4) : 0;
+        const emittedForeground = isTruecolor
+          ? (foregroundRed << 16) | (foregroundGreen << 8) | foregroundBlue
+          : is256
+            ? dithering
+              ? quantizeTo256Dithered(foregroundRed, foregroundGreen, foregroundBlue, bayerForeground)
+              : quantizeTo256(foregroundRed, foregroundGreen, foregroundBlue)
+            : dithering
+              ? quantizeTo16Dithered(foregroundRed, foregroundGreen, foregroundBlue, bayerForeground)
+              : quantizeTo16(foregroundRed, foregroundGreen, foregroundBlue);
+        const emittedBackground = isTruecolor
+          ? (backgroundRed << 16) | (backgroundGreen << 8) | backgroundBlue
+          : is256
+            ? dithering
+              ? quantizeTo256Dithered(backgroundRed, backgroundGreen, backgroundBlue, bayerBackground)
+              : quantizeTo256(backgroundRed, backgroundGreen, backgroundBlue)
+            : dithering
+              ? quantizeTo16Dithered(backgroundRed, backgroundGreen, backgroundBlue, bayerBackground)
+              : quantizeTo16(backgroundRed, backgroundGreen, backgroundBlue);
         const cellIndex = cellRowBase + column;
         if (!isFirstFrame && !repaintAll) {
           if (thresholdLimit < 0) {

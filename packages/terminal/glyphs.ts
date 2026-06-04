@@ -17,6 +17,7 @@ export const MODE_DIMENSIONS: Record<TermMode, readonly [number, number]> = {
   ascii: [1, 2],
   braille: [2, 4],
   half: [1, 2],
+  octant: [2, 4],
   quad: [2, 2],
   sextant: [2, 3],
 };
@@ -55,8 +56,37 @@ export const brailleGlyphs = (() => {
   return glyphs;
 })();
 
+// Block octants (Unicode 16, 2024): a 2×4 solid two-colour cell — braille's density
+// with quad's solid blocks. The 230 glyphs U+1CD00..U+1CDE5 are assigned in ascending
+// mask order to the masks NOT already encoded by an older block character; the 26
+// pre-existing patterns (blank, halves, quadrants, eighths, full) reuse those. Bit d-1
+// is octant d (row-major top→bottom, left then right), matching #emitMulti's sub-cell
+// order exactly, so the bit layout is the identity. Mapping verified against the
+// Unicode 16 NamesList and the wezterm/kitty implementations.
+const octantReusedCodePoint: Record<number, number> = {
+  0: 0x0020, 1: 0x1cea8, 2: 0x1ceab, 3: 0x1fb82, 5: 0x2598, 10: 0x259d, 15: 0x2580, 20: 0x1fbe6,
+  40: 0x1fbe7, 63: 0x1fb85, 64: 0x1cea3, 80: 0x2596, 85: 0x258c, 90: 0x259e, 95: 0x259b, 128: 0x1cea0,
+  160: 0x2597, 165: 0x259a, 170: 0x2590, 175: 0x259c, 192: 0x2582, 240: 0x2584, 245: 0x2599, 250: 0x259f,
+  252: 0x2586, 255: 0x2588,
+};
+export const octantGlyphs = (() => {
+  const glyphs: Uint8Array[] = new Array(256);
+  let mainIndex = 0;
+  for (let mask = 0; mask < 256; mask++) {
+    const reused = octantReusedCodePoint[mask];
+    if (reused !== undefined) {
+      glyphs[mask] = codePointToUtf8(reused);
+    } else {
+      glyphs[mask] = codePointToUtf8(0x1cd00 + mainIndex);
+      mainIndex++;
+    }
+  }
+  return glyphs;
+})();
+
 // Sub-cell index (subRow * pixelWidth + subColumn) → glyph bit position, per mode.
 // Only braille's dot numbering is non-row-major (dots 1,4,2,5,3,6,7,8).
 export const quadrantBitLayout = new Uint8Array([0, 1, 2, 3]);
 export const sextantBitLayout = new Uint8Array([0, 1, 2, 3, 4, 5]);
 export const brailleBitLayout = new Uint8Array([0, 3, 1, 4, 2, 5, 6, 7]);
+export const octantBitLayout = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7]);

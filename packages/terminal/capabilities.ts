@@ -9,10 +9,12 @@ import type { TermDepth } from './types';
 export const CAPABILITIES = {
   depths: ['16', '256', 'truecolor'],
   diffs: ['exact', 'none', 'threshold'],
+  dithers: ['none', 'ordered'],
   features: {
     blit: true,
     clipRect: true,
     damageRegion: true,
+    dithering: true,
     drawPrimitives: true,
     focusEvents: true,
     keyUpDown: true,
@@ -21,14 +23,15 @@ export const CAPABILITIES = {
     pipeSink: true,
     pngExport: true,
     resizeEvents: true,
+    softAdditiveCircle: true,
     synchronizedOutput: true,
   },
   inputBackends: ['console'],
-  modes: ['ascii', 'braille', 'half', 'quad', 'sextant'],
+  modes: ['ascii', 'braille', 'half', 'octant', 'quad', 'sextant'],
   options: {
     bench: ['BENCH', 'BENCH_FRAMES'],
     capture: ['CAPTURE_FPS', 'CAPTURE_FRAMES', 'CAPTURE_PNG', 'CAPTURE_T', 'TERM_COLS', 'TERM_ROWS'],
-    render: ['TERM_DEPTH', 'TERM_DIFF', 'TERM_MODE', 'TERM_THRESHOLD'],
+    render: ['TERM_DEPTH', 'TERM_DIFF', 'TERM_DITHER', 'TERM_MODE', 'TERM_THRESHOLD'],
   },
 } as const;
 
@@ -40,7 +43,10 @@ export interface DetectedCapabilities {
 
 /**
  * Probe the current terminal's colour support from `COLORTERM` / `WT_SESSION`.
- * Modern Windows consoles (conhost on Windows 10+, Windows Terminal) are truecolor.
+ * Reports `truecolor` when `COLORTERM` advertises `truecolor`/`24bit` or `WT_SESSION`
+ * is set (Windows Terminal); otherwise conservatively `256`. A plain conhost that sets
+ * neither is reported as `256` even though Windows 10+ conhost does render truecolor —
+ * pass `depth: 'truecolor'` explicitly if you know the host supports it.
  *
  * @example
  * const surface = new Term(120, 40, { depth: detectCapabilities().colorDepth });

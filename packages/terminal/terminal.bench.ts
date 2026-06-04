@@ -94,7 +94,7 @@ for (const [columns, rows] of sizes) {
 }
 
 console.log('\nPart 2 — mode × diff × depth (200×60 cells)\n');
-const modes: TermMode[] = ['braille', 'half', 'quad', 'sextant'];
+const modes: TermMode[] = ['braille', 'half', 'octant', 'quad', 'sextant'];
 const configs: { depth: TermDepth; diff: TermDiff; label: string; threshold: number }[] = [
   { depth: 'truecolor', diff: 'exact', label: 'exact', threshold: 0 },
   { depth: 'truecolor', diff: 'threshold', label: 'thr18', threshold: 18 },

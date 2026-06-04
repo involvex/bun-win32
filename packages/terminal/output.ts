@@ -160,6 +160,29 @@ export class OutputBuffer {
     this.#position = position;
   }
 
+  /**
+   * {@link emitCellTruecolor} specialised for the half-block glyph `▀` (U+2580 =
+   * E2 96 80), the engine's flagship cell. Storing the three constant bytes inline
+   * drops the glyph-copy loop, its `length` load, and three array reads per churned
+   * cell — the hot truecolour half-block path emits one of these per re-painted cell.
+   */
+  emitCellTruecolorHalfBlock(foreground: number, background: number): void {
+    const needForeground = foreground !== this.#penForeground;
+    const needBackground = background !== this.#penBackground;
+    this.#ensureCapacity(0x28 + 3);
+    const target = this.#bytes;
+    let position = this.#position;
+    if (needForeground || needBackground) {
+      position = this.#writeTruecolorEscape(target, position, foreground, background, needForeground, needBackground);
+      this.#penForeground = foreground;
+      this.#penBackground = background;
+    }
+    target[position++] = 0xe2;
+    target[position++] = 0x96;
+    target[position++] = 0x80;
+    this.#position = position;
+  }
+
   // Write the minimal truecolour SGR into `target` at `start`, returning the new
   // position. Capacity is the caller's responsibility. At least one of the two
   // `need*` flags is always true here.
@@ -228,6 +251,24 @@ export class OutputBuffer {
       this.#penBackground = background;
     }
     for (let index = 0; index < glyph.length; index++) target[position++] = glyph[index];
+    this.#position = position;
+  }
+
+  /** {@link emitCellPalette} specialised for the half-block glyph `▀` — the palette twin of {@link emitCellTruecolorHalfBlock}. */
+  emitCellPaletteHalfBlock(foreground: number, background: number): void {
+    const needForeground = foreground !== this.#penForeground;
+    const needBackground = background !== this.#penBackground;
+    this.#ensureCapacity(0x14 + 3);
+    const target = this.#bytes;
+    let position = this.#position;
+    if (needForeground || needBackground) {
+      position = this.#writePaletteEscape(target, position, foreground, background, needForeground, needBackground);
+      this.#penForeground = foreground;
+      this.#penBackground = background;
+    }
+    target[position++] = 0xe2;
+    target[position++] = 0x96;
+    target[position++] = 0x80;
     this.#position = position;
   }
 

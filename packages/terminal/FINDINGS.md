@@ -213,6 +213,68 @@ Truecolour paths flat (the pack is still the emitted value there). Golden green.
 
 ---
 
+## Rounds 11–12 — recreated harness (best-of-7, N=600, 200×60, Bun 1.4.0)
+
+The original `.scratch/optbench.ts` was cleaned between sessions and recreated to the
+same spec. Absolute fps differ from Rounds 1–10 (newer Bun, different machine load),
+so these rounds quote **their own** baseline measured immediately before the change.
+
+## Round 11 — specialise the half-block glyph append · KEEP
+
+**Hypothesis.** The flagship half-block paths (`#emitHalfFast`, `#emitHalfGeneral`)
+always emit the *same* 3-byte glyph (`▀` = E2 96 80), yet routed it through the generic
+`emitCellTruecolor(…, glyph)`, whose tail loop `for (i<glyph.length) target[p++]=glyph[i]`
+pays a `length` load + an array read per byte every churned cell. A specialised emit
+that stores the three constant bytes inline drops the loop, the length load, and three
+array reads per cell.
+
+**Change.** `output.ts` — added `emitCellTruecolorHalfBlock` / `emitCellPaletteHalfBlock`
+(escape-if-pen-moved, then `target[p++]=0xe2;0x96;0x80`). `pixel.ts` — `#emitHalfFast`
+and both arms of `#emitHalfGeneral` call them; the now-unused `halfBlockGlyph` import is
+dropped. Output bytes unchanged.
+
+**Result** (three runs each, consistently above baseline):
+
+| scenario | baseline | after | Δ |
+| --- | ---: | ---: | ---: |
+| half / tc / exact — VIDEO | 1639 | 1670 | +1.9% |
+| half / 16 / exact — VIDEO | 3170 | 3300 | **+4%** |
+| half / tc / threshold — VIDEO | 1265 | 1285 | +1.6% |
+
+sextant/quad untouched (they pass variable glyphs through the general emit). STATIC
+flat (skip path emits nothing). Golden green (`4a6e2109` / `6406c50a`).
+
+## Round 12 — fold `;` into a `decimal;` byte LUT · REVERT (regression)
+
+**Hypothesis.** In `#writeTruecolorEscape` the R/G components are always followed by a
+structural `;`; a `decimalSemicolonBytes[v]` LUT (`"123;"`) would let one copy loop emit
+the digits+separator, removing the standalone `target[p++]=SEMICOLON` stores.
+
+**Result — REGRESSION.** half/tc/exact VIDEO 1670 → **1583** (−5%); all truecolour
+churn paths down 2–5%. Folding the separator into the LUT lengthens each copy loop by
+one iteration, and a bounds-checked loop iteration costs more than the single standalone
+store it replaced. Reverted. **Lesson: a free-standing store beats extending a copy loop.**
+
+## Aside — 32-bit `DataView` packed reads · REVERT (severe regression)
+
+Replacing the six per-cell byte loads in `#emitHalfFast` with two
+`DataView.getUint32(…, false) >>> 8` reads (over a 1-byte-padded backing buffer to keep
+the tail read in bounds) **cratered** the skip path: STATIC 40598 → **7806** fps (−81%),
+half/tc VIDEO −12%. In Bun/JSC a dynamic-offset `DataView.getUint32` is not lowered to a
+single fast load the way `Uint8Array` indexing is; the byte loads + shifts win decisively.
+Reverted. Recorded so it is not retried.
+
+---
+
+## New gated byte-streams (features, not perf rounds)
+
+The `octant` mode and `ordered` dithering added emitted-byte surface, each frozen under
+its own golden in `frame.golden.test.ts` (`Octant` = `e9d47a44`, `Dither` = `5ebc2fa9`).
+The original `4a6e2109` / `6406c50a` hashes are **unchanged** — proof the additions did
+not perturb any existing mode/depth/diff path.
+
+---
+
 ## Summary — baseline → optimised
 
 Best-of-7, 200×60, frame-production fps. Ten rounds: eight kept (four substantial),

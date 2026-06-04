@@ -31,7 +31,7 @@
     "directory": "packages/terminal"
   },
   "type": "module",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "main": "./index.ts",
   "keywords": [
     "bun",
@@ -80,6 +80,7 @@
     "example:claude-tui": "bun ./example/claude-tui.ts",
     "example:clawd": "bun ./example/clawd.ts",
     "example:desktop": "bun ./example/desktop.ts",
+    "example:emberfield": "bun ./example/emberfield.ts",
     "example:fineprint": "bun ./example/fineprint.ts",
     "example:flowfield": "bun ./example/flowfield.ts",
     "example:fluid-ink": "bun ./example/fluid-ink.ts",

@@ -60,7 +60,7 @@ export interface KeyEvent {
   alt: boolean;
   ctrl: boolean;
   down: boolean;
-  /** A normalised name: a single typed character, or `up`/`enter`/`f5`/`escape`/… for non-character keys. */
+  /** A normalised name: a single typed character, or a non-character key name — `esc` `enter` `tab` `space` `backspace` `delete` `insert` `home` `end` `pageup` `pagedown` `up` `down` `left` `right` `f1`..`f12`. */
   key: string;
   repeat: boolean;
   shift: boolean;
@@ -95,7 +95,7 @@ export interface InputHandlers {
  * frame; call `restore()` on teardown.
  *
  * @example
- * const input = new ConsoleInput({ key: (event) => { if (event.key === 'escape') stop(); } });
+ * const input = new ConsoleInput({ key: (event) => { if (event.key === 'esc') stop(); } });
  * // each frame:
  * input.poll();
  */

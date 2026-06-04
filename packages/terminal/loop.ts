@@ -5,16 +5,17 @@ import { ConsoleInput } from './input';
 import { createFrameWaiter } from './pacing';
 import { Term } from './pixel';
 import { standardOutput } from './stdout';
-import type { RGB, TermDepth, TermDiff, TermMode, TermOptions } from './types';
+import type { RGB, TermDepth, TermDiff, TermDither, TermMode, TermOptions } from './types';
 
 const { max, min, round } = Math;
 
-// Live showcase controls (pixel `run` loop): F2/F3/F4 cycle the sub-cell mode,
-// colour depth, and diff strategy so a demo can flip to ASCII / 16-colour / etc.
-// mid-run. The surface reconfigures and the demo re-inits at the new resolution.
+// Live showcase controls (pixel `run` loop): F2/F3/F4/F5 cycle the sub-cell mode,
+// colour depth, diff strategy, and palette dithering so a demo can flip to ASCII /
+// 16-colour / dithered etc. mid-run. The surface reconfigures and the demo re-inits.
 const DEPTH_CYCLE: TermDepth[] = ['truecolor', '256', '16'];
 const DIFF_CYCLE: TermDiff[] = ['exact', 'threshold', 'none'];
-const MODE_CYCLE: TermMode[] = ['half', 'quad', 'sextant', 'braille', 'ascii'];
+const DITHER_CYCLE: TermDither[] = ['none', 'ordered'];
+const MODE_CYCLE: TermMode[] = ['half', 'quad', 'sextant', 'octant', 'braille', 'ascii'];
 
 /** Per-app configuration for the pixel surface (`run`). */
 export interface AppSpec {
@@ -24,6 +25,8 @@ export interface AppSpec {
   depth?: TermDepth;
   /** Diff strategy (env `TERM_DIFF` overrides). */
   diff?: TermDiff;
+  /** Palette dithering for `16` / `256` depths (env `TERM_DITHER` overrides). */
+  dither?: TermDither;
   /** Draw the built-in FPS HUD (default true). */
   drawHud?: boolean;
   /** Per-frame draw callback. */
@@ -66,7 +69,8 @@ const pickEnumEnv = <T extends string>(name: string, valid: readonly T[], fallba
 const resolveOptions = (spec: AppSpec): TermOptions => ({
   depth: pickEnumEnv<TermDepth>('TERM_DEPTH', ['16', '256', 'truecolor'], spec.depth),
   diff: pickEnumEnv<TermDiff>('TERM_DIFF', ['exact', 'none', 'threshold'], spec.diff),
-  mode: pickEnumEnv<TermMode>('TERM_MODE', ['ascii', 'braille', 'half', 'quad', 'sextant'], spec.mode),
+  dither: pickEnumEnv<TermDither>('TERM_DITHER', ['none', 'ordered'], spec.dither),
+  mode: pickEnumEnv<TermMode>('TERM_MODE', ['ascii', 'braille', 'half', 'octant', 'quad', 'sextant'], spec.mode),
   threshold: readEnv('TERM_THRESHOLD') !== undefined ? readEnvNumber('TERM_THRESHOLD', 8) : spec.threshold,
 });
 
@@ -78,7 +82,7 @@ const writeLine = (text: string): void => {
 /** Draw the built-in HUD plate (title + FPS + mode tag) into the framebuffer. */
 const drawHud = (surface: Term, spec: AppSpec, fps: number, milliseconds: number, caption?: string): void => {
   const title = spec.title.toUpperCase();
-  const tag = `${surface.mode.toUpperCase()}${surface.diff !== 'exact' ? `/${surface.diff.toUpperCase()}` : ''}${surface.depth !== 'truecolor' ? `/${surface.depth}` : ''}`;
+  const tag = `${surface.mode.toUpperCase()}${surface.diff !== 'exact' ? `/${surface.diff.toUpperCase()}` : ''}${surface.depth !== 'truecolor' ? `/${surface.depth}` : ''}${surface.dither !== 'none' ? '/DITHER' : ''}`;
   const statusLine = `FPS ${fps.toFixed(0).padStart(3)}  ${milliseconds.toFixed(1)}MS  ${surface.width}X${surface.height}  ${tag}`;
   const hudCaption = caption ?? spec.hud ?? '';
   const plateWidth = max(Term.textWidth(title), Term.textWidth(statusLine), Term.textWidth(hudCaption)) + 6;
@@ -201,6 +205,11 @@ const runLive = async (spec: AppSpec, options: TermOptions): Promise<void> => {
         reconfigurePending = true;
         return;
       }
+      if (event.key === 'f5') {
+        reconfigureRequest.dither = DITHER_CYCLE[(DITHER_CYCLE.indexOf(surface.dither) + 1) % DITHER_CYCLE.length];
+        reconfigurePending = true;
+        return;
+      }
       spec.onKey?.(lower, surface);
     },
     paste: spec.onPaste ? (text) => spec.onPaste!(text, surface) : undefined,
@@ -263,6 +272,7 @@ const runLive = async (spec: AppSpec, options: TermOptions): Promise<void> => {
         surface.reconfigure(reconfigureRequest);
         reconfigureRequest.depth = undefined;
         reconfigureRequest.diff = undefined;
+        reconfigureRequest.dither = undefined;
         reconfigureRequest.mode = undefined;
         if (spec.resize) await spec.resize(surface);
         else await spec.init?.(surface);

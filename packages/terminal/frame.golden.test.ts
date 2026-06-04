@@ -10,6 +10,8 @@ import { Term } from './pixel';
 import type { TermDepth, TermDiff, TermMode } from './types';
 
 const TERM_GOLDEN_HASH: string = '4a6e2109';
+const OCTANT_GOLDEN_HASH: string = 'e9d47a44';
+const DITHER_GOLDEN_HASH: string = '5ebc2fa9';
 const CHAR_GOLDEN_HASH: string = '6406c50a';
 
 // FNV-1a folding `bytes` into `state`, returning the new state.
@@ -58,6 +60,38 @@ for (const mode of modes) {
 }
 const termDigest = termHash.toString(16).padStart(8, '0');
 
+// Octant (Unicode 16) is gated separately so the five-mode TERM_GOLDEN_HASH stays
+// frozen — proof the new mode added bytes without disturbing the existing ones.
+let octantHash = fnvOffset >>> 0;
+for (const depth of depths) {
+  for (const diff of diffs) {
+    const surface = new Term(48, 16, { depth, diff, mode: 'octant', threshold: 18 });
+    for (let frame = 0; frame < 8; frame++) {
+      paintTerm(surface, frame);
+      surface.buildFrame();
+      octantHash = fold(octantHash, surface.frameBytes());
+    }
+  }
+}
+const octantDigest = octantHash.toString(16).padStart(8, '0');
+
+// Ordered dithering, gated separately (it only affects the palette depths). Covers the
+// three palette emit paths — ascii, half (#emitHalfGeneral), sextant (#emitMulti).
+let ditherHash = fnvOffset >>> 0;
+for (const mode of ['ascii', 'half', 'sextant'] as TermMode[]) {
+  for (const depth of ['16', '256'] as TermDepth[]) {
+    for (const diff of diffs) {
+      const surface = new Term(48, 16, { depth, diff, dither: 'ordered', mode, threshold: 18 });
+      for (let frame = 0; frame < 8; frame++) {
+        paintTerm(surface, frame);
+        surface.buildFrame();
+        ditherHash = fold(ditherHash, surface.frameBytes());
+      }
+    }
+  }
+}
+const ditherDigest = ditherHash.toString(16).padStart(8, '0');
+
 // --- CharTerm: a churning grid exercising glyphs, fg/bg, bold, and the pen ---
 const boxGlyphs = [0x2500, 0x2502, 0x250c, 0x2510, 0x2514, 0x2518, 0x251c, 0x2524, 0x252c, 0x2534, 0x253c];
 const paintChar = (surface: CharTerm, frame: number): void => {
@@ -97,5 +131,7 @@ const judge = (label: string, expected: string, actual: string): void => {
   }
 };
 judge('Term', TERM_GOLDEN_HASH, termDigest);
+judge('Octant', OCTANT_GOLDEN_HASH, octantDigest);
+judge('Dither', DITHER_GOLDEN_HASH, ditherDigest);
 judge('CharTerm', CHAR_GOLDEN_HASH, charDigest);
 if (failed) process.exit(1);

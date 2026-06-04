@@ -202,6 +202,40 @@ brailleTest((surface) => surface.setPixel(0, 0, 255, 255, 255), 0x2801, 'dot1 (0
 brailleTest((surface) => surface.setPixel(1, 3, 255, 255, 255), 0x2880, 'dot8 (1,3)');
 brailleTest((surface) => surface.setPixel(0, 3, 255, 255, 255), 0x2840, 'dot7 (0,3)');
 
+// Octant (2×4). Bit d-1 is octant d (row-major). Lit sub-pixels are white, the rest
+// black, so the two-colour split lands the lit set in the foreground group. Masks
+// 0/255 are unreachable here (a uniform cell takes the solid branch → space), so the
+// edge cases tested are the single sub-cell, the columns, and the eighth rows — which
+// reuse pre-existing block characters rather than the U+1CD00 range.
+const octantTest = (setup: (surface: Term) => void, expectedCodePoint: number, name: string): void => {
+  const surface = new Term(1, 1, { mode: 'octant' });
+  setup(surface);
+  surface.buildFrame();
+  check(`octant ${name} ${hex(expectedCodePoint)}`, decode(surface.frameBytes(), 1, 1)[0].codePoint === expectedCodePoint);
+};
+octantTest((surface) => surface.setPixel(0, 0, 255, 255, 255), 0x1cea8, 'octant-1 (0,0)'); // mask 1 → reused U+1CEA8
+octantTest((surface) => {
+  surface.setPixel(0, 0, 255, 255, 255);
+  surface.setPixel(0, 1, 255, 255, 255);
+  surface.setPixel(0, 2, 255, 255, 255);
+  surface.setPixel(0, 3, 255, 255, 255);
+}, 0x258c, 'left column ▌'); // mask 0x55 → LEFT HALF BLOCK
+octantTest((surface) => {
+  surface.setPixel(1, 0, 255, 255, 255);
+  surface.setPixel(1, 1, 255, 255, 255);
+  surface.setPixel(1, 2, 255, 255, 255);
+  surface.setPixel(1, 3, 255, 255, 255);
+}, 0x2590, 'right column ▐'); // mask 0xAA → RIGHT HALF BLOCK
+octantTest((surface) => {
+  surface.setPixel(0, 0, 255, 255, 255);
+  surface.setPixel(1, 0, 255, 255, 255);
+}, 0x1fb82, 'top eighth row'); // mask 3 → UPPER ONE QUARTER BLOCK
+octantTest((surface) => {
+  surface.setPixel(0, 3, 255, 255, 255);
+  surface.setPixel(1, 3, 255, 255, 255);
+}, 0x2582, 'bottom eighth row'); // mask 0xC0 → LOWER ONE QUARTER BLOCK
+octantTest((surface) => surface.setPixel(0, 1, 255, 255, 255), 0x1cd00, 'octant-3 (0,1)'); // mask 4 → first U+1CD00 glyph
+
 {
   const surface = new Term(4, 1, { diff: 'threshold', threshold: 16 });
   for (let x = 0; x < 4; x++) {

@@ -1,8 +1,11 @@
 /** Sub-cell packing mode: how many pixels one character cell represents, and how. */
-export type TermMode = 'ascii' | 'braille' | 'half' | 'quad' | 'sextant';
+export type TermMode = 'ascii' | 'braille' | 'half' | 'octant' | 'quad' | 'sextant';
 
 /** Frame-diff strategy: how the renderer decides which cells to re-emit. */
 export type TermDiff = 'exact' | 'none' | 'threshold';
+
+/** Palette dithering for the `16` / `256` depths. `ordered` trades colour banding for an 8×8 Bayer blend; `none` hard-quantises. Ignored at `truecolor`. */
+export type TermDither = 'none' | 'ordered';
 
 /** Colour depth of the emitted escape sequences. Fewer bits means far fewer bytes per frame. */
 export type TermDepth = '16' | '256' | 'truecolor';
@@ -30,6 +33,8 @@ export interface MouseState {
 export interface TermOptions {
   depth?: TermDepth;
   diff?: TermDiff;
+  /** Palette dithering for `16` / `256` depths (default `none`). `ordered` smooths colour banding; no effect at `truecolor`. */
+  dither?: TermDither;
   mode?: TermMode;
   /** With `diff: 'threshold'`, the maximum per-channel drift (0..255) a cell may accumulate before it is repainted. */
   threshold?: number;

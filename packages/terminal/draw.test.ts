@@ -54,5 +54,27 @@ const assert = (label: string, condition: boolean): void => {
   assert('blit copies source pixel', surface.pixels[(1 * 8 + 1) * 3] === 200);
 }
 
+{
+  const surface = new Term(16, 8); // 16x16
+  surface.clear(0, 0, 0);
+  surface.addCircle(8, 8, 5, 200, 100, 40);
+  const center = (8 * 16 + 8) * 3;
+  const edge = (8 * 16 + 12) * 3; // distance 4, near the rim
+  const outside = (8 * 16 + 14) * 3; // distance 6 > radius 5
+  assert('addCircle peaks at centre', surface.pixels[center] === 200 && surface.pixels[center + 1] === 100);
+  assert('addCircle fades toward the rim', surface.pixels[edge] > 0 && surface.pixels[edge] < 200);
+  assert('addCircle leaves pixels beyond the radius untouched', surface.pixels[outside] === 0);
+  surface.addCircle(8, 8, 5, 200, 100, 40); // a second splat accumulates and saturates
+  assert('addCircle accumulates additively', surface.pixels[center] === 255);
+}
+
+{
+  const surface = new Term(16, 8);
+  surface.clear(0, 0, 0);
+  surface.clip(0, 0, 8, 16);
+  surface.addCircle(8, 8, 5, 200, 100, 40); // centre on the clip's right edge → right half blocked
+  assert('addCircle respects the clip rectangle', surface.pixels[(8 * 16 + 8) * 3] === 0 && surface.pixels[(8 * 16 + 6) * 3] > 0);
+}
+
 console.log(`draw.test: ${passCount} pass, ${failCount} fail`);
 if (failCount > 0) process.exit(1);

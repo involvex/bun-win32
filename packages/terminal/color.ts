@@ -88,3 +88,43 @@ export const quantizeTo16 = (red: number, green: number, blue: number): number =
 /** Quantise an 8-bit-per-channel colour to the nearest xterm 256-colour palette index. */
 export const quantizeTo256 = (red: number, green: number, blue: number): number =>
   lookupTable256[((red >> 3) << 10) | ((green >> 3) << 5) | (blue >> 3)];
+
+// Ordered (Bayer) dithering for the palette depths. The 8×8 recursive Bayer matrix
+// (values 0..63) gives each pixel position a stable sub-step threshold; adding it as
+// a bias before quantising trades a hard colour boundary for a position-fixed checker
+// of the two nearest palette entries, so a smooth gradient reads as a blend rather
+// than a band. Stateless and deterministic per (colour, position): identical frames
+// still diff to nothing. The spread is tuned to each palette's dominant step (≈40 for
+// the 256-cube, wider for the sparse 16-colour set). Index by `((y & 7) << 3) | (x & 7)`.
+const bayer8x8 = new Uint8Array([
+  0, 32, 8, 40, 2, 34, 10, 42, 48, 16, 56, 24, 50, 18, 58, 26, 12, 44, 4, 36, 14, 46, 6, 38, 60, 28, 52, 20, 62, 30, 54, 22, 3, 35, 11, 43, 1, 33, 9, 41, 51, 19, 59, 27, 49, 17, 57, 25, 15, 47, 7, 39, 13, 45, 5, 37, 63, 31, 55, 23, 61, 29, 53, 21,
+]);
+const DITHER_SPREAD_256 = 40;
+const DITHER_SPREAD_16 = 110;
+
+/** Bayer threshold (0..63) for a pixel position — index into the dithered quantisers. */
+export const bayerThreshold = (x: number, y: number): number => bayer8x8[((y & 7) << 3) | (x & 7)];
+
+/** {@link quantizeTo256} with an ordered-dither bias from {@link bayerThreshold} folded in before the palette match. */
+export const quantizeTo256Dithered = (red: number, green: number, blue: number, threshold: number): number => {
+  const bias = ((threshold * DITHER_SPREAD_256) >> 6) - (DITHER_SPREAD_256 >> 1);
+  let red8 = red + bias;
+  let green8 = green + bias;
+  let blue8 = blue + bias;
+  red8 = red8 < 0 ? 0 : red8 > 255 ? 255 : red8;
+  green8 = green8 < 0 ? 0 : green8 > 255 ? 255 : green8;
+  blue8 = blue8 < 0 ? 0 : blue8 > 255 ? 255 : blue8;
+  return lookupTable256[((red8 >> 3) << 10) | ((green8 >> 3) << 5) | (blue8 >> 3)];
+};
+
+/** {@link quantizeTo16} with an ordered-dither bias from {@link bayerThreshold} folded in before the palette match. */
+export const quantizeTo16Dithered = (red: number, green: number, blue: number, threshold: number): number => {
+  const bias = ((threshold * DITHER_SPREAD_16) >> 6) - (DITHER_SPREAD_16 >> 1);
+  let red8 = red + bias;
+  let green8 = green + bias;
+  let blue8 = blue + bias;
+  red8 = red8 < 0 ? 0 : red8 > 255 ? 255 : red8;
+  green8 = green8 < 0 ? 0 : green8 > 255 ? 255 : green8;
+  blue8 = blue8 < 0 ? 0 : blue8 > 255 ? 255 : blue8;
+  return lookupTable16[((red8 >> 3) << 10) | ((green8 >> 3) << 5) | (blue8 >> 3)];
+};

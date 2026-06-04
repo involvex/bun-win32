@@ -12,4 +12,4 @@ export type { AppSpec, TextAppSpec } from './loop';
 export { createFrameWaiter } from './pacing';
 export { Term } from './pixel';
 export { encodePNG } from './png';
-export type { MouseState, PresentOptions, RGB, TermDepth, TermDiff, TermMode, TermOptions } from './types';
+export type { MouseState, PresentOptions, RGB, TermDepth, TermDiff, TermDither, TermMode, TermOptions } from './types';
