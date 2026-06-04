@@ -30,7 +30,7 @@
     "directory": "packages/kernel32"
   },
   "type": "module",
-  "version": "1.0.24",
+  "version": "1.0.25",
   "main": "./index.ts",
   "keywords": [
     "bun",
