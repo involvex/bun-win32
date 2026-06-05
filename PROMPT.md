@@ -328,13 +328,29 @@ After all methods are written, perform a **dedicated review pass** over every me
 5. Add missing `| NULL` or `| 0n`.
 6. Remove incorrect unions where neither the header nor docs confirm nullability.
 
-If you are auditing a large package, script this pass:
+**This pass is automated by `scripts/nullcheck.ts`** — it implements exactly this
+algorithm against the local Windows SDK headers (it preserves the SAL annotations
+that `scripts/audit.ts` strips):
+
+```bash
+bun run scripts/nullcheck.ts {name}          # report MISSING / TYPE_MISMATCH / SPURIOUS
+bun run scripts/nullcheck.ts {name} --fix    # add the missing | NULL / | 0n, then review
+bun run scripts/nullcheck.ts --all           # gate: non-zero exit if any MISSING remain
+```
+
+It scripts the pass as:
 
 - Parse each generated method signature in `structs/{Class}.ts`
 - Resolve the corresponding SDK prototype
 - Match parameters by exact Win32 name
 - Compare the existing TS type to the SAL-derived expectation
 - Patch only the method signature unions
+
+`MISSING` are definite bugs (auto-fixable). `TYPE_MISMATCH` flags a pointer typed as
+a handle or vice-versa. `SPURIOUS` (a `| NULL`/`| 0n` the header marks required) is
+**informational, not a defect** — older headers under-annotate optionality and the
+union is usually correct per MSDN prose; do not remove it without an explicit MSDN
+statement that the parameter cannot be NULL. Still verify against MSDN by hand:
 
 This audit should catch cases like:
 
@@ -644,8 +660,31 @@ bun run scripts/audit.ts {name} --fix
 # Audit all packages at once
 bun run scripts/audit.ts --all
 
+# Nullability + pointer/handle type audit (SAL-driven; complements audit.ts)
+bun run scripts/nullcheck.ts {name}          # one package
+bun run scripts/nullcheck.ts {name} --fix    # add missing | NULL / | 0n
+bun run scripts/nullcheck.ts --all           # all packages (non-zero exit on MISSING)
+
+# Pre-publish gate: fail if bun.lock workspace versions are stale vs package.json
+bun run scripts/preflight.ts
+
 # Run example
 cd packages/{name} && bun run example/{name}.ts
+```
+
+## 15. Releasing
+
+After bumping versions, **regenerate the lockfile** — `bun install` alone will not
+refresh `bun.lock`'s workspace version records, so `bun publish` would pin the OLD
+exact versions into dependents (`@bun-win32/all`, `virtdisk`, …) that reference them
+via `workspace:*`:
+
+```bash
+rm bun.lock && bun install        # refresh workspace version records
+bun run scripts/preflight.ts      # verify lockfile in sync (gate)
+bun run scripts/nullcheck.ts --all && bun run scripts/audit.ts --all   # type gates
+# publish each package; scoped @bun-win32 is private-by-default:
+cd packages/{name} && bun publish --access public --otp <code>
 ```
 
 ---
