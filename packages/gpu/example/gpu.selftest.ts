@@ -36,6 +36,7 @@ import {
   compile,
   createComputeDevice,
   createDevice,
+  createGpuTimer,
   createWindow,
   describeDeviceError,
   destroyDevice,
@@ -446,6 +447,44 @@ function runSections(label: string, options: CreateDeviceOptions): void {
       return message.includes('TDR') && message.includes('0x887a');
     });
     check(tag('19 removed-mapper'), allMapped, '0x887A0005/6/7 map to named, TDR-hinted messages');
+  }
+
+  {
+    const a = GpuArray.from(new Float32Array(256 * 256).fill(1.25));
+    const b = GpuArray.from(new Float32Array(256 * 256).fill(0.75));
+    const c = GpuArray.alloc('float', 256 * 256);
+    const matmul = new Kernel(
+      `StructuredBuffer<float> a : register(t0);
+       StructuredBuffer<float> b : register(t1);
+       RWStructuredBuffer<float> c : register(u0);
+       [numthreads(8,8,1)] void main(uint3 id : SV_DispatchThreadID) {
+         float sum = 0;
+         for (uint k = 0; k < 256; k += 1) sum += a[id.y * 256 + k] * b[k * 256 + id.x];
+         c[id.y * 256 + id.x] = sum;
+       }`,
+    );
+    let timing = { disjoint: true, frequency: 0n, gpuMilliseconds: 0 };
+    let wallMilliseconds = 0;
+    for (let attempt = 0; attempt < 3 && timing.disjoint; attempt += 1) {
+      const timer = createGpuTimer();
+      const wallStart = performance.now();
+      timer.begin();
+      matmul.dispatch({ a, b, c }, { groups: [32, 32] });
+      timer.end();
+      timing = timer.resolve();
+      void c.read();
+      wallMilliseconds = performance.now() - wallStart;
+      timer.release();
+    }
+    check(
+      tag('21 gpu-timer'),
+      timing.frequency > 0n && !timing.disjoint && timing.gpuMilliseconds > 0 && timing.gpuMilliseconds <= wallMilliseconds,
+      `matmul gpu=${timing.gpuMilliseconds.toFixed(3)} ms ≤ wall=${wallMilliseconds.toFixed(3)} ms, frequency=${timing.frequency}`,
+    );
+    a.release();
+    b.release();
+    c.release();
+    matmul.release();
   }
 
   destroyDevice();

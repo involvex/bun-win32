@@ -65,6 +65,7 @@
     "kernel.ts",
     "pipeline.ts",
     "png.ts",
+    "query.ts",
     "shader.ts",
     "snapshot.ts",
     "texture.ts",

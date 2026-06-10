@@ -15,6 +15,8 @@ export type { DispatchOptions, KernelArray, KernelBinding, RunOptions, ScalarKin
 export { clear, copyResource, csSet, dispatch, drawFullscreenTriangle, drawPoints, generateMips, makeAdditiveBlendState, makeSampler, psSet, setBlendState, setRenderTargets, setViewport, vsSet, vsSetShaderResources } from './pipeline';
 export type { CsBindings, PsBindings, SamplerOptions } from './pipeline';
 export { encodePNG, encodePNGFromBGRA } from './png';
+export { createGpuTimer } from './query';
+export type { GpuTimer, GpuTimerResult } from './query';
 export { compile, disassemble, makeComputeShader, makePixelShader, makeVertexShader, preprocessHLSL } from './shader';
 export type { CompileOptions, CompiledShader } from './shader';
 export { captureBackBuffer, formatGrid } from './snapshot';
