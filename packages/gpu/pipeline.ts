@@ -6,11 +6,13 @@ import { vcall } from './com';
 import {
   CTX_CLEAR_RENDER_TARGET_VIEW,
   CTX_COPY_RESOURCE,
+  CTX_COPY_STRUCTURE_COUNT,
   CTX_CS_SET_CONSTANT_BUFFERS,
   CTX_CS_SET_SHADER,
   CTX_CS_SET_SHADER_RESOURCES,
   CTX_CS_SET_UNORDERED_ACCESS_VIEWS,
   CTX_DISPATCH,
+  CTX_DISPATCH_INDIRECT,
   CTX_DRAW,
   CTX_GENERATE_MIPS,
   CTX_IA_SET_PRIMITIVE_TOPOLOGY,
@@ -71,6 +73,12 @@ export function copyResource(dst: bigint, src: bigint): void {
   vcall(context, CTX_COPY_RESOURCE, [FFIType.u64, FFIType.u64], [dst, src], FFIType.void);
 }
 
+/** Copy an append/consume UAV's hidden counter into a buffer at a byte offset, GPU-side (CopyStructureCount). */
+export function copyStructureCount(targetBuffer: bigint, alignedByteOffset: number, uav: bigint): void {
+  const { context } = requireGpu();
+  vcall(context, CTX_COPY_STRUCTURE_COUNT, [FFIType.u64, FFIType.u32, FFIType.u64], [targetBuffer, alignedByteOffset, uav], FFIType.void);
+}
+
 /** Bind the compute shader plus optional constant buffers, UAVs, and SRVs. */
 export function csSet(shader: bigint, bindings: CsBindings = {}): void {
   const { context } = requireGpu();
@@ -103,6 +111,12 @@ export function csSet(shader: bigint, bindings: CsBindings = {}): void {
 export function dispatch(x: number, y = 1, z = 1): void {
   const { context } = requireGpu();
   vcall(context, CTX_DISPATCH, [FFIType.u32, FFIType.u32, FFIType.u32], [x, y, z], FFIType.void);
+}
+
+/** Dispatch with thread-group counts read GPU-side from an indirect-args buffer (DispatchIndirect). */
+export function dispatchIndirect(argsBuffer: bigint, alignedByteOffset = 0): void {
+  const { context } = requireGpu();
+  vcall(context, CTX_DISPATCH_INDIRECT, [FFIType.u64, FFIType.u32], [argsBuffer, alignedByteOffset], FFIType.void);
 }
 
 /** Draw a single full-screen triangle (3 verts, SV_VertexID, no IA buffers). */

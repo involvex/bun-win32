@@ -46,6 +46,7 @@ import {
   comRelease,
   compile,
   compileCached,
+  copyStructureCount,
   createComputeDevice,
   createDevice,
   createGpuTimer,
@@ -56,6 +57,7 @@ import {
   destroyDevice,
   deviceFeatures,
   dispatch,
+  dispatchIndirect,
   drawFullscreenTriangle,
   drawTriangles,
   getDeviceRemovedReason,
@@ -65,6 +67,7 @@ import {
   makeComputeShader,
   makeConstantBuffer,
   makeDepthBuffer,
+  makeIndirectArgsBuffer,
   makePixelShader,
   makeStructuredBuffer,
   makeTexture,
@@ -589,6 +592,77 @@ function runSections(label: string, options: CreateDeviceOptions): void {
     for (let index = 0; index < payload.length; index += 1) if (payload[index] !== reference[index]) setEqual = false;
     check(tag('25 append-payload'), setEqual, 'appended payload set-equals the CPU-kept values (order is GPU-defined)');
     comRelease(compaction);
+    comRelease(kept.uav!);
+    comRelease(kept.buffer);
+    comRelease(source.srv!);
+    comRelease(source.buffer);
+  }
+
+  {
+    const N = 512;
+    const values = new Float32Array(N);
+    let state = 0xfeed_beef;
+    for (let index = 0; index < N; index += 1) {
+      state = (state * 1664525 + 1013904223) >>> 0;
+      values[index] = (state & 0xffff) / 0x1_0000;
+    }
+    const expectedKept = [...values].filter((value) => value > 0.5);
+    const sourceData = Buffer.from(values.buffer);
+    const source = makeStructuredBuffer({ count: N, initialData: sourceData, srv: true, stride: 4 });
+    const kept = makeStructuredBuffer({ appendCounter: true, count: N, srv: true, stride: 4, uav: true });
+    const compaction = makeComputeShader(
+      compile(
+        `StructuredBuffer<float> source : register(t0);
+         AppendStructuredBuffer<float> kept : register(u0);
+         [numthreads(64,1,1)] void main(uint3 id : SV_DispatchThreadID) {
+           float value = source[id.x];
+           if (value > 0.5) kept.Append(value);
+         }`,
+        'main',
+        'cs_5_0',
+      ),
+    );
+    csSet(compaction, { srv: [source.srv!], uav: [kept.uav!], uavInitialCounts: [0] });
+    dispatch(N / 64);
+    csSet(0n, { srv: [0n], uav: [0n] });
+
+    // GPU-driven dispatch: the kept-count flows counter → args buffer → DispatchIndirect
+    // with zero CPU readback of K. One thread group per kept element ([numthreads(1,1,1)]).
+    const args = makeIndirectArgsBuffer([0, 1, 1]);
+    copyStructureCount(args, 0, kept.uav!);
+    const sentinel = new Float32Array(N).fill(-1);
+    const doubled = makeStructuredBuffer({ count: N, initialData: Buffer.from(sentinel.buffer), stride: 4, uav: true });
+    const doubler = makeComputeShader(
+      compile(
+        `StructuredBuffer<float> kept : register(t0);
+         RWStructuredBuffer<float> doubled : register(u0);
+         [numthreads(1,1,1)] void main(uint3 gid : SV_GroupID) { doubled[gid.x] = kept[gid.x] * 2.0; }`,
+        'main',
+        'cs_5_0',
+      ),
+    );
+    csSet(doubler, { srv: [kept.srv!], uav: [doubled.uav!] });
+    dispatchIndirect(args);
+    csSet(0n, { srv: [0n], uav: [0n] });
+
+    const result = new Float32Array(readbackBuffer(doubled.buffer, N * 4));
+    const K = expectedKept.length;
+    let written = 0;
+    for (let index = 0; index < N; index += 1) if (result[index] !== -1) written += 1;
+    const processed = [...result.slice(0, K)].sort((left, right) => left - right);
+    const reference = expectedKept.map((value) => value * 2).sort((left, right) => left - right);
+    let setEqual = processed.length === reference.length;
+    for (let index = 0; index < processed.length; index += 1) {
+      const expected = Math.fround(reference[index]!);
+      if (processed[index] !== expected) setEqual = false;
+    }
+    check(tag('31 dispatch-indirect'), written === K && setEqual, `exactly ${written} groups ran (= K=${K} appended) with the count flowing counter→args→DispatchIndirect, never touching the CPU`);
+    comRelease(doubler);
+    comRelease(doubled.uav!);
+    comRelease(doubled.buffer);
+    comRelease(args);
+    comRelease(compaction);
+    comRelease(kept.srv!);
     comRelease(kept.uav!);
     comRelease(kept.buffer);
     comRelease(source.srv!);

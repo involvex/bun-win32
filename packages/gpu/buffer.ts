@@ -20,6 +20,7 @@ import {
   D3D11_MAP_READ,
   D3D11_MAP_WRITE_DISCARD,
   D3D11_RESOURCE_MISC_BUFFER_STRUCTURED,
+  D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS,
   D3D11_SRV_DIMENSION_BUFFER,
   D3D11_UAV_DIMENSION_BUFFER,
   D3D11_USAGE_DEFAULT,
@@ -139,6 +140,35 @@ export function makeStructuredBuffer(options: StructuredBufferOptions): Structur
   }
 
   return result;
+}
+
+/**
+ * Create a 12-byte indirect-dispatch args buffer {x, y, z} (MISC DRAWINDIRECT_ARGS —
+ * args buffers cannot be STRUCTURED). Fill x on the GPU via copyStructureCount, then
+ * dispatchIndirect — thread-group counts never touch the CPU.
+ */
+export function makeIndirectArgsBuffer(initial: readonly [number, number, number] = [1, 1, 1]): bigint {
+  const { device } = requireGpu();
+  const desc = Buffer.alloc(24);
+  desc.writeUInt32LE(12, 0); // ByteWidth
+  desc.writeUInt32LE(D3D11_USAGE_DEFAULT, 4);
+  desc.writeUInt32LE(0, 8); // BindFlags
+  desc.writeUInt32LE(0, 12); // CPUAccessFlags
+  desc.writeUInt32LE(D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS, 16);
+  desc.writeUInt32LE(0, 20); // StructureByteStride
+  const initialData = Buffer.alloc(12);
+  initialData.writeUInt32LE(initial[0], 0);
+  initialData.writeUInt32LE(initial[1], 4);
+  initialData.writeUInt32LE(initial[2], 8);
+  const subresource = Buffer.alloc(16);
+  subresource.writeBigUInt64LE(BigInt(initialData.ptr!), 0);
+  const pp = Buffer.alloc(8);
+  if (vcall(device, DEV_CREATE_BUFFER, [FFIType.ptr, FFIType.ptr, FFIType.ptr], [desc.ptr!, subresource.ptr!, pp.ptr!]) !== 0) {
+    throw new Error('CreateBuffer (indirect args) failed.');
+  }
+  const buffer = pp.readBigUInt64LE(0);
+  trackResource(buffer, 12, 'buffer');
+  return buffer;
 }
 
 /**

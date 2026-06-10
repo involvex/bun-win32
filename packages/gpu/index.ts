@@ -1,6 +1,6 @@
 export { listAdapters, openAdapter } from './adapter';
 export type { AdapterInfo } from './adapter';
-export { appendCount, makeConstantBuffer, makeStructuredBuffer, readbackBuffer, readbackBufferAsync, updateConstantBuffer, updateDynamicBuffer } from './buffer';
+export { appendCount, makeConstantBuffer, makeIndirectArgsBuffer, makeStructuredBuffer, readbackBuffer, readbackBufferAsync, updateConstantBuffer, updateDynamicBuffer } from './buffer';
 export type { StructuredBuffer, StructuredBufferOptions } from './buffer';
 export { cbufferLayout, structLayout } from './cbuffer';
 export type { CBufferFieldType, CBufferLayout } from './cbuffer';
@@ -16,7 +16,25 @@ export { GpuArray, Kernel, parseKernelBindings, parseNumthreads, run } from './k
 export type { DispatchOptions, KernelArray, KernelBinding, RunOptions, ScalarKind } from './kernel';
 export { gpuMemory } from './memory';
 export type { GpuMemoryReport } from './memory';
-export { clear, copyResource, csSet, dispatch, drawFullscreenTriangle, drawPoints, generateMips, makeAdditiveBlendState, makeSampler, psSet, setBlendState, setRenderTargets, setViewport, vsSet, vsSetShaderResources } from './pipeline';
+export {
+  clear,
+  copyResource,
+  copyStructureCount,
+  csSet,
+  dispatch,
+  dispatchIndirect,
+  drawFullscreenTriangle,
+  drawPoints,
+  generateMips,
+  makeAdditiveBlendState,
+  makeSampler,
+  psSet,
+  setBlendState,
+  setRenderTargets,
+  setViewport,
+  vsSet,
+  vsSetShaderResources,
+} from './pipeline';
 export type { CsBindings, PsBindings, SamplerOptions } from './pipeline';
 export { encodePNG, encodePNGFromBGRA } from './png';
 export { createGpuTimer } from './query';
