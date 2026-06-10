@@ -43,7 +43,10 @@ const ram = memory();
 const commit = performanceInfo();
 const installed = smbios().memoryDevices.reduce((sum, device) => sum + device.sizeBytes, 0);
 check(commit.physicalTotalBytes === Number(ram.totalPhysicalBytes), `RAM: GetPerformanceInfo ${commit.physicalTotalBytes} == GlobalMemoryStatusEx ${ram.totalPhysicalBytes}`);
-check(installed >= Number(ram.totalPhysicalBytes) && installed < Number(ram.totalPhysicalBytes) * 1.3, `RAM: SMBIOS installed ${(installed / 1024 ** 3).toFixed(0)} GB ≥ OS-visible ${(Number(ram.totalPhysicalBytes) / 1024 ** 3).toFixed(1)} GB`);
+check(
+  installed >= Number(ram.totalPhysicalBytes) && installed < Number(ram.totalPhysicalBytes) * 1.3,
+  `RAM: SMBIOS installed ${(installed / 1024 ** 3).toFixed(0)} GB ≥ OS-visible ${(Number(ram.totalPhysicalBytes) / 1024 ** 3).toFixed(1)} GB`,
+);
 
 // 2 — processes vs tasklist (spawned ONCE, only as the referee)
 const snapshotRows = processes();

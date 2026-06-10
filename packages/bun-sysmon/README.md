@@ -47,15 +47,15 @@ Intel i9-12900KS (24 logical cores) · Windows 11 build 26200 · Bun 1.4.0:
 
 | call | median latency |
 |------|---------------:|
-| `memory()` | 1.0 µs |
-| `cpuTimes()` | 12.0 µs |
-| `tcpSockets()` | 106.1 µs |
-| `processes()` — the ENTIRE process list, full rows | 3.73 ms |
-| `pidStats(pid)` | 3.69 ms |
-| sustained `CpuSampler` rate | 690 Hz @ 0.7% own CPU |
-| **one** `powershell Get-CimInstance Win32_Process` spawn | **468 ms** |
+| `memory()` | 0.8 µs |
+| `cpuTimes()` | 9.7 µs |
+| `tcpSockets()` | 108.1 µs |
+| `processes()` — the ENTIRE process list, full rows | 3.90 ms |
+| `pidStats(pid)` | 3.80 ms |
+| sustained `CpuSampler` rate | 690 Hz @ 0.8% own CPU |
+| **one** `powershell Get-CimInstance Win32_Process` spawn | **346 ms** |
 
-`processes()` is **126× faster** than the single spawn the wmic-era cluster pays *per sample* — and it returns ppid, threads, handles, working set, private bytes, IO counters, and create time for every process, from one syscall.
+`processes()` is **89× faster** than the single spawn the wmic-era cluster pays *per sample* — and it returns ppid, threads, handles, working set, private bytes, IO counters, and create time for every process, from one syscall.
 
 ## What you can do
 

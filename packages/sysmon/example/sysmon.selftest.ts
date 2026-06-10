@@ -366,16 +366,20 @@ await section('16 etw-firehose (elevated only)', async () => {
   }
   const session = new EtwSession();
   let processStartSeen = false;
-  const child = Bun.spawn(['cmd', '/c', 'exit']);
+  let resolvedNames = 0;
+  // the pump BLOCKS this thread — spawn a child that waits 800 ms and THEN creates a process, so its ProcessStart lands mid-pump
+  const child = Bun.spawn(['powershell.exe', '-NoProfile', '-Command', 'Start-Sleep -Milliseconds 800; cmd /c exit']);
   const result = session.run(
     (event) => {
+      if (event.taskName.length > 0) resolvedNames += 1;
       if (event.taskName === 'ProcessStart') processStartSeen = true;
     },
     { durationMs: 3_000 },
   );
   await child.exited;
   check(result.eventCount > 0, `${result.eventCount} decoded events`);
-  check(processStartSeen, 'ProcessStart decoded with a resolved task name');
+  check(resolvedNames > 0, `${resolvedNames} events carried a TDH-resolved task name`);
+  check(processStartSeen, "the mid-pump child's ProcessStart was decoded");
   const again = new EtwSession();
   const secondRun = again.run(() => {}, { durationMs: 250 });
   check(secondRun.processTraceStatus >= 0, 'second session starts cleanly (teardown left nothing running)');
