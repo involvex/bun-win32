@@ -1,0 +1,94 @@
+{
+  "author": "Stev Peifer <stev@bell.net>",
+  "bugs": {
+    "url": "https://github.com/ObscuritySRL/bun-win32/issues"
+  },
+  "dependencies": {
+    "@bun-win32/advapi32": "workspace:*",
+    "@bun-win32/core": "workspace:*",
+    "@bun-win32/iphlpapi": "workspace:*",
+    "@bun-win32/kernel32": "workspace:*",
+    "@bun-win32/ntdll": "workspace:*",
+    "@bun-win32/pdh": "workspace:*",
+    "@bun-win32/powrprof": "workspace:*",
+    "@bun-win32/psapi": "workspace:*",
+    "@bun-win32/tdh": "workspace:*",
+    "@bun-win32/wevtapi": "workspace:*",
+    "@bun-win32/wtsapi32": "workspace:*"
+  },
+  "description": "Native-speed Windows system metrics, PDH counters, Event Log tail, and a decoded real-time ETW firehose for Bun — CPU/memory/disk/process/socket data via direct FFI, no PowerShell, no wmic, no node-gyp.",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "exports": {
+    ".": "./index.ts"
+  },
+  "license": "MIT",
+  "module": "index.ts",
+  "name": "@bun-win32/sysmon",
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/ObscuritySRL/bun-win32#readme",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/ObscuritySRL/bun-win32.git",
+    "directory": "packages/sysmon"
+  },
+  "type": "module",
+  "version": "1.0.0",
+  "main": "./index.ts",
+  "keywords": [
+    "bun",
+    "cpu",
+    "etw",
+    "eventlog",
+    "ffi",
+    "memory",
+    "metrics",
+    "monitoring",
+    "pdh",
+    "process",
+    "sysmon",
+    "systeminformation",
+    "windows",
+    "wmic"
+  ],
+  "files": [
+    "AI.md",
+    "README.md",
+    "counters.ts",
+    "cpu.ts",
+    "disk.ts",
+    "eventlog.ts",
+    "etw.ts",
+    "firmware.ts",
+    "index.ts",
+    "memory.ts",
+    "net.ts",
+    "power.ts",
+    "process.ts",
+    "sampler.ts",
+    "sessions.ts",
+    "structs.ts",
+    "system.ts"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "scripts": {
+    "example:benchmark": "bun ./example/benchmark.ts",
+    "example:crosscheck": "bun ./example/crosscheck.ts",
+    "example:etw-firehose": "bun ./example/etw-firehose.ts",
+    "example:event-tail": "bun ./example/event-tail.ts",
+    "example:hello-sysmon": "bun ./example/hello-sysmon.ts",
+    "example:selftest": "bun ./example/sysmon.selftest.ts",
+    "example:sysmon-report": "bun ./example/sysmon-report.ts",
+    "example:taskman": "bun ./example/taskman.ts"
+  }
+}

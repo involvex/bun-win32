@@ -1295,6 +1295,29 @@
         "typescript": "^5",
       },
     },
+    "packages/sysmon": {
+      "name": "@bun-win32/sysmon",
+      "version": "1.0.0",
+      "dependencies": {
+        "@bun-win32/advapi32": "workspace:*",
+        "@bun-win32/core": "workspace:*",
+        "@bun-win32/iphlpapi": "workspace:*",
+        "@bun-win32/kernel32": "workspace:*",
+        "@bun-win32/ntdll": "workspace:*",
+        "@bun-win32/pdh": "workspace:*",
+        "@bun-win32/powrprof": "workspace:*",
+        "@bun-win32/psapi": "workspace:*",
+        "@bun-win32/tdh": "workspace:*",
+        "@bun-win32/wevtapi": "workspace:*",
+        "@bun-win32/wtsapi32": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+      },
+      "peerDependencies": {
+        "typescript": "^5",
+      },
+    },
     "packages/taskschd": {
       "name": "@bun-win32/taskschd",
       "version": "1.0.0",
@@ -1926,6 +1949,8 @@
 
     "@bun-win32/sspicli": ["@bun-win32/sspicli@workspace:packages/sspicli"],
 
+    "@bun-win32/sysmon": ["@bun-win32/sysmon@workspace:packages/sysmon"],
+
     "@bun-win32/taskschd": ["@bun-win32/taskschd@workspace:packages/taskschd"],
 
     "@bun-win32/tbs": ["@bun-win32/tbs@workspace:packages/tbs"],
@@ -2176,6 +2201,8 @@
 
     "@bun-win32/sspicli/@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
 
+    "@bun-win32/sysmon/@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
+
     "@bun-win32/taskschd/@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
 
     "@bun-win32/tbs/@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
@@ -2413,6 +2440,8 @@
     "@bun-win32/srclient/@types/bun/bun-types": ["bun-types@1.3.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-4N0ig0fEomHt5R0KCFWjovxow98rIoRwKolrYdCcknNwMekCXRnWEUvgu5soYV8QXtVsrUD8B95MBOZGPvr6KQ=="],
 
     "@bun-win32/sspicli/@types/bun/bun-types": ["bun-types@1.3.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-4N0ig0fEomHt5R0KCFWjovxow98rIoRwKolrYdCcknNwMekCXRnWEUvgu5soYV8QXtVsrUD8B95MBOZGPvr6KQ=="],
+
+    "@bun-win32/sysmon/@types/bun/bun-types": ["bun-types@1.3.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-4N0ig0fEomHt5R0KCFWjovxow98rIoRwKolrYdCcknNwMekCXRnWEUvgu5soYV8QXtVsrUD8B95MBOZGPvr6KQ=="],
 
     "@bun-win32/taskschd/@types/bun/bun-types": ["bun-types@1.3.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-4N0ig0fEomHt5R0KCFWjovxow98rIoRwKolrYdCcknNwMekCXRnWEUvgu5soYV8QXtVsrUD8B95MBOZGPvr6KQ=="],
 
