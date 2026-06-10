@@ -187,7 +187,7 @@
     "directory": "packages/all"
   },
   "type": "module",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "main": "./index.ts",
   "keywords": [
     "bun",
