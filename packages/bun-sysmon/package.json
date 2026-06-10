@@ -1,0 +1,56 @@
+{
+  "author": "Stev Peifer <stev@bell.net>",
+  "bugs": {
+    "url": "https://github.com/ObscuritySRL/bun-win32/issues"
+  },
+  "dependencies": {
+    "@bun-win32/sysmon": "workspace:*"
+  },
+  "description": "Native-speed Windows system monitoring for Bun — metrics, PDH counters, Event Log tail, real-time ETW. No PowerShell, no wmic, no node-gyp.",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "exports": {
+    ".": "./index.ts"
+  },
+  "license": "MIT",
+  "module": "index.ts",
+  "name": "bun-sysmon",
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "private": false,
+  "homepage": "https://github.com/ObscuritySRL/bun-win32#readme",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/ObscuritySRL/bun-win32.git",
+    "directory": "packages/bun-sysmon"
+  },
+  "type": "module",
+  "version": "1.0.0",
+  "main": "./index.ts",
+  "keywords": [
+    "bun",
+    "cpu",
+    "etw",
+    "eventlog",
+    "ffi",
+    "memory",
+    "metrics",
+    "monitoring",
+    "pdh",
+    "process",
+    "sysmon",
+    "systeminformation",
+    "windows",
+    "wmic"
+  ],
+  "files": [
+    "README.md",
+    "index.ts"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}
