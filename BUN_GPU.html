@@ -1,0 +1,1267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BUN_GPU — Implementation Plan for @bun-win32/gpu + bun-gpu</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --fg:#e6edf3; --dim:#8b949e; --accent:#58a6ff; --green:#3fb950; --amber:#d29922; --red:#f85149; --purple:#bc8cff; }
+  * { box-sizing: border-box; }
+  body { background:var(--bg); color:var(--fg); font:15px/1.6 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; margin:0; padding:2rem; max-width:1100px; margin-inline:auto; }
+  h1 { font-size:1.9rem; border-bottom:2px solid var(--accent); padding-bottom:.4rem; }
+  h2 { font-size:1.45rem; color:var(--accent); border-bottom:1px solid var(--border); padding-bottom:.3rem; margin-top:3rem; }
+  h3 { font-size:1.15rem; color:var(--purple); margin-top:2rem; }
+  h4 { font-size:1rem; color:var(--fg); margin-bottom:.3rem; }
+  code { background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:.1em .35em; font:13px/1.5 ui-monospace,"Cascadia Code",Consolas,monospace; }
+  pre { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:1rem; overflow-x:auto; }
+  pre code { background:none; border:none; padding:0; }
+  table { border-collapse:collapse; width:100%; margin:1rem 0; font-size:.92em; }
+  th,td { border:1px solid var(--border); padding:.45rem .6rem; text-align:left; vertical-align:top; }
+  th { background:var(--panel); }
+  .step { background:var(--panel); border:1px solid var(--border); border-left:4px solid var(--accent); border-radius:6px; padding:.7rem 1rem; margin:.8rem 0; }
+  .step .id { color:var(--accent); font-weight:700; font-family:ui-monospace,Consolas,monospace; margin-right:.5rem; }
+  .verify { border-left-color:var(--green); }
+  .verify .id { color:var(--green); }
+  .commit { border-left-color:var(--amber); }
+  .commit .id { color:var(--amber); }
+  .research { border-left-color:var(--purple); }
+  .research .id { color:var(--purple); }
+  .warn { background:#2d1a1a; border:1px solid var(--red); border-radius:8px; padding: .8rem 1rem; margin:1rem 0; }
+  .note { background:#1a2233; border:1px solid var(--accent); border-radius:8px; padding:.8rem 1rem; margin:1rem 0; }
+  .doctrine { background:#1f2a1f; border:1px solid var(--green); border-radius:8px; padding:.8rem 1rem; margin:1rem 0; }
+  .tag { display:inline-block; font-size:.75em; font-weight:700; border-radius:10px; padding:.05em .6em; margin-left:.4em; vertical-align:middle; }
+  .tag.test { background:#1f3d2b; color:var(--green); }
+  .tag.ffi { background:#3d2b1f; color:var(--amber); }
+  .tag.new { background:#2b1f3d; color:var(--purple); }
+  a { color:var(--accent); }
+  .toc li { margin:.2rem 0; }
+  summary { cursor:pointer; color:var(--accent); font-weight:600; }
+</style>
+</head>
+<body>
+
+<h1>BUN_GPU — Implementation Plan: <code>@bun-win32/gpu</code> + <code>bun-gpu</code></h1>
+
+<p><strong>For agentic workers:</strong> this plan is designed for end-to-end execution by Claude (Fable 5, ultracode) via a <code>/goal</code>. Track phases with TaskCreate/TaskUpdate. Execute tasks in order; each task is bite-sized, verified, and committed before moving on. <strong>Never leave the repo in a broken state.</strong> The goal is complete when <code>bun-gpu@1.0.0</code> and <code>@bun-win32/gpu@1.0.0</code> are live on npm, installable, and the post-publish acceptance test (Phase 15, S15.7) passes.</p>
+
+<p><strong>This document is also the house standard for product plans.</strong> Future plans ("make one for BUN_SYSMON") reproduce its structure: ground-truth dossier → research-while-building doctrine → execute-time competitive intelligence with a parity matrix ("everything the incumbents do, only better" — gated at release) → bite-sized verified phases → real tests → AI-first docs → one-OTP release → clean-room acceptance. Appendix F is the cloning guide.</p>
+
+<p><strong>Goal:</strong> Extract the proven 1,340-line D3D11 GPU engine from <code>packages/all/example/_gpu.ts</code> (+ <code>_gpu3d.ts</code>, <code>_snapshot.ts</code>) into a first-class, zero-dependency-beyond-workspace, AI-first package <code>@bun-win32/gpu</code>, add a <code>gpu.js</code>-successor high-level API (<code>run()</code> / <code>Kernel</code>), publish it plus an unscoped <code>bun-gpu</code> alias to npm, with real tests at every step.</p>
+
+<p><strong>Architecture:</strong> A non-binding "engine" package (precedent: <code>@bun-win32/terminal</code>) of flat root modules over the existing <code>@bun-win32/{d3d11, d3dcompiler_47, dxgi, user32}</code> binding packages. COM is driven through the proven cast-free vtable invoker (<code>vcall</code>). No marshaling layer, no native build step, no npm dependencies outside the workspace. HLSL compiled at runtime by <code>d3dcompiler_47</code>; runs on NVIDIA/AMD/Intel hardware and falls back to WARP (software) so it works on literally every Windows machine, including CI.</p>
+
+<p><strong>Tech stack:</strong> Bun (<code>bun:ffi</code>), TypeScript strict, Biome formatter, D3D11 + DXGI + FXC (d3dcompiler_47), WARP. Windows-only, Bun-only — stated proudly, not apologetically.</p>
+
+<div class="doctrine">
+<h4>⚖ The research-while-building doctrine (read this before every phase)</h4>
+<p>This plan was written on 2026-06-09 against a verified snapshot of the repo. It is a <strong>map, not the territory</strong>. Rules of engagement:</p>
+<ul>
+<li><strong>The repo, the SDK headers, and observed runtime behavior outrank this plan.</strong> When a quoted line number, signature, or version has drifted, trust the file. Update your approach, note the deviation in the commit message, and keep going.</li>
+<li><strong>Every phase begins by reading the actual source files it touches.</strong> Code blocks in this plan that say "copy from <code>_gpu.ts</code>" give line ranges as of 2026-06-09 — re-locate them with Grep if they moved.</li>
+<li><strong>Code blocks marked <span class="tag new">NEW</span> are reference implementations written ahead of time, unexecuted.</strong> They are your starting point, not gospel. Run them, fix them, and prefer what the runtime tells you over what this document asserts.</li>
+<li><strong>When a step's verification fails, stop and debug</strong> (use superpowers:systematic-debugging). Do not pile changes on a broken state. Do not "fix" by weakening the verification.</li>
+<li><strong>If you discover something this plan got wrong, fix the plan's assumption in your head AND record it</strong> — a one-line note in the final summary so the human learns what drifted.</li>
+<li><strong>Verify visually where the deliverable is visual.</strong> A PNG you have actually looked at beats any numeric proxy (repo ground truth).</li>
+</ul>
+</div>
+
+<div class="warn">
+<h4>⚠ Non-negotiable repo rules (from AGENTS.md — these override your defaults)</h4>
+<ul>
+<li><strong>No type casts. Ever.</strong> No <code>as any</code>, no <code>as unknown as T</code>. The one shipped exception you will copy verbatim: <code>Number(ptr) as Pointer</code> — Bun's branded-Pointer narrowing already used throughout <code>_gpu.ts</code>. Copy it where it exists; do not invent new casts.</li>
+<li><strong>Alphabetize everything</strong> ASCIIbetically: exports in <code>index.ts</code>, functions where order isn't semantic, package.json keys per existing precedent, deps.</li>
+<li><strong>No abbreviations</strong> in identifiers (exception: preserved Win32 parameter names). <code>byteSize</code>, not <code>sz</code>.</li>
+<li><strong>No section comment headers</strong> (<code>// ====</code>). Terse, value-add comments only (struct offsets, bit math, non-obvious ordering).</li>
+<li><strong>Biome formats</strong> (2-space, line width 240, single quotes, semicolons, LF). Run <code>bunx biome format --write</code> on files you create. Never reintroduce Prettier.</li>
+<li><strong>Bun-native APIs</strong>: <code>Bun.env</code>, <code>Bun.argv</code>, <code>bun run</code>; never npm/npx/yarn/node.</li>
+<li><strong>Conventional commits</strong>, lowercase imperative: <code>feat(gpu): extract device layer from _gpu.ts</code>. Commit early and often — this is a multi-agent repo; uncommitted work gets destroyed (ground truth).</li>
+<li><strong>Hex literals with separators</strong> for flags/sizes: <code>0x0000_0020</code>.</li>
+<li><strong>Tests never live in a <code>test/</code> directory.</strong> Pure-logic tests are root <code>*.test.ts</code> (terminal precedent); FFI integration tests live in <code>example/</code> (and may BE examples).</li>
+<li><strong>git from repo root</strong>; never <code>git add</code> gitignored files (<code>.scratch/</code>, <code>DISCORD_POST.md</code>, <code>MISSING_APIS.md</code>, screenshots except <code>!</code>-whitelisted).</li>
+</ul>
+</div>
+
+<h2 id="dossier">0. Ground-truth dossier (verified 2026-06-09)</h2>
+
+<p>Everything below was verified against the live repo and npm registry on 2026-06-09. <strong>Re-verify the load-bearing rows in Phase 0.</strong></p>
+
+<table>
+<tr><th>Fact</th><th>Value</th><th>Why it matters</th></tr>
+<tr><td>npm name <code>bun-gpu</code></td><td><strong>404 — available</strong></td><td>The unscoped marketing name is free. Re-check in Phase 0; if squatted since, fall back to publishing only <code>@bun-win32/gpu</code> and pick an alternate alias (e.g. <code>bungpu</code>) only with strong reason.</td></tr>
+<tr><td><code>packages/gpu</code>, <code>packages/bun-gpu</code></td><td>Do not exist</td><td>Clean namespace.</td></tr>
+<tr><td><code>packages/all/example/_gpu.ts</code></td><td>1,340 lines; full engine: device, window, compile, buffers, textures, pipeline, dispatch, readback</td><td>The source of truth being extracted. Full export inventory in Appendix A.</td></tr>
+<tr><td><code>packages/all/example/_gpu3d.ts</code></td><td>423 lines; depth buffer, depth state, cull, triangle draw</td><td>Becomes <code>depth.ts</code>.</td></tr>
+<tr><td><code>packages/all/example/_snapshot.ts</code></td><td>333 lines; back-buffer → PNG + luminance stats (uses Gdiplus)</td><td>Becomes <code>snapshot.ts</code> (PNG encoder swapped to pure-TS, see Phase 6).</td></tr>
+<tr><td>Demo corpus importing <code>_gpu</code></td><td>~30 demos in <code>packages/all/example/</code> (mandelbrot, cloth, neural-descent, nano-gpt, pathtracer, ocean, voxelscape, …)</td><td>After extraction these become a giant regression suite via re-export shims (Phase 11).</td></tr>
+<tr><td>FFI imports of <code>_gpu.ts</code></td><td><code>import { D3d11, D3dcompiler_47, User32 } from '../index'</code> + constants from <code>@bun-win32/d3dcompiler_47</code>, <code>@bun-win32/d3d11</code>, <code>@bun-win32/user32</code>; <code>_snapshot.ts</code> also uses <code>Gdiplus</code></td><td>The new package imports the binding packages directly, not via <code>all</code>.</td></tr>
+<tr><td>Binding packages</td><td><code>d3d11</code> (5 exports incl. <code>D3D11CreateDevice[AndSwapChain]</code>), <code>d3dcompiler_47</code> (25 exports incl. <code>D3DCompile</code>/<code>D3DReflect</code>/<code>D3DDisassemble</code>/<code>D3DPreprocess</code>), <code>dxgi</code> (5 exports incl. <code>CreateDXGIFactory1</code>), <code>dxcore</code> (1 export)</td><td>All exist at v1.0.0, all depend only on <code>@bun-win32/core</code>.</td></tr>
+<tr><td>Extraction precedent</td><td><code>@bun-win32/terminal</code> v1.1.1 — flat root modules, named exports only, root <code>*.test.ts</code> (pure logic), <code>example/</code> demos with <code>example:*</code> scripts, AI.md + README.md, <code>publishConfig.access: public</code></td><td>Copy its package.json shape, AI.md structure, and test convention. <code>packages/all</code> depends on terminal via <code>workspace:*</code> but does <strong>not</strong> re-export it from <code>index.ts</code> — mirror that for gpu.</td></tr>
+<tr><td>Unscoped alias precedent</td><td><code>packages/bun-win32</code>: package.json + <code>index.ts</code> containing exactly <code>export * from '@bun-win32/all';</code></td><td><code>bun-gpu</code> mirrors this over <code>@bun-win32/gpu</code>.</td></tr>
+<tr><td><code>scripts/audit.ts</code> / <code>nullcheck.ts</code></td><td>Both skip packages without a <code>structs/</code> dir (and <code>core</code>/<code>template</code>)</td><td><code>gpu</code> is a non-binding package → automatically skipped. Run <code>--all</code> anyway to prove no regression elsewhere.</td></tr>
+<tr><td><code>scripts/preflight.ts</code></td><td>Fails if any <code>bun.lock</code> workspace version record ≠ that package's package.json version</td><td>Release gate. <code>bun install</code> does NOT refresh these records — <code>rm bun.lock &amp;&amp; bun install</code> does (ground truth).</td></tr>
+<tr><td><code>bun:test</code> + FFI</td><td>Ground truth (repo memory): segfaults repo-wide when tests touch FFI; terminal's root tests pass because they are pure logic</td><td>Phase 0 re-probes this on the current Bun. Pure-logic tests → <code>bun:test</code>. FFI integration tests → runnable example scripts with assertions + non-zero exit on failure (and they double as examples).</td></tr>
+<tr><td>vcall convention</td><td><code>argTypes</code>/<code>args</code> EXCLUDE the implicit <code>this</code>; the invoker prepends <code>FFIType.u64</code> + <code>thisPtr</code>. A spurious leading u64 segfaults (ground truth).</td><td>Copy <code>vcall</code> verbatim; never "fix" its signature.</td></tr>
+<tr><td>Known FFI traps ledger</td><td>See Appendix C</td><td>Each becomes either an API guardrail or a documented gotcha in AI.md.</td></tr>
+<tr><td>Why this wins (market)</td><td>gpu.js dead since 2022 (15,972 dl/wk, hard-deps unbuildable headless-gl); <code>gl</code> breaks per VS/Node combo; <code>@tensorflow/tfjs-node</code> frozen + broken on Node 24; <code>webgpu</code> = 71MB tarball, pre-1.0; <code>@webgpu/dawn-node</code> never published (404); <code>onnxruntime-node</code> = 266MB unpacked</td><td>Source: PROJECTS.md §4 (verified with registry/issue links). This is the README's comparison table (Appendix D).</td></tr>
+</table>
+
+<h2 id="map">1. Deliverables &amp; file map</h2>
+
+<h3>1.1 What ships</h3>
+<table>
+<tr><th>Package</th><th>Version</th><th>Contents</th></tr>
+<tr><td><code>@bun-win32/gpu</code></td><td>1.0.0</td><td>The engine: low-level pipeline (extracted, proven) + high-level <code>run()</code>/<code>Kernel</code> (new) + adapter introspection + snapshot/PNG + AI.md + README + 5 examples + tests.</td></tr>
+<tr><td><code>bun-gpu</code></td><td>1.0.0</td><td>Unscoped alias: <code>export * from '@bun-win32/gpu';</code> + the full marketing README. This is the discoverable front door.</td></tr>
+<tr><td><code>@bun-win32/all</code></td><td>minor bump</td><td>Gains <code>@bun-win32/gpu</code> as a workspace dep; <code>_gpu.ts</code>/<code>_gpu3d.ts</code>/<code>_snapshot.ts</code> become thin re-export shims so all ~30 demos run on the published engine (the regression suite).</td></tr>
+<tr><td><code>bun-win32</code></td><td>patch bump</td><td>Republished so its pinned <code>@bun-win32/all</code> version is current.</td></tr>
+</table>
+
+<h3>1.2 <code>packages/gpu/</code> file map (flat modules, terminal precedent)</h3>
+<pre><code>packages/gpu/
+  AI.md           complete AI-first surface contract (Phase 13) — an agent never needs the source
+  README.md       product README: gripes table, 10-line wow, benchmarks, gallery (Phase 13)
+  adapter.ts      DXGI adapter enumeration: name, VRAM, LUID; listAdapters() (Phase 7)
+  buffer.ts       makeConstantBuffer, makeStructuredBuffer, readbackBuffer, updateConstantBuffer, updateDynamicBuffer (Phase 4)
+  cbuffer.ts      HLSL cbuffer packing calculator — pure logic, fully unit-tested (Phase 9)
+  cbuffer.test.ts
+  com.ts          vcall, comRelease, blobRelease — the public COM vtable primitive (Phase 2)
+  constants.ts    DXGI_FORMAT_*, D3D11_* flags, vtable slot constants (Phase 2)
+  depth.ts        makeDepthBuffer, setRenderTargetsWithDepth, clearDepth, setDepthState, setCull, drawTriangles, releaseDepth (Phase 5)
+  device.ts       createComputeDevice, createDevice, Gpu, destroyDevice; throws instead of process.exit (Phase 2)
+  index.ts        alphabetized named re-exports (no default — terminal precedent)
+  kernel.ts       run(), Kernel — the gpu.js-successor API (Phase 8)
+  kernel.test.ts  binding/numthreads parser tests (pure logic)
+  package.json
+  pipeline.ts     csSet/psSet/vsSet, dispatch, draw*, clear, blend, sampler, viewport, render targets, copyResource, generateMips (Phase 5)
+  png.ts          encodePNG — pure-TS, adapted from terminal/png.ts (Phase 6)
+  shader.ts       compile (with guardrails), disassemble, preprocessHLSL (#include + traps) (Phase 3)
+  shader.test.ts  guardrail + preprocessor tests (pure logic)
+  snapshot.ts     captureBackBuffer, formatGrid, SnapshotStats (Phase 6)
+  texture.ts      makeTexture, makeSampler→(pipeline), readbackTexture (Phase 5)
+  tsconfig.json
+  window.ts       createWindow, Win, CreateWindowOptions (Phase 2)
+  example/
+    benchmark.ts        dispatch throughput + readback bandwidth + compile latency table (Phase 10)
+    gpu-report.ts       professional diagnostic: adapters, feature level, compile/disasm probe (Phase 10)
+    gpu.selftest.ts     THE integration test suite — 12+ real GPU assertions, exit code (Phase 10)
+    hello-gpu.ts        the 10-line wow (Phase 10)
+    raymarch.ts         creative windowed demo, DEMO_DURATION_MS + CAPTURE_PNG (Phase 10)
+</code></pre>
+
+<div class="note"><strong>Dependency policy:</strong> <code>@bun-win32/{core, d3d11, d3dcompiler_47, dxgi, user32}</code> via <code>workspace:*</code> — nothing else. No gdiplus (PNG is pure TS). <code>dxcore</code> only if Phase 7's optional compute-only-adapter task lands. This keeps the install story brutal: <em>"bun add bun-gpu" pulls a few kilobytes of TypeScript and zero native code.</em></div>
+
+<h3>1.3 Phase map</h3>
+<ol class="toc">
+<li><a href="#p0">Phase 0 — Preflight: environment, ground-truth re-verification, baselines</a></li>
+<li><a href="#p1">Phase 1 — Package skeleton + early commit</a></li>
+<li><a href="#p2">Phase 2 — Core: com.ts, constants.ts, device.ts, window.ts</a></li>
+<li><a href="#p3">Phase 3 — Shaders: compile + guardrails + preprocessor</a></li>
+<li><a href="#p4">Phase 4 — Buffers + readback (first end-to-end GPU proof)</a></li>
+<li><a href="#p5">Phase 5 — Textures, pipeline, depth</a></li>
+<li><a href="#p6">Phase 6 — Snapshot + pure-TS PNG</a></li>
+<li><a href="#p7">Phase 7 — Adapter introspection</a></li>
+<li><a href="#p8">Phase 8 — kernel.ts: run() / Kernel (the flagship API)</a></li>
+<li><a href="#p9">Phase 9 — cbuffer.ts: HLSL constant-buffer layout calculator</a></li>
+<li><a href="#p10">Phase 10 — Examples + the integration selftest + benchmark</a></li>
+<li><a href="#p10b">Phase 10b — Extras wave: 14 judged capabilities no JS package offers (post-selftest)</a></li>
+<li><a href="#p11">Phase 11 — Migrate packages/all demos onto the package (regression proof)</a></li>
+<li><a href="#p12">Phase 12 — bun-gpu unscoped alias</a></li>
+<li><a href="#p13">Phase 13 — Documentation: AI.md, README, screenshots</a></li>
+<li><a href="#p14">Phase 14 — Quality gates + self-review</a></li>
+<li><a href="#p15">Phase 15 — Release: versions, lockfile, publish (one OTP), post-publish acceptance</a></li>
+<li><a href="#appendix">Appendices A–F</a></li>
+</ol>
+
+<h2 id="p0">Phase 0 — Preflight: environment, ground-truth re-verification, baselines</h2>
+<p><em>Purpose: prove the machine, the toolchain, and this plan's load-bearing assumptions before writing a line. Capture baselines you will diff against in Phase 14.</em></p>
+
+<div class="step research"><span class="id">S0.1</span><strong>Read the law.</strong> Read <code>AGENTS.md</code> (repo root) in full. Skim <code>PROJECTS.md</code> §4 (bun-gpu, ~lines 131–158) — it is the product brief. Do not skip this; the rules there override your instincts.</div>
+
+<div class="step"><span class="id">S0.2</span><strong>Environment check.</strong>
+<pre><code>bun --version
+bun run scripts/doctor.ts
+git status</code></pre>
+Expected: Bun ≥ 1.1, doctor reports prerequisites OK (dumpbin not strictly needed — gpu is non-binding), working tree clean or only known files (<code>PROJECTS.md</code> untracked, <code>.gitignore</code> modified, <code>BUN_GPU.html</code> untracked are expected). If the tree has OTHER uncommitted changes, stop and surface them to the user rather than building on top.</div>
+
+<div class="step"><span class="id">S0.2b</span><strong>Keep the machine awake for the entire run</strong> — the user may be asleep while this executes; the run dies if the machine does. Use the repo's own bindings (verified: <code>Kernel32.SetThreadExecutionState</code> is bound — <code>packages/kernel32/structs/Kernel32.ts:7720</code>). Write <code>.scratch/keep-awake.ts</code>:
+<pre><code>import Kernel32 from '@bun-win32/kernel32';
+
+const ES_CONTINUOUS = 0x8000_0000;
+const ES_DISPLAY_REQUIRED = 0x0000_0002;
+const ES_SYSTEM_REQUIRED = 0x0000_0001;
+
+const previous = Kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
+if (previous === 0) {
+  console.error('SetThreadExecutionState failed — machine may sleep mid-run.');
+  process.exit(1);
+}
+console.log('keep-awake active (system + display); previous state 0x' + previous.toString(16));
+setInterval(() =&gt; void Kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED), 60_000);</code></pre>
+Launch it as a BACKGROUND process (<code>bun run .scratch/keep-awake.ts</code> via the Bash tool's <code>run_in_background</code>) and leave it running for the whole execution — the ES_CONTINUOUS state clears automatically when the process exits, so kill it as the final act of Phase 15 (after S15.8; nothing to clean up if you forget, beyond the running process). Verify: the script prints "keep-awake active" and stays alive.
+<br><strong>Locked-session note:</strong> this prevents sleep, not the lock screen. The engine's back-buffer capture is per-process and survives a locked session, but if any VISUAL verification PNG comes back black/empty and the session was locked at the time, treat it as inconclusive — re-run that one verification when the session is unlocked rather than failing the phase or weakening the check.</div>
+
+<div class="step verify"><span class="id">S0.3</span><strong>Prove the GPU engine still works on this machine.</strong> Run an existing demo headless:
+<pre><code>DEMO_DURATION_MS=3000 CAPTURE_PNG=packages/all/.scratch/baseline-mandelbrot.png bun run packages/all/example/mandelbrot.ts</code></pre>
+(Exact env-var names: read the demo's JSDoc header first — research, don't assume.) Expected: exits cleanly, PNG exists. <strong>Open and look at the PNG</strong> (Read tool renders it) — you should see a Mandelbrot set. If no demo renders, the machine cannot validate this work: stop and report.</div>
+
+<div class="step research"><span class="id">S0.4</span><strong>Re-probe the bun:test + FFI ground truth.</strong> The repo memory says <code>bun test</code> segfaults when tests touch FFI. Bun has shipped releases since. Probe:
+<pre><code># Write a throwaway probe OUTSIDE packages/ so bun test doesn't pick it up later:
+# .scratch/ffi-probe.test.ts
+#   import { test, expect } from 'bun:test';
+#   import Kernel32 from '@bun-win32/kernel32';
+#   test('ffi under bun:test', () =&gt; { expect(typeof Kernel32.GetTickCount64()).toBe('bigint'); });
+bun test .scratch/ffi-probe.test.ts</code></pre>
+<strong>Decision gate:</strong> if this passes reliably (run it 3×), FFI integration tests in this plan may use <code>bun:test</code> (name them <code>example/gpu.integration.test.ts</code>). If it segfaults or flakes, use the plan's default: <code>example/gpu.selftest.ts</code> as a plain script with assertions and exit codes. <em>The plan below assumes the selftest form; upgrade if the probe says you can.</em> Delete the probe file afterwards.</div>
+
+<div class="step research"><span class="id">S0.5</span><strong>Re-verify npm name availability.</strong>
+<pre><code>curl -s -o /dev/null -w "%{http_code}\n" https://registry.npmjs.org/bun-gpu        # expect 404
+curl -s -o /dev/null -w "%{http_code}\n" "https://registry.npmjs.org/@bun-win32%2Fgpu"  # expect 404</code></pre>
+If <code>bun-gpu</code> got squatted since 2026-06-09, ship <code>@bun-win32/gpu</code> regardless and surface the alias problem to the user in the final summary — do not silently pick a different unscoped name.</div>
+
+<div class="step"><span class="id">S0.6</span><strong>Capture quality-gate baselines</strong> (you will diff against these in Phase 14):
+<pre><code>bunx tsc --noEmit                      # expect zero errors; if not, STOP — repo is pre-broken
+bun run scripts/audit.ts --all 2&gt;&amp;1 | tail -5   &gt; .scratch/baseline-audit.txt
+bun run scripts/nullcheck.ts --all 2&gt;&amp;1 | tail -5 &gt; .scratch/baseline-nullcheck.txt</code></pre>
+Note: audit <code>--all</code> emits ~241 accepted-convention notices on mature packages (ground truth — they are NOT bugs; never "fix" shipped bindings to silence them). The baseline exists so you can prove the counts didn't change.</div>
+
+<div class="step research"><span class="id">S0.7</span><strong>Read the five source-of-truth files end to end</strong> (budget real time for this — the extraction's fidelity depends on it):
+<ul>
+<li><code>packages/all/example/_gpu.ts</code> (1,340 lines) — the engine. Note its header comment block and the vtable table at lines ~21–38.</li>
+<li><code>packages/all/example/_gpu3d.ts</code> (423 lines) — depth pipeline. Note the depth-proof ordering comment (~lines 300–306).</li>
+<li><code>packages/all/example/_snapshot.ts</code> (333 lines) — capture-before-present constraint (~lines 15–18).</li>
+<li><code>packages/terminal/package.json</code>, <code>packages/terminal/AI.md</code>, <code>packages/terminal/png.ts</code> — packaging, docs, and PNG-encoder precedents.</li>
+<li><code>packages/all/example/shader-doctor.ts</code> — the proven <code>D3DReflect</code>/<code>D3DDisassemble</code> usage you will lift in Phases 3/10.</li>
+</ul></div>
+
+<div class="step research"><span class="id">S0.8</span><strong>Resolve the <code>.ptr</code> extension question.</strong> The engine relies on <code>buffer.ptr</code> from <code>core/runtime/extensions.ts</code> (a side-effect import). Find how it reaches <code>_gpu.ts</code> today:
+<pre><code>grep -rn "runtime/extensions" packages/core packages/terminal packages/d3d11 | head</code></pre>
+Determine whether importing <code>@bun-win32/d3d11</code> transitively loads the extension (likely: core's class module imports it). Whatever the mechanism, <code>packages/gpu</code> must get it the same way terminal does. Record the answer; S2.8 verifies it at runtime.</div>
+
+<div class="step"><span class="id">S0.9</span><strong>Open the deviation ledger.</strong> Record the starting state in <code>.scratch/bun-gpu-ledger.md</code>: <code>git rev-parse HEAD</code>, Bun version, the S0.4 harness decision, and S0.8's extensions answer. Every plan deviation you make from here on gets a one-line entry — this file becomes the "what drifted" section of the final report (S15.8).</div>
+
+<h3>Phase 0b — Competitive intelligence (execute-time)</h3>
+<p><em>The parity bar: bun-gpu must do everything the incumbents do — only better — or document a deliberate non-goal with a reason and a roadmap line. Appendix D is the plan-time matrix; these steps re-validate and extend it with live data, because incumbents move and gripes accumulate.</em></p>
+
+<div class="step research"><span class="id">S0.10</span><strong>Fan out research agents over the incumbents</strong> (parallel; web-capable agents):
+<ul>
+<li><strong>gpu.js</strong> — README + API docs (kernel functions, pipeline mode, kernel maps, combineKernels, graphical output, precision settings, dynamic output) and the issue tracker's most-reacted open issues. Deliverable: a capability checklist + the top 10 user gripes with links.</li>
+<li><strong>gl (headless-gl)</strong> — capability surface (WebGL1 headless, readPixels) + its Windows build-failure greatest hits.</li>
+<li><strong>@tensorflow/tfjs-node / onnxruntime-node</strong> — what users actually use the GPU path for (install pain, Node-version breakage receipts) — positioning input, not parity targets.</li>
+<li><strong>webgpu (Dawn repack) + any new entrant since 2026-06</strong> — search npm for "webgpu", "gpu compute" packages published in the last year. If a credible zero-install Windows GPU package appeared, the README's comparison table must include it honestly.</li>
+</ul></div>
+
+<div class="step research"><span class="id">S0.11</span><strong>Reconcile against Appendix D.</strong> For every capability the agents found that Appendix D missed: add a row and decide — parity feature (schedule it into Phases 8–10 as a concrete task with a proof artifact), or deliberate non-goal (write the reason + roadmap line that will appear in the README/AI.md). No third option, and no silent drops: the updated matrix is the release gate's checklist (S14.3).</div>
+
+<div class="step research"><span class="id">S0.12</span><strong>Harvest the gripes into design.</strong> Each top gripe becomes one of: an API guardrail (Phase 3 pattern), an error-message improvement (quote the gripe, write the message that would have saved that user), a README selling point with the receipt linked, or an AI.md gotcha. Keep the gripe→response list; it goes in the final report and seeds the README's "why this exists" section.</div>
+
+<div class="step commit"><span class="id">S0.13</span><strong>No commit</strong> — Phase 0 produces no tracked changes (baselines and research notes live in <code>.scratch/</code>, which is gitignored).</div>
+
+<h2 id="p1">Phase 1 — Package skeleton + early commit</h2>
+<p><em>Purpose: claim the package directory in git immediately (multi-agent repo: uncommitted work gets <code>git clean</code>ed — ground truth), with a loadable skeleton.</em></p>
+
+<div class="step"><span class="id">S1.1</span><strong>Create <code>packages/gpu/package.json</code></strong> — modeled byte-for-byte on terminal's shape (key order matters for consistency; copy terminal's key ordering):
+<pre><code>{
+  "author": "Stev Peifer &lt;stev@bell.net&gt;",
+  "bugs": {
+    "url": "https://github.com/ObscuritySRL/bun-win32/issues"
+  },
+  "dependencies": {
+    "@bun-win32/core": "workspace:*",
+    "@bun-win32/d3d11": "workspace:*",
+    "@bun-win32/d3dcompiler_47": "workspace:*",
+    "@bun-win32/dxgi": "workspace:*",
+    "@bun-win32/user32": "workspace:*"
+  },
+  "description": "Run HLSL compute and headless rendering on any GPU (NVIDIA/AMD/Intel/WARP) from Bun on Windows — runtime-compiled D3D11 via pure FFI, zero native dependencies.",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "exports": {
+    ".": "./index.ts"
+  },
+  "license": "MIT",
+  "module": "index.ts",
+  "name": "@bun-win32/gpu",
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/ObscuritySRL/bun-win32#readme",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/ObscuritySRL/bun-win32.git",
+    "directory": "packages/gpu"
+  },
+  "type": "module",
+  "version": "1.0.0",
+  "main": "./index.ts",
+  "keywords": [
+    "bun",
+    "compute",
+    "d3d11",
+    "ffi",
+    "gpgpu",
+    "gpu",
+    "gpu.js",
+    "hlsl",
+    "shader",
+    "typescript",
+    "warp",
+    "win32",
+    "windows"
+  ],
+  "files": [
+    "AI.md",
+    "README.md",
+    "adapter.ts",
+    "buffer.ts",
+    "cbuffer.ts",
+    "com.ts",
+    "constants.ts",
+    "depth.ts",
+    "device.ts",
+    "index.ts",
+    "kernel.ts",
+    "pipeline.ts",
+    "png.ts",
+    "shader.ts",
+    "snapshot.ts",
+    "texture.ts",
+    "window.ts"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "bun": "&gt;=1.1.0"
+  },
+  "scripts": {
+    "example:benchmark": "bun ./example/benchmark.ts",
+    "example:gpu-report": "bun ./example/gpu-report.ts",
+    "example:hello-gpu": "bun ./example/hello-gpu.ts",
+    "example:raymarch": "bun ./example/raymarch.ts",
+    "example:selftest": "bun ./example/gpu.selftest.ts"
+  }
+}</code></pre>
+<strong>Reality check:</strong> diff this against terminal's actual package.json before writing — match its exact key order and any fields it has that this block missed. Note <code>sideEffects: false</code> — verify terminal ships that AND that gpu's modules truly have no needed side effects after S0.8's answer (if gpu must side-effect-import core extensions, either keep the import inside a module that is always imported, or drop <code>sideEffects</code>; research, decide, record).</div>
+
+<div class="step"><span class="id">S1.2</span><strong>Create <code>packages/gpu/tsconfig.json</code></strong> — copy <code>packages/terminal/tsconfig.json</code> verbatim (it inherits the root config).</div>
+
+<div class="step"><span class="id">S1.3</span><strong>Create placeholder <code>packages/gpu/index.ts</code></strong>:
+<pre><code>export const GPU_PACKAGE = '@bun-win32/gpu';</code></pre>
+(Temporary — replaced as modules land. Exists so the package resolves and smoke-runs.)</div>
+
+<div class="step"><span class="id">S1.4</span><strong>Create stub <code>AI.md</code> and <code>README.md</code></strong> with one line each: <code># @bun-win32/gpu</code> + "Under construction — completed in Phase 13." (Phase 13 writes the real ones; the files must exist so <code>files</code> globs and early <code>bun publish --dry-run</code> checks don't fail.)</div>
+
+<div class="step verify"><span class="id">S1.5</span><strong>Register the workspace and smoke-test.</strong>
+<pre><code>bun install
+bun run packages/gpu/index.ts            # expect: exits 0, no output
+bunx tsc --noEmit                         # expect: zero errors</code></pre></div>
+
+<div class="step commit"><span class="id">S1.6</span><strong>Commit the claim</strong> (from repo root):
+<pre><code>git add packages/gpu
+git commit -m "feat(gpu): scaffold @bun-win32/gpu engine package"</code></pre></div>
+
+<h2 id="p2">Phase 2 — Core: com.ts, constants.ts, device.ts, window.ts</h2>
+<p><em>Purpose: the COM invoker, the constant tables, device creation (with two deliberate improvements: throw-on-failure and forced-WARP), and the window layer. After this phase a script can create a real D3D11 device from the package.</em></p>
+
+<div class="step"><span class="id">S2.1</span><strong>Create <code>packages/gpu/com.ts</code>.</strong> Copy from <code>_gpu.ts</code> verbatim: the invoker cache + <code>vcall</code> (lines ~199–213), <code>comRelease</code> (~216), <code>blobRelease</code> (~246), plus the private helpers they need (<code>blobBufferPointer</code>, <code>blobBufferSize</code>, <code>blobAsString</code> if colocated — follow the actual code layout you read in S0.7; blob helpers may fit better in <code>shader.ts</code>, decide by cohesion and record). The core, for reference (DO NOT retype from here — copy from the file):
+<pre><code>const invokers = new Map&lt;string, ReturnType&lt;typeof CFunction&gt;&gt;();
+
+/** Invoke COM method `slot` on `thisPtr`; argTypes/args exclude the implicit `this`. */
+export function vcall(thisPtr: bigint, slot: number, argTypes: readonly FFIType[], args: readonly unknown[], returns: FFIType = FFIType.i32): number {
+  const vtable = read.u64(Number(thisPtr) as Pointer, 0);
+  const method = read.u64(Number(vtable) as Pointer, slot * 8);
+  const key = `${method}|${returns}|${argTypes.join(',')}`;
+  let invoke = invokers.get(key);
+  if (invoke === undefined) {
+    invoke = CFunction({ ptr: Number(method) as Pointer, args: [FFIType.u64, ...argTypes], returns });
+    invokers.set(key, invoke);
+  }
+  return invoke(thisPtr, ...args) as number;
+}</code></pre>
+This is a headline public export — "the hardened cast-free COM vtable invoker as a public primitive" (PROJECTS.md). Preserve the JSDoc warning that argTypes exclude <code>this</code>.</div>
+
+<div class="step"><span class="id">S2.2</span><strong>Create <code>packages/gpu/constants.ts</code>.</strong> Move every exported constant from <code>_gpu.ts</code> lines ~95–182: <code>DXGI_FORMAT_*</code>, <code>D3D11_FILTER_*</code>, <code>D3D11_TEXTURE_ADDRESS_*</code>, all <code>DEV_*</code> / <code>CTX_*</code> / <code>SWAP_*</code> / <code>IUNKNOWN_*</code> / <code>DXGIDEVICE_*</code> / <code>DXGIADAPTER_*</code> vtable slots, and the non-exported D3D11 usage/bind/CPU-access/map flags the engine uses internally (<code>D3D11_USAGE_DEFAULT</code>, <code>D3D11_BIND_CONSTANT_BUFFER</code>, etc. — find them all in <code>_gpu.ts</code>; export them: a power user driving <code>vcall</code> directly needs them). Alphabetize within the file. Keep the vtable-slot provenance comment ("derived from Windows 10 SDK d3d11.h declaration order; verified by running — wrong slot segfaults").</div>
+
+<div class="step"><span class="id">S2.3</span><strong>Create <code>packages/gpu/device.ts</code>.</strong> Copy from <code>_gpu.ts</code>: the <code>Gpu</code> interface (~435–444), <code>buildSwapChainDesc</code> (~446–464), <code>tryCreateDeviceAndSwapChain</code> (~466–477), <code>createDevice</code> (~486–531), <code>createComputeDevice</code> (~537+), the active-device module state, <code>requireGpu</code>, and <code>readGpuName</code>. Apply exactly TWO deliberate changes (these are library-design fixes, not cleanup):
+<ol>
+<li><strong>Throw, don't exit.</strong> <code>_gpu.ts</code> calls <code>process.exit(0)</code> when both HARDWARE and WARP fail. A library must throw: <code>throw new Error('No D3D11 device available (HARDWARE and WARP both failed). This machine cannot run @bun-win32/gpu.');</code></li>
+<li><strong>Forced driver option.</strong> Add an options parameter so tests can pin WARP:
+<pre><code>export interface CreateDeviceOptions {
+  driver?: 'hardware' | 'warp';
+}
+
+export function createComputeDevice(options: CreateDeviceOptions = {}): Gpu {
+  const order: D3D_DRIVER_TYPE[] = options.driver === 'warp' ? [D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_WARP] : options.driver === 'hardware' ? [D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_HARDWARE] : [D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_WARP];
+  ...try each in order, keep the rest of the proven body...
+}</code></pre>
+Mirror the same option on <code>createDevice</code>. <strong>Reality check:</strong> the headless path may use <code>D3D11CreateDevice</code> rather than <code>...AndSwapChain</code> — read the actual <code>createComputeDevice</code> body in S0.7 and preserve its exact FFI call shape; only restructure the driver-type loop.</li>
+</ol>
+Also export a <code>destroyDevice(): void</code> that releases context/device/swapChain/RTV via <code>comRelease</code> and clears the active state — the engine never had teardown because demos exit; a library needs it (and the selftest will use it between sections). Keep it simple: release in reverse-creation order, tolerate 0n.</div>
+
+<div class="step"><span class="id">S2.4</span><strong>Create <code>packages/gpu/window.ts</code>.</strong> Copy <code>createWindow</code> (~294+), <code>Win</code> (~266–277), <code>CreateWindowOptions</code> (~279–285) and their User32 plumbing verbatim, including the visibility fix (ShowWindow → SetWindowPos TOPMOST → SetForegroundWindow — ground truth: windows must be shown+topmost or captures lie).</div>
+
+<div class="step"><span class="id">S2.5</span><strong>Imports.</strong> Each new module imports from <code>@bun-win32/d3d11</code>, <code>@bun-win32/d3dcompiler_47</code>, <code>@bun-win32/user32</code> directly (NOT from <code>../index</code> as <code>_gpu.ts</code> does — that was the <code>all</code> package's index). Preserve the <code>Preload</code> calls (<code>D3d11.Preload([...])</code>, <code>D3dcompiler_47.Preload(['D3DCompile'])</code>) — put each Preload in the module that owns those calls. Apply S0.8's answer for the <code>.ptr</code> extension.</div>
+
+<div class="step"><span class="id">S2.6</span><strong>Update <code>index.ts</code></strong> — replace the placeholder with alphabetized named re-exports of everything public so far:
+<pre><code>export { blobRelease, comRelease, vcall } from './com';
+export * from './constants';
+export { createComputeDevice, createDevice, destroyDevice } from './device';
+export type { CreateDeviceOptions, Gpu } from './device';
+export { createWindow } from './window';
+export type { CreateWindowOptions, Win } from './window';</code></pre>
+(Exact shape evolves each phase; keep it alphabetized by module path, types via <code>export type</code> — <code>verbatimModuleSyntax</code> demands it.)</div>
+
+<div class="step verify"><span class="id">S2.7</span><strong>Type gate.</strong> <code>bunx tsc --noEmit</code> → zero errors. Then format: <code>bunx biome format --write packages/gpu</code>.</div>
+
+<div class="step verify"><span class="id">S2.8</span><strong>Runtime proof — first device from the package.</strong> Write a throwaway probe <code>.scratch/probe-device.ts</code>:
+<pre><code>import { createComputeDevice, destroyDevice } from '../packages/gpu/index';
+const gpu = createComputeDevice();
+console.log(`device=${gpu.device.toString(16)} context=${gpu.context.toString(16)} driver=${gpu.driver} name=${gpu.gpuName}`);
+if (gpu.device === 0n || gpu.context === 0n) process.exit(1);
+destroyDevice();
+const warp = createComputeDevice({ driver: 'warp' });
+console.log(`warp driver=${warp.driver} name=${warp.gpuName}`);
+if (warp.driver !== 'WARP') process.exit(1);
+destroyDevice();</code></pre>
+<pre><code>bun run .scratch/probe-device.ts</code></pre>
+Expected: prints a real device pointer, your GPU's name, then a WARP device ("Microsoft Basic Render Driver"). Exit 0. If <code>buffer.ptr</code> is undefined here, S0.8's answer was wrong — fix the extensions import now.</div>
+
+<div class="step commit"><span class="id">S2.9</span>
+<pre><code>git add packages/gpu
+git commit -m "feat(gpu): com vtable invoker, constants, device + window layers"</code></pre></div>
+
+<h2 id="p3">Phase 3 — Shaders: compile + guardrails + preprocessor</h2>
+<p><em>Purpose: the HLSL toolchain with the in-repo traps turned into API guardrails — this is where bun-gpu starts being friendlier than every incumbent (gpu.js's #1 gripe class was cryptic or missing error reporting; ours surfaces real FXC diagnostics plus actionable hints).</em></p>
+
+<div class="step"><span class="id">S3.1</span><strong>Create <code>packages/gpu/shader.ts</code> — extraction half.</strong> Copy from <code>_gpu.ts</code>: <code>CompiledShader</code> (~614–618), <code>compile</code> (~621–636), <code>encodeAscii</code>, <code>blobAsString</code>/<code>blobBufferPointer</code>/<code>blobBufferSize</code> (wherever S2.1 left them), <code>makeComputeShader</code> (~659), <code>makePixelShader</code> (~649), <code>makeVertexShader</code> (~639), <code>hex</code> helper. Keep the exact <code>D3DCompile</code> call shape: <code>(src.ptr!, BigInt(src.byteLength - 1), null, null, null, entryBuf.ptr!, targetBuf.ptr!, D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, ppCode.ptr!, ppErr.ptr!)</code>.</div>
+
+<div class="step"><span class="id">S3.2</span><strong>Guardrails + preprocessor <span class="tag new">NEW</span>.</strong> Add to <code>shader.ts</code> (reference implementation — run it, fix it):
+<pre><code>export interface CompileOptions {
+  /** Permit the HLSL noise() intrinsic alongside [unroll] (FXC can hang for minutes — repo ground truth). */
+  allowNoise?: boolean;
+  /** Compile-time constants, injected TS-side as `#define NAME value` lines ahead of the source (gpu.js `constants` parity; the repo already hand-rolls this in shader-forge.ts:816-823, neural-descent.ts:239-243, fluid.ts:81). Needed for [unroll] bounds and array sizes — cbuffers cannot provide those. */
+  defines?: Record&lt;string, string | number&gt;;
+  /** Override compile flags (default D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3). */
+  flags?: number;
+  /** Named include sources, resolved TS-side. `#include "name"` is replaced textually. */
+  includes?: Record&lt;string, string&gt;;
+}
+
+const INCLUDE_PATTERN = /^[ \t]*#include[ \t]+"([^"]+)"[ \t]*$/gm;
+
+/** Resolve #include directives textually (no ID3DInclude callback — foreign-thread COM hazard, repo rule). */
+export function preprocessHLSL(source: string, includes: Record&lt;string, string&gt; = {}, depth = 0): string {
+  if (depth &gt; 8) throw new Error('preprocessHLSL: #include nesting exceeds 8 levels (cycle?).');
+  return source.replace(INCLUDE_PATTERN, (line, name: string) =&gt; {
+    const body = includes[name];
+    if (body === undefined) throw new Error(`preprocessHLSL: unresolved #include "${name}". Pass it via CompileOptions.includes — file-system includes are not resolved.`);
+    return preprocessHLSL(body, includes, depth + 1);
+  });
+}
+
+function guardSource(source: string, options: CompileOptions): void {
+  if (source.includes('`')) {
+    throw new Error('HLSL source contains a backtick. If this shader lives in a JS template literal, the literal terminated early and FXC is seeing truncated source (repo ground truth: this is the #1 demo-author trap).');
+  }
+  if (options.allowNoise !== true &amp;&amp; source.includes('noise(') &amp;&amp; source.includes('[unroll')) {
+    throw new Error('HLSL source combines noise() with [unroll] — FXC can hang for minutes compiling this (repo ground truth). Replace noise() with a hash function, or pass { allowNoise: true } to proceed anyway.');
+  }
+}</code></pre>
+Wire both into <code>compile</code>: new signature <code>compile(source: string, entry: string, target: string, options: CompileOptions = {}): CompiledShader</code> — inject defines, preprocess, guard, then the existing FXC call with <code>options.flags ?? (D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3)</code>. When defines are injected, append <code>#line 1</code> after the define block so FXC error line numbers still point at the user's source (selftest asserts this). On failure, keep throwing the FULL FXC error blob text (never truncate it — it has line/column info), prefixed with target and HRESULT as today.</div>
+
+<div class="step"><span class="id">S3.3</span><strong>Disassembly <span class="tag new">NEW</span>.</strong> Add <code>disassemble(code: CompiledShader): string</code> using <code>D3dcompiler_47.D3DDisassemble</code>. <strong>Research first:</strong> <code>packages/all/example/shader-doctor.ts</code> already calls it — lift its exact argument shape and blob handling rather than deriving from MSDN. If shader-doctor also exposes a proven <code>D3DReflect</code> → thread-group-size read, port it as <code>reflectThreadGroupSize(code): [number, number, number]</code>; if its reflection code is entangled with demo UI, defer reflection entirely (the kernel API in Phase 8 parses <code>[numthreads]</code> textually and does not need COM reflection). Record the decision.</div>
+
+<div class="step verify"><span class="id">S3.4</span><strong>Pure-logic tests</strong> <span class="tag test">bun:test</span> — create <code>packages/gpu/shader.test.ts</code> (NO FFI imports — import only the pure functions; if <code>preprocessHLSL</code>/<code>guardSource</code> live beside FFI imports, importing the module loads dlopen-capable code but executes none — verify the test file runs without touching the GPU; if module-load side effects (Preload) fire, move Preload calls into the functions that need them):
+<pre><code>import { describe, expect, test } from 'bun:test';
+import { preprocessHLSL } from './shader';
+
+describe('preprocessHLSL', () =&gt; {
+  test('substitutes a named include', () =&gt; {
+    expect(preprocessHLSL('#include "common"\nfloat x;', { common: 'float y;' })).toBe('float y;\nfloat x;');
+  });
+  test('resolves nested includes', () =&gt; {
+    expect(preprocessHLSL('#include "a"', { a: '#include "b"', b: 'float z;' })).toBe('float z;');
+  });
+  test('throws on unresolved include', () =&gt; {
+    expect(() =&gt; preprocessHLSL('#include "missing"')).toThrow('unresolved #include');
+  });
+  test('throws on include cycles', () =&gt; {
+    expect(() =&gt; preprocessHLSL('#include "a"', { a: '#include "a"' })).toThrow('nesting exceeds');
+  });
+});</code></pre>
+Add equivalent tests for the backtick guard and the noise+unroll guard (exported or tested through <code>compile</code>'s pre-FFI throw — if through <code>compile</code>, the throw happens before any FFI call, so the test stays GPU-free; confirm by running on a machine state where no device exists, i.e. it must not create one).
+<pre><code>bun test packages/gpu/shader.test.ts</code></pre>
+Expected: all pass. If <code>bun test</code> chokes on the module's FFI imports even without calling them, split the pure functions into their own module (e.g. <code>preprocess.ts</code>) — record the deviation.</div>
+
+<div class="step verify"><span class="id">S3.5</span><strong>FFI smoke (not yet the full selftest).</strong> Probe <code>.scratch/probe-compile.ts</code>: create a compute device, <code>compile</code> a trivial CS (<code>[numthreads(64,1,1)] void main(uint3 id : SV_DispatchThreadID) {}</code> with an <code>RWStructuredBuffer&lt;float&gt;</code>), assert <code>code.size &gt; 0</code>, then compile garbage (<code>float bad syntax;;;</code>) inside try/catch and assert the error message contains an FXC diagnostic (search for <code>'X3'</code> or <code>'error'</code>). Run, expect exit 0, delete probe later.</div>
+
+<div class="step commit"><span class="id">S3.6</span>
+<pre><code>git add packages/gpu
+git commit -m "feat(gpu): shader compile with trap guardrails, includes preprocessor, disassemble"</code></pre></div>
+
+<h2 id="p4">Phase 4 — Buffers + readback (first end-to-end GPU compute proof)</h2>
+<p><em>Purpose: buffer creation/upload/readback — and the milestone moment: the first compute dispatch through the published-package code path.</em></p>
+
+<div class="step"><span class="id">S4.1</span><strong>Create <code>packages/gpu/buffer.ts</code>.</strong> Copy from <code>_gpu.ts</code> verbatim: <code>makeConstantBuffer</code> (~670–685), <code>updateConstantBuffer</code> (~688–691), <code>StructuredBuffer</code>/<code>StructuredBufferOptions</code> (~694–707), <code>makeStructuredBuffer</code> (~713–775), <code>readbackBuffer</code> (~1093–1123), <code>updateDynamicBuffer</code> (~1126+). Preserve the byte-exact desc packing comments (D3D11_BUFFER_DESC 24 bytes, D3D11_SUBRESOURCE_DATA 16 bytes, D3D11_MAPPED_SUBRESOURCE 16 bytes).</div>
+
+<div class="step research"><span class="id">S4.2</span><strong>Readback throughput investigation (measure, then decide).</strong> <code>readbackBuffer</code> copies byte-by-byte via <code>read.u8</code> in a JS loop. A likely-better path: <code>toArrayBuffer(Number(dataPtr) as Pointer, 0, byteSize)</code> then <code>.slice(0)</code> into an owned copy before Unmap. <strong>Do not assume</strong> — Bun's <code>toArrayBuffer</code> over foreign memory plus Unmap lifetime is exactly the kind of thing that segfaults. Procedure: implement the alternative behind a private function, benchmark both on a 64 MB buffer (10 iterations each), verify byte-equality against the loop version, and keep the faster one ONLY if it survives 100 consecutive readbacks without corruption. Whatever wins, record the MB/s number — it goes in the README benchmarks (repo rule: publish readback-throughput benchmarks before performance claims).</div>
+
+<div class="step"><span class="id">S4.2b</span><strong>Friendly device-removed / TDR errors <span class="tag new">NEW</span> (v1 — this is the plan's error-message differentiator applied to its own worst failure).</strong> The extracted readback path throws raw hex (<code>Map (readback) failed 0x887a0005</code>) — and the flagship workloads (nano-gpt-class dispatch loops) are exactly the long-kernel shape that trips Windows' 2-second TDR watchdog first. Add to the Map/dispatch error branches: a 5-entry DXGI HRESULT table (<code>0x887A_0005 DEVICE_REMOVED</code>, <code>0x887A_0006 DEVICE_HUNG</code>, <code>0x887A_0007 DEVICE_RESET</code>, <code>0x887A_0001 INVALID_CALL</code>, <code>0x887A_0020 DRIVER_INTERNAL_ERROR</code>) and, on DEVICE_REMOVED/RESET, a <code>vcall</code> to <code>ID3D11Device::GetDeviceRemovedReason</code> (the DML flavor is proven at <code>packages/directml/example/directml-device-report.ts:207-215</code>; verify the ID3D11Device slot — believed 39 — against the SDK header, then by running). The thrown message names the reason code and explains the TDR watchdog + kernel-chunking workaround. Selftest asserts: healthy device → <code>GetDeviceRemovedReason === 0</code> (proves the slot), and the mapper formats <code>0x887A0005/6/7</code> into messages containing "TDR". Never deliberately trigger a real TDR in the automated selftest — that resets the user's display driver; ship the repro as a documented manual recipe only.</div>
+
+<div class="step verify"><span class="id">S4.3</span><strong>Round-trip proof without any shader.</strong> Probe <code>.scratch/probe-buffer.ts</code>: device → <code>makeStructuredBuffer({ stride: 4, count: 1024, srv: true, initialData })</code> where initialData is a Buffer holding Float32 values <code>i * 0.5</code> → <code>readbackBuffer</code> → compare all 1024 floats exactly. <strong>GC-window discipline (ground truth):</strong> the <code>initialData</code> Buffer must stay alive and un-awaited between desc assembly and the create call — keep the probe synchronous. Expected: exit 0, "1024/1024 match".</div>
+
+<div class="step verify"><span class="id">S4.4</span><strong>🏁 MILESTONE: first compute dispatch through the package.</strong> Probe <code>.scratch/probe-compute.ts</code>:
+<pre><code>import { compile, createComputeDevice, csSet, dispatch, makeComputeShader, makeStructuredBuffer, readbackBuffer } from '../packages/gpu/index';
+// csSet/dispatch land in Phase 5 — if executing strictly in order, inline the two vcalls here the way _gpu.ts does, or pull S5.2 forward. Executor's choice; record it.
+const HLSL = `
+RWStructuredBuffer&lt;float&gt; data : register(u0);
+[numthreads(64,1,1)] void main(uint3 id : SV_DispatchThreadID) { data[id.x] = data[id.x] * 2.0; }
+`;
+const gpu = createComputeDevice();
+const input = new Float32Array(256);
+for (let index = 0; index &lt; input.length; index += 1) input[index] = index;
+const initial = Buffer.from(input.buffer);
+const buffer = makeStructuredBuffer({ count: 256, initialData: initial, stride: 4, uav: true });
+const shader = makeComputeShader(compile(HLSL, 'main', 'cs_5_0'));
+csSet(shader, { uav: [buffer.uav!] });
+dispatch(Math.ceil(256 / 64));
+const result = new Float32Array(readbackBuffer(buffer.buffer, 256 * 4));
+for (let index = 0; index &lt; 256; index += 1) {
+  if (result[index] !== index * 2) { console.error(`mismatch at ${index}: ${result[index]}`); process.exit(1); }
+}
+console.log(`compute OK on ${gpu.gpuName} (${gpu.driver})`);</code></pre>
+Run on default device AND with <code>createComputeDevice({ driver: 'warp' })</code>. Expected: both exit 0. <strong>This is the package's reason to exist working end to end — do not proceed past a failure here.</strong></div>
+
+<div class="step commit"><span class="id">S4.5</span>
+<pre><code>git add packages/gpu
+git commit -m "feat(gpu): structured/constant buffers, dynamic upload, staging readback"</code></pre></div>
+
+<h2 id="p5">Phase 5 — Textures, pipeline, depth</h2>
+<p><em>Purpose: the full graphics half — textures, sampler, draw paths, blend, and the depth pipeline from _gpu3d.ts. After this, every capability the 30-demo corpus uses exists in the package.</em></p>
+
+<div class="step"><span class="id">S5.1</span><strong>Create <code>packages/gpu/texture.ts</code>.</strong> Copy <code>TextureOptions</code>/<code>TextureResult</code> (~779–796) and <code>makeTexture</code> (~799+) from <code>_gpu.ts</code>. Add <span class="tag new">NEW</span> <code>readbackTexture(tex: bigint, w: number, h: number, bytesPerPixel = 4): Uint8Array</code> — lift the staging-texture + Map/RowPitch-walk logic from <code>_snapshot.ts</code> (it already handles RowPitch ≠ w*4 correctly; that handling is mandatory — naive tight-packing reads garbage on many GPUs). Returns tightly-packed rows.</div>
+
+<div class="step"><span class="id">S5.2</span><strong>Create <code>packages/gpu/pipeline.ts</code>.</strong> Copy from <code>_gpu.ts</code>: <code>makeSampler</code>/<code>SamplerOptions</code> (~867–875), <code>setRenderTargets</code> (~903), <code>setViewport</code> (~915), <code>clear</code> (~928), <code>drawFullscreenTriangle</code> (~939), <code>drawPoints</code> (~946), <code>vsSetShaderResources</code> (~953), <code>makeAdditiveBlendState</code> (~965), <code>setBlendState</code> (~994), <code>vsSet</code> (~1005), <code>PsBindings</code>/<code>psSet</code> (~1016–1040), <code>CsBindings</code>/<code>csSet</code> (~1043–1069), <code>dispatch</code> (~1072), <code>copyResource</code> (~1078), <code>generateMips</code> (~1084). Verbatim bodies; only import paths change.</div>
+
+<div class="step"><span class="id">S5.3</span><strong>Create <code>packages/gpu/depth.ts</code></strong> from <code>_gpu3d.ts</code>: <code>DepthBuffer</code> (~94–98), <code>makeDepthBuffer</code> (~107), <code>setRenderTargetsWithDepth</code> (~156), <code>clearDepth</code> (~168), <code>setDepthState</code> (~182), <code>setCull</code> (~232), <code>drawTriangles</code> (~264), <code>releaseGpu3d</code> (~271) renamed <code>releaseDepth</code>, <code>bindGpu3d</code> (~82) renamed <code>bindDepth</code>. Inside the package, depth helpers can read the active device via <code>requireGpu()</code> directly — keep <code>bindDepth(g: Gpu)</code> as an explicit override setter for API compatibility (default: active device). Known trap to preserve in comments: CreateDepthStencilState is vtable slot 21 and CreateRasterizerState is 22 — a published cheat-sheet had them swapped; the in-repo values are runtime-verified (ground truth).</div>
+
+<div class="step"><span class="id">S5.4</span><strong>Update <code>index.ts</code></strong> with the new modules' exports (alphabetized), <code>bunx tsc --noEmit</code>, format.</div>
+
+<div class="step verify"><span class="id">S5.5</span><strong>Pixel-exact render proof.</strong> Probe <code>.scratch/probe-render.ts</code>: compute device → <code>makeTexture({ w: 64, h: 64, rtv: true })</code> → <code>setRenderTargets([tex.rtv!])</code> + <code>setViewport(64, 64)</code> → <code>clear(tex.rtv!, [1, 0, 0, 1])</code> → <code>readbackTexture</code> → assert pixel (0,0) is red (remember the texture default format is B8G8R8A8: byte order B,G,R,A → expect <code>[0, 0, 255, 255]</code> — verify the actual default in <code>makeTexture</code>, R8G8B8A8 vs B8G8R8A8 changes byte order; read the code, then assert accordingly). Then a second probe stage: fullscreen-triangle PS writing a UV gradient, readback, assert corner pixels differ monotonically. Expected: exit 0.</div>
+
+<div class="step verify"><span class="id">S5.6</span><strong>Depth-test proof (the honest one).</strong> Port <code>_gpu3d.ts</code>'s self-test trick into <code>.scratch/probe-depth.ts</code>: render a NEAR green quad FIRST and a FAR red quad LAST with depth enabled; readback; assert the overlap is green. The draw order makes depth the only possible cause of green winning (ground-truth methodology — keep the explanatory comment). Expected: exit 0.</div>
+
+<div class="step commit"><span class="id">S5.7</span>
+<pre><code>git add packages/gpu
+git commit -m "feat(gpu): textures, render/compute pipeline state, depth layer"</code></pre></div>
+
+<h2 id="p6">Phase 6 — Snapshot + pure-TS PNG</h2>
+<p><em>Purpose: back-buffer capture with luminance stats (the AI-verification primitive) and PNG encoding with zero extra dependencies.</em></p>
+
+<div class="step research"><span class="id">S6.1</span><strong>Read <code>packages/terminal/png.ts</code></strong> — it exports a proven <code>encodePNG</code>. Determine its input contract (RGB? RGBA? stride?). Ground truth to honor: <code>Bun.deflateSync</code> emits RAW deflate; PNG requires a zlib wrapper (header + adler32) — terminal's encoder already handles this. Decide: (a) copy/adapt the encoder into <code>packages/gpu/png.ts</code> (default — keeps gpu dependency-light and self-contained), or (b) if the code is large and exactly reusable, STILL copy it (a gpu→terminal dependency just for PNG is wrong layering). Adapt to accept BGRA input with a row stride, since that is what the swap chain yields.</div>
+
+<div class="step"><span class="id">S6.2</span><strong>Create <code>packages/gpu/snapshot.ts</code></strong> from <code>_snapshot.ts</code>: <code>SnapshotStats</code> (~62–79), <code>CaptureOptions</code> (~81–84), <code>captureBackBuffer</code> (~91+), <code>formatGrid</code> (~246+). Replace the Gdiplus PNG path with <code>png.ts</code>'s encoder + <code>Bun.write</code>. Preserve verbatim: the never-throws contract (returns <code>ok: false</code> + note), the stats computation, and the CRITICAL capture-before-present comment (back buffer is undefined after Present with DXGI_SWAP_EFFECT_DISCARD).</div>
+
+<div class="step verify"><span class="id">S6.3</span><strong>Visual proof.</strong> Probe <code>.scratch/probe-snapshot.ts</code>: <code>createWindow</code> (320×240) → <code>createDevice(win.hwnd, …)</code> → clear back-buffer RTV to a gradient via a 3-line PS (or solid orange via <code>clear</code>) → <code>captureBackBuffer(gpu, '.scratch/snapshot-probe.png')</code> → <code>present()</code> → destroy. Assert <code>stats.ok</code>, <code>stats.nonBlackFrac &gt; 0.5</code>, print <code>formatGrid(stats)</code>. <strong>Then open the PNG and look at it</strong> — the repo's verification doctrine is visual, not numeric. Expected: a PNG showing exactly what you drew.</div>
+
+<div class="step commit"><span class="id">S6.4</span>
+<pre><code>git add packages/gpu
+git commit -m "feat(gpu): back-buffer snapshot with luminance stats, pure-TS PNG encoder"</code></pre></div>
+
+<h2 id="p7">Phase 7 — Adapter introspection</h2>
+<p><em>Purpose: <code>listAdapters()</code> — the "what hardware am I on" API that gpu.js never had and that AI agents need for capability probing.</em></p>
+
+<div class="step research"><span class="id">S7.1</span><strong>Lift, don't derive.</strong> Read <code>packages/all/example/adapter-report.ts</code> and <code>packages/all/example/gpu-observatory.ts</code> — at least one walks DXGI adapters with proven vtable slots (<code>CreateDXGIFactory1</code> → <code>EnumAdapters1</code> → <code>GetDesc1</code>). Copy the working enumeration loop and DXGI_ADAPTER_DESC1 field offsets exactly (the description is a fixed 128-WCHAR field at offset 0; VRAM fields are SIZE_T at documented offsets — the demo already decodes them; trust its offsets over your memory of the struct).</div>
+
+<div class="step"><span class="id">S7.2</span><strong>Create <code>packages/gpu/adapter.ts</code> <span class="tag new">NEW</span> (assembled from lifted code):</strong>
+<pre><code>export interface AdapterInfo {
+  dedicatedSystemMemory: bigint;
+  dedicatedVideoMemory: bigint;
+  description: string;
+  deviceId: number;
+  isSoftware: boolean;
+  sharedSystemMemory: bigint;
+  vendorId: number;
+}
+
+/** Enumerate DXGI adapters (hardware first, WARP last). https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgifactory1-enumadapters1 */
+export function listAdapters(): AdapterInfo[] { /* lifted loop; release factory + each adapter via comRelease */ }</code></pre>
+<code>isSoftware</code>: DXGI_ADAPTER_FLAG_SOFTWARE (0x2) from the Flags field — verify against the demo's decoding. Skip DXCore/compute-only adapters in v1 (record as future work in AI.md roadmap; avoids a new dependency for a niche capability).</div>
+
+<div class="step verify"><span class="id">S7.3</span><strong>Probe.</strong> <code>.scratch/probe-adapters.ts</code>: print the table; assert ≥ 1 adapter; assert one entry's description contains <code>'Basic Render Driver'</code> (WARP is always enumerable). Run, expect exit 0.</div>
+
+<div class="step commit"><span class="id">S7.4</span>
+<pre><code>git add packages/gpu
+git commit -m "feat(gpu): DXGI adapter enumeration (listAdapters)"</code></pre></div>
+
+<h2 id="p8">Phase 8 — kernel.ts: <code>run()</code> / <code>Kernel</code> / <code>GpuArray</code> — the flagship API</h2>
+<p><em>Purpose: the gpu.js-successor surface. This phase is where competitive parity is won (see Appendix D): one-shot ergonomics, retained GPU-resident arrays for kernel <strong>chaining without readback</strong> (gpu.js "pipeline" mode), multiple outputs (gpu.js "kernel maps"), uniforms, 1D/2D/3D dispatch, automatic WARP fallback — typed end to end with zero casts.</em></p>
+
+<div class="note"><strong>API design commitments (frozen here, validated against the Phase 0 competitive research):</strong>
+<ul>
+<li><code>run(source, buffers, options?)</code> — one-shot: compile → upload → dispatch → read back → release. <strong>Mutates the caller's typed arrays in place</strong> for writable bindings and returns the same record. In-place is the cast-free, type-exact design (<code>run&lt;T&gt;(…, buffers: T): T</code> holds trivially) and means zero aliasing surprises.</li>
+<li><code>GpuArray</code> — a retained GPU buffer (UAV + SRV) that persists across dispatches. The chaining primitive.</li>
+<li><code>Kernel</code> — a compiled shader bound to parsed bindings; <code>dispatch()</code> accepts only <code>GpuArray</code>s (explicit lifecycle); <code>run()</code> is the sugar that wraps typed arrays for you.</li>
+<li>Bindings are parsed <strong>textually</strong> from explicit <code>register(uN/tN/bN)</code> annotations — deterministic, unit-testable without a GPU, and the error messages can quote the exact line to add. (COM reflection via <code>D3DReflect</code> stays available for diagnostics, but the hot path never depends on it.) v1 constraint: registers must be dense from 0 per kind; enforced with a clear error.</li>
+<li>Element types: <code>float</code>/<code>int</code>/<code>uint</code> ↔ <code>Float32Array</code>/<code>Int32Array</code>/<code>Uint32Array</code>, stride 4. Struct-typed buffers remain a low-level <code>makeStructuredBuffer</code> affair in v1 (documented recipe).</li>
+</ul></div>
+
+<div class="step"><span class="id">S8.1</span><strong>Create <code>packages/gpu/kernel.ts</code> <span class="tag new">NEW</span>.</strong> Reference implementation — type-check it, run it, fix it; the parsing helpers are exported for pure-logic testing:
+<pre><code>import { compile, makeComputeShader, type CompileOptions } from './shader';
+import { comRelease } from './com';
+import { createComputeDevice } from './device';
+import { csSet, dispatch } from './pipeline';
+import { makeConstantBuffer, makeStructuredBuffer, readbackBuffer, updateConstantBuffer, type StructuredBuffer } from './buffer';
+
+export type KernelArray = Float32Array | Int32Array | Uint32Array;
+export type ScalarKind = 'float' | 'int' | 'uint';
+
+export interface KernelBinding {
+  kind: ScalarKind;
+  name: string;
+  register: number;
+  writable: boolean;
+}
+
+const BUFFER_PATTERN = /\b(RW)?StructuredBuffer\s*&lt;\s*(float|int|uint)\s*&gt;\s+([A-Za-z_]\w*)\s*:\s*register\(\s*([tu])(\d+)\s*\)/g;
+const CBUFFER_PATTERN = /\bcbuffer\s+\w+\s*:\s*register\(\s*b0\s*\)/;
+const NUMTHREADS_PATTERN = /\[\s*numthreads\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)\s*\]/;
+
+/** Parse explicit register() buffer declarations. Throws actionable errors — this is the API contract, not a heuristic. */
+export function parseKernelBindings(source: string): KernelBinding[] {
+  const bindings: KernelBinding[] = [];
+  for (const match of source.matchAll(BUFFER_PATTERN)) {
+    const [, readWrite, kind, name, space, register] = match;
+    const writable = readWrite === 'RW';
+    if (writable &amp;&amp; space !== 'u') throw new Error(`Kernel buffer "${name}": RWStructuredBuffer must use a u register — write : register(u${register}).`);
+    if (!writable &amp;&amp; space !== 't') throw new Error(`Kernel buffer "${name}": StructuredBuffer must use a t register — write : register(t${register}).`);
+    bindings.push({ kind: kind === 'float' ? 'float' : kind === 'int' ? 'int' : 'uint', name, register: Number(register), writable });
+  }
+  if (bindings.length === 0) throw new Error('Kernel source declares no StructuredBuffer/RWStructuredBuffer with an explicit register() annotation. Example: RWStructuredBuffer&lt;float&gt; data : register(u0);');
+  for (const writable of [true, false]) {
+    const registers = bindings.filter((binding) =&gt; binding.writable === writable).map((binding) =&gt; binding.register).sort((a, b) =&gt; a - b);
+    registers.forEach((register, index) =&gt; {
+      if (register !== index) throw new Error(`Kernel ${writable ? 'u' : 't'} registers must be dense from 0 (found ${writable ? 'u' : 't'}${register} where ${writable ? 'u' : 't'}${index} was expected).`);
+    });
+  }
+  return bindings;
+}
+
+export function parseNumthreads(source: string): readonly [number, number, number] {
+  const match = NUMTHREADS_PATTERN.exec(source);
+  if (match === null) throw new Error('Kernel source has no [numthreads(x,y,z)] attribute on its entry point.');
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function kindOf(data: KernelArray): ScalarKind {
+  return data instanceof Float32Array ? 'float' : data instanceof Int32Array ? 'int' : 'uint';
+}
+
+function ensureDevice(): void {
+  // requireGpu() throws when no device exists; catch-free probe instead: expose hasDevice() from device.ts (one-liner) and create on demand.
+  if (!hasDevice()) createComputeDevice();
+}
+
+/** A GPU-resident array (UAV + SRV). Survives across dispatches — the kernel-chaining primitive. */
+export class GpuArray {
+  #resource: StructuredBuffer;
+  readonly kind: ScalarKind;
+  readonly length: number;
+
+  private constructor(resource: StructuredBuffer, kind: ScalarKind, length: number) {
+    this.#resource = resource;
+    this.kind = kind;
+    this.length = length;
+  }
+
+  static alloc(kind: ScalarKind, length: number): GpuArray {
+    ensureDevice();
+    return new GpuArray(makeStructuredBuffer({ count: length, srv: true, stride: 4, uav: true }), kind, length);
+  }
+
+  static from(data: KernelArray): GpuArray {
+    ensureDevice();
+    const initialData = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+    return new GpuArray(makeStructuredBuffer({ count: data.length, initialData, srv: true, stride: 4, uav: true }), kindOf(data), data.length);
+  }
+
+  get srv(): bigint { return this.#resource.srv!; }
+  get uav(): bigint { return this.#resource.uav!; }
+
+  /** Read back into a caller-owned typed array (cast-free typed reads). */
+  readInto&lt;A extends KernelArray&gt;(target: A): A {
+    const bytes = readbackBuffer(this.#resource.buffer, this.length * 4);
+    if (kindOf(target) !== this.kind) throw new Error(`GpuArray.readInto: target is ${kindOf(target)} but the array holds ${this.kind}.`);
+    target.set(this.kind === 'float' ? new Float32Array(bytes) : this.kind === 'int' ? new Int32Array(bytes) : new Uint32Array(bytes));
+    return target;
+  }
+
+  read(): KernelArray {
+    const bytes = readbackBuffer(this.#resource.buffer, this.length * 4);
+    return this.kind === 'float' ? new Float32Array(bytes) : this.kind === 'int' ? new Int32Array(bytes) : new Uint32Array(bytes);
+  }
+
+  release(): void {
+    comRelease(this.#resource.uav ?? 0n);
+    comRelease(this.#resource.srv ?? 0n);
+    comRelease(this.#resource.buffer);
+  }
+}
+
+export interface DispatchOptions {
+  /** Thread groups [x, y, z]. Default: [ceil(maxBoundLength / numthreadsX), 1, 1]. */
+  groups?: readonly [number, number?, number?];
+  /** Raw bytes for the cbuffer at register(b0) (use cbufferLayout() to build them). */
+  uniforms?: Buffer | KernelArray;
+}
+
+export class Kernel {
+  #bindings: readonly KernelBinding[];
+  #constantBuffer = 0n;
+  #shader: bigint;
+  #threads: readonly [number, number, number];
+  #usesUniforms: boolean;
+
+  constructor(source: string, options: CompileOptions = {}) {
+    ensureDevice();
+    this.#bindings = parseKernelBindings(source);
+    this.#threads = parseNumthreads(source);
+    this.#usesUniforms = CBUFFER_PATTERN.test(source);
+    this.#shader = makeComputeShader(compile(source, 'main', 'cs_5_0', options));
+  }
+
+  dispatch(buffers: Record&lt;string, GpuArray&gt;, options: DispatchOptions = {}): void {
+    const uav: bigint[] = [];
+    const srv: bigint[] = [];
+    let maxLength = 1;
+    for (const binding of this.#bindings) {
+      const array = buffers[binding.name];
+      if (array === undefined) throw new Error(`Kernel.dispatch: no GpuArray passed for buffer "${binding.name}".`);
+      if (array.kind !== binding.kind) throw new Error(`Kernel.dispatch: buffer "${binding.name}" is declared ${binding.kind} but the GpuArray holds ${array.kind}.`);
+      (binding.writable ? uav : srv)[binding.register] = binding.writable ? array.uav : array.srv;
+      if (array.length &gt; maxLength) maxLength = array.length;
+    }
+    const cb: bigint[] = [];
+    if (options.uniforms !== undefined) {
+      if (!this.#usesUniforms) throw new Error('Kernel.dispatch: uniforms were passed but the kernel declares no cbuffer at register(b0).');
+      const bytes = Buffer.isBuffer(options.uniforms) ? options.uniforms : Buffer.from(options.uniforms.buffer, options.uniforms.byteOffset, options.uniforms.byteLength);
+      if (this.#constantBuffer === 0n) this.#constantBuffer = makeConstantBuffer(bytes.byteLength);
+      updateConstantBuffer(this.#constantBuffer, bytes);
+      cb.push(this.#constantBuffer);
+    }
+    const [x = Math.ceil(maxLength / this.#threads[0]), y = 1, z = 1] = options.groups ?? [];
+    csSet(this.#shader, { cb, srv, uav });
+    dispatch(x, y ?? 1, z ?? 1);
+  }
+
+  release(): void {
+    comRelease(this.#constantBuffer);
+    comRelease(this.#shader);
+  }
+}
+
+export interface RunOptions extends DispatchOptions {
+  compile?: CompileOptions;
+}
+
+/** One-shot: compile, upload, dispatch, read back (in place), release. The 10-line-wow API. */
+export function run&lt;T extends Record&lt;string, KernelArray&gt;&gt;(source: string, buffers: T, options: RunOptions = {}): T {
+  const kernel = new Kernel(source, options.compile);
+  const uploaded = new Map&lt;string, GpuArray&gt;();
+  try {
+    const bound: Record&lt;string, GpuArray&gt; = {};
+    for (const binding of kernel.bindings) {
+      const data = buffers[binding.name];
+      if (data === undefined) throw new Error(`run: kernel declares buffer "${binding.name}" but no typed array was passed for it.`);
+      const array = GpuArray.from(data);
+      uploaded.set(binding.name, array);
+      bound[binding.name] = array;
+    }
+    kernel.dispatch(bound, options);
+    for (const binding of kernel.bindings) {
+      if (binding.writable) uploaded.get(binding.name)!.readInto(buffers[binding.name]!);
+    }
+    return buffers;
+  } finally {
+    for (const array of uploaded.values()) array.release();
+    kernel.release();
+  }
+}</code></pre>
+Notes for the executor: (1) <code>Kernel</code> needs a public readonly <code>bindings</code> getter for <code>run()</code> — add it. (2) <code>hasDevice()</code> is a one-line addition to <code>device.ts</code> (<code>return activeGpu !== null</code> — match the actual state variable name). (3) The sparse-array writes (<code>uav[binding.register] = …</code>) produce dense arrays because density was validated at parse time. (4) <code>buffers[binding.name]!</code> uses <code>!</code>, which the repo allows. (5) If <code>csSet</code>'s signature differs from <code>{ cb, srv, uav }</code> arrays-from-slot-0, adapt to the real one — it is the contract you extracted in Phase 5.</div>
+
+<div class="step verify"><span class="id">S8.2</span><strong>Pure-logic tests</strong> <span class="tag test">bun:test</span> — <code>packages/gpu/kernel.test.ts</code>: <code>parseKernelBindings</code> (RW→u enforcement, t enforcement, density errors, no-bindings error, multi-buffer parse with names/kinds/registers asserted), <code>parseNumthreads</code> (present, absent, whitespace forms). ~12 tests, no FFI touched (the parse functions must be importable without creating a device — if module-level imports trigger device work, that is a bug to fix, not a test to skip).
+<pre><code>bun test packages/gpu/kernel.test.ts</code></pre></div>
+
+<div class="step verify"><span class="id">S8.3</span><strong>Integration probes</strong> (rolled into the Phase 10 selftest, but prove the core now): <code>.scratch/probe-kernel.ts</code> — (a) the in-place <code>run()</code> sqrt example returns the same Float32Array instance with correct values; (b) chaining: <code>GpuArray.from</code> → kernel1 doubles → kernel2 adds 1 → <code>read()</code> equals <code>x*2+1</code> with NO intermediate readback; (c) multi-output: one kernel writing two RW buffers; (d) uniforms: cbuffer scale factor applied. Expect exit 0 on hardware AND WARP.</div>
+
+<div class="step commit"><span class="id">S8.4</span>
+<pre><code>git add packages/gpu
+git commit -m "feat(gpu): run()/Kernel/GpuArray high-level compute API with chaining"</code></pre></div>
+
+<h2 id="p9">Phase 9 — cbuffer.ts: HLSL constant-buffer layout calculator</h2>
+<p><em>Purpose: kill the hand-rolled-offsets bug class (ground truth: "cbuffer HLSL layout must byte-match TS write offsets" burned multiple demos). Pure logic, exhaustively unit-tested, then validated against FXC itself in the selftest.</em></p>
+
+<div class="step"><span class="id">S9.1</span><strong>Create <code>packages/gpu/cbuffer.ts</code> <span class="tag new">NEW</span>:</strong>
+<pre><code>export type CBufferFieldType = 'float' | 'float2' | 'float3' | 'float4' | 'float4x4' | 'int' | 'int2' | 'int3' | 'int4' | 'uint' | 'uint2' | 'uint3' | 'uint4';
+
+type CBufferValue&lt;F extends CBufferFieldType&gt; = F extends 'float' | 'int' | 'uint' ? number : readonly number[];
+
+const FIELD_BYTES: Record&lt;CBufferFieldType, number&gt; = { float: 4, float2: 8, float3: 12, float4: 16, float4x4: 64, int: 4, int2: 8, int3: 12, int4: 16, uint: 4, uint2: 8, uint3: 12, uint4: 16 };
+
+export interface CBufferLayout&lt;T extends Record&lt;string, CBufferFieldType&gt;&gt; {
+  byteSize: number;
+  offsets: { readonly [K in keyof T]: number };
+  write(values: { readonly [K in keyof T]: CBufferValue&lt;T[K]&gt; }): Buffer;
+}
+
+/** HLSL packing: fields align to 4 bytes, never straddle a 16-byte register; float4x4 aligns to 16; total rounds up to 16.
+ *  Matrices: HLSL defaults to column-major — pass transposed data or declare row_major in the shader. */
+export function cbufferLayout&lt;T extends Record&lt;string, CBufferFieldType&gt;&gt;(fields: T): CBufferLayout&lt;T&gt; {
+  const offsets: Record&lt;string, number&gt; = {};
+  let cursor = 0;
+  for (const [name, type] of Object.entries(fields)) {
+    const bytes = FIELD_BYTES[type];
+    if (type === 'float4x4') cursor = Math.ceil(cursor / 16) * 16;
+    else if (Math.floor(cursor / 16) !== Math.floor((cursor + bytes - 1) / 16)) cursor = Math.ceil(cursor / 16) * 16;
+    offsets[name] = cursor;
+    cursor += bytes;
+  }
+  const byteSize = Math.ceil(cursor / 16) * 16;
+  return {
+    byteSize,
+    offsets,
+    write(values) {
+      const out = Buffer.alloc(byteSize);
+      for (const [name, type] of Object.entries(fields)) {
+        const offset = offsets[name]!;
+        const value = values[name];
+        const integer = type.startsWith('int') ? 'int' : type.startsWith('uint') ? 'uint' : 'float';
+        if (typeof value === 'number') {
+          if (integer === 'int') out.writeInt32LE(value, offset);
+          else if (integer === 'uint') out.writeUInt32LE(value, offset);
+          else out.writeFloatLE(value, offset);
+        } else {
+          value.forEach((component, index) =&gt; {
+            if (integer === 'int') out.writeInt32LE(component, offset + index * 4);
+            else if (integer === 'uint') out.writeUInt32LE(component, offset + index * 4);
+            else out.writeFloatLE(component, offset + index * 4);
+          });
+        }
+      }
+      return out;
+    },
+  };
+}</code></pre>
+Type-check carefully: the <code>offsets</code> record and generic mapped types must compile cast-free (an explicit annotation or a small builder restructure is fine; <code>as</code> is not). <strong>Reality check:</strong> "fields align to 4 bytes" understates HLSL rules for vectors (a float3 aligns to 4 but cannot straddle a register — the straddle check covers it). Verify each rule against the Microsoft "Packing rules for constant variables" doc page during execution; encode every rule the tests below assert.</div>
+
+<div class="step verify"><span class="id">S9.2</span><strong>Exhaustive unit tests</strong> <span class="tag test">bun:test</span> — <code>packages/gpu/cbuffer.test.ts</code>, the canonical packing cases:
+<pre><code>float, float, float, float            → offsets 0, 4, 8, 12;  size 16
+float3, float                         → offsets 0, 12;        size 16   (scalar fits the tail of the register)
+float3, float2                        → offsets 0, 16;        size 32   (float2 would straddle → new register)
+float, float4                         → offsets 0, 16;        size 32
+float2, float2, float                 → offsets 0, 8, 16;     size 32
+float, float4x4                       → offsets 0, 16;        size 80
+uint, int3                            → offsets 0, 4;         size 16
+write(): float roundtrips via readFloatLE; int -1 → 0xFFFF_FFFF bytes; vector components land at offset+4*i</code></pre>
+<pre><code>bun test packages/gpu/cbuffer.test.ts</code></pre>
+Expected: all pass. These expectations encode the MSDN packing rules — if a test fails, decide whether the IMPLEMENTATION or the EXPECTATION is wrong by consulting the doc, not by nudging numbers until green.</div>
+
+<div class="step verify"><span class="id">S9.3</span><strong>Ground-truth validation against FXC</strong> (lands in the Phase 10 selftest, listed here for visibility): a kernel whose cbuffer mirrors a layout built by <code>cbufferLayout({ scale: 'float', offset3: 'float3', count: 'uint' })</code> copies each uniform into an output buffer; the readback must equal what <code>write()</code> packed. If FXC disagrees with the calculator, <strong>FXC is right</strong> — fix cbuffer.ts and add the failing case as a unit test.</div>
+
+<div class="step commit"><span class="id">S9.4</span>
+<pre><code>git add packages/gpu
+git commit -m "feat(gpu): cbuffer layout calculator with HLSL packing-rule tests"</code></pre></div>
+
+<h2 id="p10">Phase 10 — Examples, the integration selftest, the benchmark</h2>
+<p><em>Purpose: the runnable proof corpus. The selftest is the REAL test suite (FFI integration); the examples are the marketing; the benchmark produces the README's numbers. Every example carries the mandatory JSDoc header (Title, Description, "APIs demonstrated" bullets, Run line) — repo rule.</em></p>
+
+<div class="step"><span class="id">S10.1</span><strong><code>example/hello-gpu.ts</code> — the 10-line wow:</strong>
+<pre><code>/**
+ * Hello GPU — square roots on whatever GPU you have, in ten lines.
+ *
+ * Compiles an HLSL kernel at runtime with d3dcompiler_47, dispatches it on the first
+ * available device (NVIDIA/AMD/Intel hardware, or WARP software — works on every
+ * Windows machine), and reads the result back. No native modules, no build step.
+ *
+ * APIs demonstrated:
+ * - run (one-shot compile → upload → dispatch → readback)
+ *
+ * Run: bun run example/hello-gpu.ts
+ */
+import { run } from '@bun-win32/gpu';
+
+const { data } = run(
+  `RWStructuredBuffer&lt;float&gt; data : register(u0);
+   [numthreads(64, 1, 1)] void main(uint3 id : SV_DispatchThreadID) { data[id.x] = sqrt(data[id.x]); }`,
+  { data: new Float32Array([1, 4, 9, 16, 25, 36, 49, 64]) },
+);
+
+console.log([...data]);</code></pre>
+<strong>Reality check:</strong> confirm terminal's examples import the package by name (<code>@bun-win32/terminal</code>) — workspace linking makes self-name imports resolve. If they use relative imports instead, match that convention. Verify: <code>bun run packages/gpu/example/hello-gpu.ts</code> prints <code>[ 1, 2, 3, 4, 5, 6, 7, 8 ]</code>.</div>
+
+<div class="step"><span class="id">S10.2</span><strong><code>example/gpu.selftest.ts</code> — the integration suite <span class="tag test">REAL TESTS</span>.</strong> A plain Bun script (or <code>bun:test</code> file if S0.4's probe passed): numbered sections, each printing <code>PASS</code>/<code>FAIL name: detail</code>, a summary line, <code>process.exitCode = failures &gt; 0 ? 1 : 0</code>. Sections (all values asserted exactly unless noted):
+<ol>
+<li><strong>device:</strong> default device creates; forced WARP creates and reports <code>driver === 'WARP'</code>; <code>destroyDevice()</code> then re-create works.</li>
+<li><strong>adapters:</strong> ≥ 1 adapter; WARP ("Basic Render Driver") present.</li>
+<li><strong>compile-error:</strong> garbage HLSL throws; message contains an FXC diagnostic; valid HLSL yields <code>size &gt; 0</code>.</li>
+<li><strong>guardrails:</strong> backtick source throws the template-literal hint; <code>noise(</code>+<code>[unroll</code> throws unless <code>allowNoise</code>.</li>
+<li><strong>buffer-roundtrip:</strong> 1,024 floats up and back, no shader, byte-exact.</li>
+<li><strong>compute-basic:</strong> the double-kernel, 256 elements, exact.</li>
+<li><strong>multi-buffer:</strong> <code>c[i] = a[i] + b[i]</code> with two read-only (t0/t1) inputs and one RW (u0) output.</li>
+<li><strong>int-uint:</strong> an <code>int</code> kernel (negatives survive) and a <code>uint</code> kernel (wrap-around semantics) — proves kind plumbing.</li>
+<li><strong>2D dispatch:</strong> <code>[numthreads(8,8,1)]</code> writing <code>id.y * width + id.x</code> into a width×height buffer via <code>options.groups: [width/8, height/8]</code>; spot-assert corners and center.</li>
+<li><strong>chaining:</strong> GpuArray through two kernels, no intermediate readback, result <code>x * 2 + 1</code>.</li>
+<li><strong>uniforms-vs-fxc:</strong> the S9.3 cbuffer ground-truth roundtrip.</li>
+<li><strong>matmul:</strong> 64×64 GPU matmul vs CPU reference, max |Δ| &lt; 1e-3.</li>
+<li><strong>determinism:</strong> same kernel + data twice → byte-identical readbacks; hardware vs WARP → |Δ| &lt; 1e-5 elementwise.</li>
+<li><strong>render:</strong> clear-to-color pixel assert; UV-gradient PS corner asserts; the depth green/red proof (S5.6's logic).</li>
+<li><strong>error-paths:</strong> missing buffer name, kind mismatch, sparse registers, uniforms-without-cbuffer — each throws its specific message.</li>
+<li><strong>atomics-histogram:</strong> N random uints binned into 256 buckets via <code>InterlockedAdd</code> on a zero-initialized <code>RWStructuredBuffer&lt;uint&gt;</code>; assert EXACT equality vs a CPU loop (integer atomic adds are order-independent — zero tolerance). <code>InterlockedAdd</code>/<code>Exchange</code> are battle-tested in 4 shipped demos (slime.ts:216, particle-galaxy.ts:549, neural-descent.ts:494/540, sph3d.ts:243); this section makes the parity claim runnable.</li>
+<li><strong>groupshared-reduction:</strong> tiled partial sums — <code>[numthreads(256,1,1)]</code>, <code>groupshared float</code> tile, <code>GroupMemoryBarrierWithGroupSync</code>, assert equal to CPU reference. <strong>⚠ First-ever groupshared use in this repo</strong> (audit: zero hits repo-wide) — the workgroup-memory parity row vs WebGPU is UNVERIFIED until this passes; if FXC or WARP misbehaves, the matrix row downgrades to roadmap, honestly.</li>
+<li><strong>defines:</strong> same kernel compiled with <code>defines: { N: 4 }</code> vs <code>{ N: 8 }</code> as an <code>[unroll]</code> bound → outputs differ as predicted; a deliberate syntax error after the define block reports the USER's line number (proves the <code>#line 1</code> injection).</li>
+<li><strong>device-removed-mapper:</strong> healthy device → <code>GetDeviceRemovedReason === 0</code>; mapper formats <code>0x887A0005/6/7</code> with reason names + "TDR" hint (S4.2b).</li>
+</ol>
+Sections that need a window (snapshot) are guarded: skip with a SKIP line when <code>Bun.env.NO_WINDOW === '1'</code>. Total runtime budget: &lt; 60 s.
+<pre><code>bun run packages/gpu/example/gpu.selftest.ts            # expect: all PASS, exit 0
+GPU_DRIVER=warp bun run packages/gpu/example/gpu.selftest.ts  # if you add the env knob — or run a second pass with createComputeDevice({driver:'warp'}) inside the script; either way BOTH paths must pass</code></pre></div>
+
+<div class="step"><span class="id">S10.3</span><strong><code>example/gpu-report.ts</code> — the professional diagnostic.</strong> Richly formatted (ANSI escape codes via console.log — never WriteConsoleW, repo rule): adapter table (name, VRAM GB, vendor, software flag), active device + feature level + driver, a probe-kernel compile with timing, first ~15 lines of its <code>disassemble()</code> output, dispatch latency (µs, averaged over 1,000 empty dispatches), readback bandwidth (MB/s at 1/16/64 MB). Verify by running it and reading the output for plausibility (VRAM matches the machine, bandwidth &gt; 100 MB/s).</div>
+
+<div class="step"><span class="id">S10.4</span><strong><code>example/raymarch.ts</code> — the creative demo.</strong> Windowed, animated: a raymarched sphere + plane with soft lighting (~60-line pixel shader), <code>present(true)</code> for vsync pacing (do NOT pace with <code>Bun.sleep</code> — 15.6 ms quantization, ground truth), honors <code>DEMO_DURATION_MS</code> (self-exit) and <code>CAPTURE_PNG</code> (calls <code>captureBackBuffer</code> on the LAST frame, before present — the trap). Verify VISUALLY:
+<pre><code>DEMO_DURATION_MS=4000 CAPTURE_PNG=.scratch/raymarch.png bun run packages/gpu/example/raymarch.ts</code></pre>
+Open the PNG. You must SEE a lit sphere on a plane. A black or noise frame is a failure regardless of exit code.</div>
+
+<div class="step"><span class="id">S10.5</span><strong><code>example/benchmark.ts</code>.</strong> Prints a markdown table: kernel compile ms (cold/warm), empty-dispatch µs, readback MB/s by size, 1M-element saxpy elements/s, 256×256 matmul GFLOPS — each on hardware AND WARP. These numbers go verbatim into the README (Phase 13); never claim numbers the benchmark didn't print. Run twice; confirm stability within ~20%.</div>
+
+<div class="step verify"><span class="id">S10.6</span><strong>Gate.</strong> <code>bunx tsc --noEmit</code>; <code>bun test packages/gpu</code> (logic tests only — confirm it does NOT pick up the selftest and segfault; if it does, rename selftest away from <code>.test.ts</code>); full selftest pass on hardware + WARP; biome format.</div>
+
+<div class="step commit"><span class="id">S10.7</span>
+<pre><code>git add packages/gpu
+git commit -m "feat(gpu): examples — hello-gpu, selftest suite, gpu-report, raymarch, benchmark"</code></pre></div>
+
+<h2 id="p10b">Phase 10b — Extras wave (post-selftest, pre-migration)</h2>
+<p><em>Purpose: capability extras that no JS/TS package offers, validated by an adversarial feasibility review (2026-06-09 workflow: 4 incumbent capability audits + repo asset sweep + per-candidate judges). <strong>Execution rule:</strong> start this phase only when S10.6 is fully green. Work the table top-down. Each extra ships ONLY with its proof artifact passing on hardware AND WARP — an extra without its proof is deleted, not shipped half-done. Any extra you skip (time/feasibility) moves to the S15.8 roadmap list with one honest line. Each landed extra also gets: an index.ts export, a package.json <code>files</code> entry if it adds a module, an AI.md capability row + recipe, and a README feature bullet.</em></p>
+
+<table>
+<tr><th>#</th><th>Extra</th><th>Cost</th><th>What + feasibility evidence</th><th>Proof artifact (gates shipping)</th></tr>
+<tr><td>1</td><td><strong>GPU timestamp queries</strong> (<code>query.ts</code>)</td><td>small</td><td><code>D3D11_QUERY_TIMESTAMP</code> + <code>TIMESTAMP_DISJOINT</code> via vcall (<code>ID3D11Device::CreateQuery</code>, context <code>Begin</code>/<code>End</code>/<code>GetData</code> — verify slots against the SDK header, then by running). Audit: NO GPU-side timing exists anywhere in the repo; all benchmarks are CPU wall-clock. Gives honest kernel-ms numbers to benchmark.ts.</td><td>Selftest: disjoint <code>Frequency &gt; 0</code>, <code>Disjoint === false</code> on a quiet run; timed matmul satisfies <code>0 &lt; gpuMs ≤ wall-clock</code>; Disjoint=true samples retried.</td></tr>
+<tr><td>2</td><td><strong>Async readback</strong> (<code>GpuArray.readAsync()</code>)</td><td>small</td><td><code>Map</code> with <code>D3D11_MAP_FLAG_DO_NOT_WAIT</code> (audit: zero uses repo-wide — every readback today stalls) polled via <code>setImmediate</code>; needs <code>ID3D11DeviceContext::Flush</code> first (believed slot 111 — UNVERIFIED, confirm against header + runtime). The WebGPU-mapAsync-class capability no Node package has without a 70 MB binary.</td><td>Selftest: <code>await readAsync()</code> byte-equals sync read; a <code>setInterval</code> counter PROVES the event loop stayed live during the await; poll count &gt; 0 under a deliberately heavy dispatch.</td></tr>
+<tr><td>3</td><td><strong>Texture kernel I/O</strong> (image processing)</td><td>small</td><td><code>textureFromPixels(rgba, w, h)</code> (UpdateSubresource upload — proven webcam.ts:308, gameboy.ts:2280; trap: unbind SRV before re-upload, webcam.ts:687), <code>Texture2D</code> SRV in / <code>RWTexture2D</code> UAV out (compute ping-pong proven in lenia.ts/slime.ts), <code>readbackTexture</code> out. gpu.js's most popular use case (image filters) — unreachable with buffer-only kernels.</td><td>Selftest: RGBA upload → gaussian-blur CS → readback with pixel asserts. Example: <code>example/blur.ts</code> (~10-line kernel), verified visually.</td></tr>
+<tr><td>4</td><td><strong>Resource accounting</strong> (<code>gpuMemory()</code>, leak warnings)</td><td>small</td><td>Pure-TS bookkeeping at the existing create/release chokepoints. Sourced from gpu.js's most chronic gripe genre (leaks: #625/#246/#225) and the tfjs parity idiom (<code>tf.memory</code>/<code>tf.dispose</code>). GPU memory is invisible to JS heap tools — this is the only observability users can get. Exclude call-transient staging so it never reports phantom live bytes.</td><td>Selftest: byte-exact <code>bytesByCategory</code> after creates; <code>liveResources === 0</code> after releases; destroyDevice with a deliberate leak emits the warning.</td></tr>
+<tr><td>5</td><td><strong>Append/Consume + <code>CopyStructureCount</code></strong> (stream compaction)</td><td>small</td><td>UAV desc <code>D3D11_BUFFER_UAV_FLAG_APPEND</code> + <code>pUAVInitialCounts</code> (csSet already passes the parameter — verify) + <code>CopyStructureCount</code> (believed slot 49, bracketed by run-verified 48/50 — confirm by running). Audit: entire counter machinery untouched repo-wide; variable-size GPU output is impossible in gpu.js and absent from WebGPU core.</td><td>Selftest: predicate keeps K of N elements via <code>AppendStructuredBuffer</code>; assert count readback === K and payload set-equals CPU reference. Counter-reset footgun documented.</td></tr>
+<tr><td>6</td><td><strong>Adapter-pinned device</strong> (multi-GPU)</td><td>small</td><td><code>createComputeDevice({ adapter: index })</code>: feed Phase 7's <code>IDXGIAdapter*</code> into <code>D3D11CreateDevice</code> with <code>D3D_DRIVER_TYPE_UNKNOWN</code> (D3D11 rule for non-null pAdapter; audit: adapters are enumerated in demos but never fed back — zero <code>DRIVER_TYPE_UNKNOWN</code> hits). The binding takes <code>ptr</code>: bridge the bigint adapter with the sanctioned <code>Number(x) as Pointer</code> narrowing. ORT's <code>deviceId</code> idiom; no JS package offers GPU selection.</td><td>Selftest: create on the always-present WARP adapter by index; assert created device's <code>GetAdapter→GetDesc</code> LUID equals the requested adapter's; run the canary kernel on it.</td></tr>
+<tr><td>7</td><td><strong>Device feature probe + fp64</strong> (<code>deviceFeatures()</code>)</td><td>small</td><td><code>CheckFeatureSupport(D3D11_FEATURE_DOUBLES)</code> (pattern proven on D3D12/DML: d3d12-capability-xray.ts:145, directml-device-report.ts:238; port to ID3D11Device — verify slot). HLSL <code>double</code> + <code>Float64Array</code> buffers (stride 8) on supporting hardware. gpu.js was famously fp32-max (mandelbrot.ts works around it with df64 two-float emulation today!); WGSL still has no f64.</td><td>Selftest: probe; on TRUE, dispatch a <code>RWStructuredBuffer&lt;double&gt;</code> kernel whose result provably drifts in f32, assert bit-faithful vs CPU Float64; on FALSE (some WARP/hw), SKIP with message.</td></tr>
+<tr><td>8</td><td><strong>Kernel debug buffer</strong> (printf-style logging)</td><td>small</td><td>Opt-in <code>DEBUG_LOG(value)</code> HLSL snippet + reserved uint UAV ring buffer (atomic cursor) + TS decoder. neural-descent.ts:540 literally hand-rolls this (InterlockedAdd MSE into a uint cell, read back to print) — proven demand; gpu.js #240 begged for kernel debugging.</td><td>Selftest: cursor count === min(threadCount, capacity); decoded (threadId, value) pairs bit-exact via <code>asuint</code> round-trip; ring-wrap behaves as documented.</td></tr>
+<tr><td>9</td><td><strong>Shader bytecode disk cache</strong></td><td>small</td><td>DXBC keyed by <code>Bun.hash(source + entry + target + flags)</code> (defines are already in the hashed source). Pure TS; the plan's only persistent disk state — corrupt-entry fallback mandatory.</td><td>Selftest: warm load → <code>CreateComputeShader</code> from cached bytes → dispatch output identical to cold; corrupt cache file → silent recompile; prints cold-vs-warm ms.</td></tr>
+<tr><td>10</td><td><strong><code>structLayout()</code></strong> (AoS typed buffers)</td><td>small</td><td>Sibling of <code>cbufferLayout</code> with StructuredBuffer packing (4-byte alignment, NO 16-byte register rule). Closes the plan's own "hand-offset recipe" gap; a wrong stride fails silently — the worst FFI failure class. Structured-buffer packing lacks a crisp MSDN page → only trustworthy after GPU validation.</td><td>Unit tests (cbuffer.test.ts sibling) + selftest: AoS buffer built from structLayout, CS copies each field to a flat output, exact match on hardware AND WARP. FXC is the arbiter (S9.3's rule).</td></tr>
+<tr><td>11</td><td><strong>Std kernel library</strong> (<code>std.ts</code>: sum, tiled matmul; then histogram → prefix-scan → bitonic sort)</td><td>medium</td><td>The #1 unfilled gpu.js demand (reductions/sort: #650/#484/#67). Audit reality check: the in-repo matmuls (nano-gpt.ts:213, neural-descent.ts:497) are NAIVE global-memory forms — "lift from demos" is false; tiled forms are new work that depends on the groupshared selftest (§17) passing first. Scan + sort add multi-dispatch host orchestration.</td><td><code>example/std.selftest.ts</code>: each kernel vs CPU reference over randomized sizes incl. non-power-of-2 and multi-group N. Ship ONLY green kernels; cut from the tail (sort → scan → histogram); sum + tiled matmul are the irreducible core.</td></tr>
+<tr><td>12</td><td><strong><code>DispatchIndirect</code></strong> (GPU-driven dispatch)</td><td>small</td><td>One new vcall (believed slot 42, same shape as proven copyResource) + a <code>D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS</code> buffer (args buffers cannot be STRUCTURED). Value is contingent on #5 landing (count → args buffer → dispatch with zero CPU readback of N).</td><td>Selftest: kernel A emits data-dependent count → CopyStructureCount fills args → DispatchIndirect runs kernel B → assert exactly N processed, no CPU read of N.</td></tr>
+<tr><td>13</td><td><strong>PNG decode</strong> (<code>png.ts</code> grows <code>decodePNG</code>)</td><td>small</td><td>Pure TS (inflate + unfilter); completes file→texture→kernel→PNG pipelines. Scope PINNED to 8-bit non-interlaced color types 0/2/3/6 with explicit errors for interlace/16-bit — or cost creeps to medium.</td><td>Selftest: <code>decodePNG(encodePNG(pixels))</code> byte-equality + one external fixture; gates an image-filter example verified visually.</td></tr>
+<tr><td>14</td><td><strong>Terminal interop demo</strong> (<code>example/shader-tty.ts</code>)</td><td>small</td><td>Offscreen RTV → <code>readbackTexture</code> → RGB repack → <code>Term.pixels</code> from <code>@bun-win32/terminal</code> (cross-package example import, no published dependency — video.ts proves the bytes-to-terminal pattern). Repo culture forbids unverified recipes: the AI.md recipe is the verified excerpt of this demo.</td><td>Demo honors <code>DEMO_DURATION_MS</code>; verified visually via terminal's CAPTURE_PNG path.</td></tr>
+</table>
+
+<div class="note"><strong>Judged and explicitly NOT in v1</strong> (document, don't build — these go in S15.8's roadmap and the README's honest-scoping section):
+<ul>
+<li><strong>WGSL/GLSL→HLSL transpile:</strong> bundling tint/naga violates zero-native-deps; a pure-TS front-end is a multi-month compiler project — the exact brittle-transpiler failure mode that killed gpu.js. Optionally document an offline <code>naga-cli</code> recipe (emitted HLSL must target *_5_0 and contain no backticks).</li>
+<li><strong>WebGPU-shaped facade:</strong> worthless without WGSL ingestion (a facade accepting HLSL in <code>createShaderModule</code> is the half-compatibility trap); strictly downstream of the transpile layer. Never patch <code>globalThis.navigator</code> (gpu.js #820 collision lesson).</li>
+<li><strong>fp16 buffer I/O:</strong> typed R16_FLOAT UAV load is an optional D3D11 cap → dual-branch test burden for a benefit achievable TODAY with zero surface via SM5's <code>f16tof32</code>/<code>f32tof16</code> on uint buffers — ship THAT as an AI.md recipe instead.</li>
+</ul></div>
+
+<div class="step commit"><span class="id">S10b.1</span>One commit per landed extra: <code>feat(gpu): &lt;extra&gt; with selftest section</code>. Update the S14.3 parity walk to include every landed extra's matrix row.</div>
+
+<h2 id="p11">Phase 11 — Migrate packages/all demos onto the package (the regression proof)</h2>
+<p><em>Purpose: ~30 battle-tested demos (a transformer, an MNIST trainer, a path tracer, a cloth sim…) become the extraction's regression suite by swapping the helper files for re-export shims. If the demos still render, the extraction is faithful.</em></p>
+
+<div class="step"><span class="id">S11.1</span><strong>Add the dependency.</strong> In <code>packages/all/package.json</code> dependencies (alphabetical position): <code>"@bun-win32/gpu": "workspace:*"</code>. Do NOT add a re-export to <code>packages/all/index.ts</code> — the terminal precedent: engine packages are deps of <code>all</code> but not re-exported. Run <code>bun install</code>.</div>
+
+<div class="step"><span class="id">S11.2</span><strong>Shim <code>_gpu.ts</code>.</strong> Replace the entire 1,340-line body with:
+<pre><code>/** Shim — the engine now lives in @bun-win32/gpu. Kept so the demo corpus imports unchanged. */
+export * from '@bun-win32/gpu';</code></pre>
+<strong>Behavior change to note in the commit:</strong> device-creation failure now throws instead of <code>process.exit(0)</code> — demos crash with a clear error on GPU-less machines instead of silently exiting. Acceptable; record it.</div>
+
+<div class="step"><span class="id">S11.3</span><strong>Shim <code>_gpu3d.ts</code>:</strong>
+<pre><code>/** Shim — the depth layer now lives in @bun-win32/gpu. */
+export { bindDepth as bindGpu3d, clearDepth, drawTriangles, makeDepthBuffer, releaseDepth as releaseGpu3d, setCull, setDepthState, setRenderTargetsWithDepth } from '@bun-win32/gpu';
+export type { DepthBuffer } from '@bun-win32/gpu';</code></pre>
+<strong>Shim <code>_snapshot.ts</code>:</strong>
+<pre><code>/** Shim — snapshot now lives in @bun-win32/gpu. */
+export { captureBackBuffer, formatGrid } from '@bun-win32/gpu';
+export type { CaptureOptions, SnapshotStats } from '@bun-win32/gpu';</code></pre>
+<strong>Reality check first:</strong> grep what the demos actually import from each shim — <code>grep -rn "from './_gpu3d'" packages/all/example/ | grep -o "{[^}]*}" | sort -u</code> (same for <code>_gpu</code>, <code>_snapshot</code>) — and make sure every imported name is re-exported. <code>_gpu3d.ts</code> may have a self-test block or extra exports the dossier missed; cover them or keep them inline in the shim.</div>
+
+<div class="step verify"><span class="id">S11.4</span><strong>Type gate over the whole repo.</strong> <code>bunx tsc --noEmit</code> — zero errors. Every missing re-export shows up here; fix in <code>packages/gpu/index.ts</code> (the package must export its full surface anyway — the shims just proved it).</div>
+
+<div class="step verify"><span class="id">S11.5</span><strong>Visual regression sweep.</strong> Run this matrix; for each, capture and LOOK at the output (the repo doctrine — a numeric pass with a black frame is a FAIL):
+<table>
+<tr><th>Demo</th><th>Exercises</th><th>Command sketch (read each demo's JSDoc for exact env hooks)</th></tr>
+<tr><td><code>mandelbrot.ts</code></td><td>VS/PS, cbuffer, window, present</td><td><code>DEMO_DURATION_MS=4000 CAPTURE_PNG=… bun run packages/all/example/mandelbrot.ts</code></td></tr>
+<tr><td><code>cloth.ts</code></td><td>compute ping-pong, additive blend, drawPoints</td><td>same pattern</td></tr>
+<tr><td><code>neural-descent.ts</code></td><td>compute + readback training loop</td><td>headless; check loss decreases in stdout</td></tr>
+<tr><td><code>nano-gpt.ts</code></td><td>the transformer — heaviest compute user</td><td>headless; check it generates text</td></tr>
+<tr><td><code>ocean.ts</code></td><td>depth layer (_gpu3d shim)</td><td>capture + look</td></tr>
+<tr><td><code>pathtracer.ts</code></td><td>compute + readback imaging</td><td>capture + look</td></tr>
+<tr><td><code>voxelscape.ts</code></td><td>everything at once</td><td>gallery/selfshot path; judge by the <code>[shot]</code> line, NOT exit code — a teardown segfault after the PNG is written is a known Bun bug (ground truth)</td></tr>
+</table>
+Budget real time here. Any demo that renders wrong = extraction bug; debug systematically (the diff between <code>_gpu.ts</code>'s old body in git history and the package modules is your bisect space).</div>
+
+<div class="step commit"><span class="id">S11.6</span>
+<pre><code>git add packages/all
+git commit -m "refactor(all): point _gpu/_gpu3d/_snapshot shims at @bun-win32/gpu"</code></pre></div>
+
+<h2 id="p12">Phase 12 — <code>bun-gpu</code> unscoped alias</h2>
+<p><em>Purpose: the discoverable front door. Mirrors <code>packages/bun-win32</code> exactly.</em></p>
+
+<div class="step"><span class="id">S12.1</span><strong>Create <code>packages/bun-gpu/</code></strong> — three files. <code>index.ts</code>:
+<pre><code>export * from '@bun-win32/gpu';</code></pre>
+<code>package.json</code> — copy <code>packages/bun-win32/package.json</code> and change: <code>name: "bun-gpu"</code>, <code>description: "GPU compute and headless rendering for Bun on Windows — runtime-compiled HLSL on D3D11, any vendor, zero native dependencies."</code>, <code>dependencies: { "@bun-win32/gpu": "workspace:*" }</code>, <code>repository.directory: "packages/bun-gpu"</code>, <code>version: "1.0.0"</code>, keywords from S1.1's list. <strong>Reality check:</strong> <code>packages/bun-win32/package.json</code> has no <code>publishConfig</code> (unscoped names are public by default) — mirror whatever it does, and pass <code>--access public</code> on every publish regardless (repo rule). <code>README.md</code>: placeholder until Phase 13 (which writes the real one).</div>
+
+<div class="step verify"><span class="id">S12.2</span><code>bun install</code> → <code>bun run packages/bun-gpu/index.ts</code> (exit 0) → <code>bunx tsc --noEmit</code>. Quick functional proof: a one-liner probe importing <code>{ run }</code> from <code>'bun-gpu'</code> and running the sqrt kernel.</div>
+
+<div class="step commit"><span class="id">S12.3</span>
+<pre><code>git add packages/bun-gpu
+git commit -m "feat(bun-gpu): unscoped alias package over @bun-win32/gpu"</code></pre></div>
+
+<h2 id="p13">Phase 13 — Documentation: AI.md, README, screenshots</h2>
+<p><em>Purpose: the AI-first contract. The success criterion, verbatim from the product brief: an AI should never need to read the source to use the package — but when it must, AI.md tells it exactly which file, so it never loads more than one module into context.</em></p>
+
+<div class="step"><span class="id">S13.1</span><strong>Write <code>packages/gpu/AI.md</code></strong> — model it on <code>packages/terminal/AI.md</code> (read it again first; match its register and density). Required sections, in order:
+<ol>
+<li><strong>Preamble</strong> — "Everything below is reachable from <code>@bun-win32/gpu</code> alone. Bun + Windows only. This file is the complete surface — an agent should not need to read source to use it."</li>
+<li><strong>What it is</strong> — three layers, one mental model: (1) <code>run()</code>/<code>Kernel</code>/<code>GpuArray</code> for compute; (2) the raw pipeline (device/buffers/textures/draw/dispatch) for rendering and exotica; (3) <code>vcall</code> + the slot constants for any D3D11 call the package didn't wrap. State the escalation rule: start at layer 1, drop a layer only when you need something the layer above lacks.</li>
+<li><strong>Mental model (read this first)</strong> — device is module-level state (create once); HLSL is compiled at runtime by FXC (SM 5.0); buffers are explicit (GpuArray retains on GPU; run() round-trips); WARP is the universal fallback (always present, deterministic, slow); readback synchronizes the GPU (the perf cliff to know about).</li>
+<li><strong>Capability → API table</strong> — every row: "I want to … → call …". Cover: one-shot compute, chained kernels, uniforms, 2D/3D dispatch, render to texture, render to window, read pixels, PNG snapshot, depth-tested 3D, adapter census, raw COM calls, shader disassembly, forced WARP.</li>
+<li><strong>Full API reference</strong> — every export of <code>index.ts</code> with exact signature and a one-liner. Generate the export list with <code>grep -E "^export" packages/gpu/index.ts</code> and cross off every name — completeness is gated in Phase 14 (S14.4).</li>
+<li><strong>Recipes</strong> — copy-paste blocks: the sqrt one-shot; chained kernels with GpuArray; uniforms via <code>cbufferLayout</code>; headless render-to-PNG; windowed loop with <code>present(true)</code> pacing + <code>DEMO_DURATION_MS</code>/<code>CAPTURE_PNG</code> hooks; "verify a visual demo" (captureBackBuffer → formatGrid → look).</li>
+<li><strong>Gotchas (the traps ledger)</strong> — every Appendix C row that survived into the API, phrased as behavior: backtick guard, noise+unroll guard, capture-before-present, column-major matrices, GC-window (assemble structs immediately before the call, no awaits), same-array-as-u-and-t-in-one-kernel is invalid D3D11, readback synchronizes, <code>Bun.sleep</code> 15.6 ms quantization (pace with vsync present).</li>
+<li><strong>Where to look (source)</strong> — one line per file: "<code>kernel.ts</code> — run/Kernel/GpuArray + binding parser; <code>device.ts</code> — creation/WARP/teardown; …" so an agent that must read source opens exactly one file.</li>
+</ol></div>
+
+<div class="step"><span class="id">S13.2</span><strong>Write the README</strong> (two variants, ~90% shared): <code>packages/gpu/README.md</code> (install line <code>bun add @bun-win32/gpu</code>) and <code>packages/bun-gpu/README.md</code> (install line <code>bun add bun-gpu</code>, this is the marketing flagship). Structure:
+<ol>
+<li><strong>Hero</strong> — one sentence + the hello-gpu code block + its real output.</li>
+<li><strong>Why this exists</strong> — the comparison table from Appendix D (downloads, install pain, status — with the receipts/links), closing line: "bun-gpu is a few kilobytes of TypeScript. <code>bun add bun-gpu</code> is the entire install story."</li>
+<li><strong>What you can do</strong> — parity-framed feature list (Appendix D rows: everything gpu.js did, plus what it never could), each with a 3–6 line code block.</li>
+<li><strong>Benchmarks</strong> — the example/benchmark.ts table, verbatim, with the machine spec and "run <code>bun run example/benchmark.ts</code> to reproduce". Only printed numbers.</li>
+<li><strong>Gallery</strong> — 2–3 hero screenshots (S13.3) linking to the demo sources in <code>packages/all/example/</code> ("a transformer, an MNIST trainer, a path tracer, and ~30 more demos run on this engine").</li>
+<li><strong>Note to AI agents</strong> — "Read <code>AI.md</code>; it is the complete surface" (terminal precedent).</li>
+<li><strong>Requirements / honest scoping</strong> — Bun ≥ 1.1, Windows 10/11, any GPU or none (WARP). Windows-only and Bun-only, stated plainly. HLSL SM 5.0 (FXC); not an ONNX/TF runtime — it is the substrate such things sit on.</li>
+<li>License MIT.</li>
+</ol></div>
+
+<div class="step"><span class="id">S13.3</span><strong>Screenshots.</strong> Capture raymarch + one all-corpus demo (e.g. pathtracer or mandelbrot) as PNGs into <code>packages/all/screenshots/</code>, add matching <code>!packages/all/screenshots/{name}.png</code> whitelist lines to <code>.gitignore</code> (the repo's established mechanism), reference them in the READMEs via <code>https://raw.githubusercontent.com/ObscuritySRL/bun-win32/main/packages/all/screenshots/{name}.png</code>. <strong>Reality check:</strong> mimic exactly how existing README images are referenced (grep an existing README for <code>raw.githubusercontent</code> or relative paths) — match the working precedent. Look at both PNGs before committing them.</div>
+
+<div class="step research"><span class="id">S13.4</span><strong>Root README.</strong> Check whether the repo's root <code>README.md</code> enumerates packages (grep for <code>terminal</code> in it). If yes, add <code>gpu</code> and <code>bun-gpu</code> rows in the same format. If no, skip — do not invent new top-level docs (repo rule).</div>
+
+<div class="step verify"><span class="id">S13.5</span><strong>Docs gate.</strong> Every code block in AI.md and the READMEs must actually run: extract each into <code>.scratch/doccheck-N.ts</code> and execute it. A README whose hero snippet doesn't run is a product defect of the highest order for an AI-first package.</div>
+
+<div class="step commit"><span class="id">S13.6</span>
+<pre><code>git add packages/gpu packages/bun-gpu packages/all/screenshots .gitignore README.md
+git commit -m "docs(gpu): AI.md surface contract, READMEs with benchmarks and gallery"</code></pre>
+(Adjust paths to what actually changed; never add stray screenshots that weren't whitelisted.)</div>
+
+<h2 id="p14">Phase 14 — Quality gates + self-review</h2>
+<p><em>Purpose: prove nothing regressed anywhere in the 117-package repo, and that the new surface is complete, consistent, and parity-true before versions are touched.</em></p>
+
+<div class="step verify"><span class="id">S14.1</span><strong>Full matrix:</strong>
+<pre><code>bunx tsc --noEmit                                  # zero errors, whole repo
+bunx biome format --write packages/gpu packages/bun-gpu &amp;&amp; git diff --stat   # formatting settled, no surprise diffs elsewhere
+bun test packages/gpu                               # all logic tests pass
+bun run packages/gpu/example/gpu.selftest.ts        # all sections PASS (hardware)
+# + the WARP pass per S10.2
+bun run scripts/audit.ts --all 2&gt;&amp;1 | tail -5       # counts match .scratch/baseline-audit.txt
+bun run scripts/nullcheck.ts --all 2&gt;&amp;1 | tail -5   # counts match baseline</code></pre></div>
+
+<div class="step verify"><span class="id">S14.2</span><strong>Tarball audit.</strong> In <code>packages/gpu</code> and <code>packages/bun-gpu</code>: <code>bun pm pack --dry-run</code> (or pack and list) — confirm the tarball contains exactly the <code>files</code> array (AI.md present, README present, all modules, NO <code>example/</code>, NO <code>*.test.ts</code>). The published artifact is TypeScript source — that's the repo's model; just confirm nothing extra leaks.</div>
+
+<div class="step verify"><span class="id">S14.3</span><strong>Parity gate.</strong> Walk Appendix D row by row: every "ours" cell must now be demonstrably true via a selftest section, an example, or an AI.md recipe. Any row you cannot point at is unfinished scope — go finish it before release. Record the row→proof mapping in the final summary.</div>
+
+<div class="step verify"><span class="id">S14.4</span><strong>Docs-completeness gate.</strong> For every exported name in <code>packages/gpu/index.ts</code>, grep AI.md for it. Zero misses allowed. Then the skill's self-review: (1) product-brief coverage — PROJECTS.md §4's promises (vendor-universal, WARP fallback, compile/disassemble toolchain, vcall as public primitive, guardrails, adapter introspection) each map to a shipped feature; (2) placeholder scan over AI.md/READMEs — no TBD/TODO/"coming soon"; (3) name consistency — the plan's identifiers (<code>run</code>, <code>Kernel</code>, <code>GpuArray</code>, <code>listAdapters</code>, <code>releaseDepth</code>…) match what the code actually exports.</div>
+
+<div class="step commit"><span class="id">S14.5</span>Commit any gate fixes: <code>fix(gpu): &lt;specific thing the gates caught&gt;</code>.</div>
+
+<h2 id="p15">Phase 15 — Release: versions, lockfile, publish (one OTP), post-publish acceptance</h2>
+<p><em>Purpose: ship. The user provides ONE npm OTP; everything else is automated and pre-verified so the OTP is never burned on a failable publish (a 402 after OTP wastes the code — ground truth).</em></p>
+
+<div class="step"><span class="id">S15.1</span><strong>Versions.</strong> <code>packages/gpu</code> and <code>packages/bun-gpu</code> are already 1.0.0. Read <code>packages/all/package.json</code> → bump MINOR (new dependency = new feature surface). Read <code>packages/bun-win32/package.json</code> → bump PATCH (it republishes only to refresh its pinned <code>@bun-win32/all</code>).</div>
+
+<div class="step"><span class="id">S15.2</span><strong>Lockfile refresh — the order is law (ground truth):</strong>
+<pre><code>rm bun.lock &amp;&amp; bun install        # plain bun install does NOT rewrite workspace version records
+bun run scripts/preflight.ts       # expect: zero mismatches
+bun run scripts/nullcheck.ts --all # expect: baseline counts
+bun run scripts/audit.ts --all     # expect: baseline counts
+bunx tsc --noEmit                  # expect: zero</code></pre></div>
+
+<div class="step verify"><span class="id">S15.3</span><strong>Final pre-OTP rehearsal.</strong> Re-run the selftest + hello-gpu once more on the release tree. Then <code>bun publish --dry-run --access public</code> in each of the four package dirs — any failure here is a failure you just saved the OTP from.</div>
+
+<div class="step commit"><span class="id">S15.4</span>
+<pre><code>git add -A -- packages bun.lock
+git commit -m "chore(release): gpu 1.0.0 + bun-gpu 1.0.0; all &lt;minor&gt;, bun-win32 &lt;patch&gt;"
+git push origin main</code></pre>
+(Publishing makes the repo links in the READMEs load-bearing — the push is part of the release. If the user's setup blocks pushing, publish anyway and flag it.)</div>
+
+<div class="step"><span class="id">S15.5</span><strong>Get the OTP — the only human step.</strong> Ask the user for a fresh npm OTP (AskUserQuestion or by ending the turn with a single clear request). Have the publish loop READY before asking; TOTP codes rotate in ~30 s.</div>
+
+<div class="step"><span class="id">S15.6</span><strong>Publish — dependency order, one OTP, never prompt per package (repo rule):</strong>
+<pre><code>OTP=&lt;code&gt;
+for directory in gpu all bun-win32 bun-gpu; do
+  (cd packages/$directory &amp;&amp; bun publish --access public --otp $OTP) || { echo "FAILED at $directory"; break; }
+done</code></pre>
+Always <code>bun publish</code> (never npm — only Bun resolves <code>workspace:*</code>), always <code>--access public</code> (the scope is private-by-default; most packages have no publishConfig). If a late package fails after the OTP expires, request ONE new OTP and resume from the failed package only.</div>
+
+<div class="step verify"><span class="id">S15.7</span><strong>Post-publish acceptance (the goal's finish line).</strong> The registry read-lags for minutes after publish (ground truth) — poll with backoff, don't declare failure:
+<pre><code>for i in 1 2 3 4 5 6; do curl -s -o /dev/null -w "%{http_code}\n" https://registry.npmjs.org/bun-gpu &amp;&amp; sleep $((i*20)); done</code></pre>
+Once 200: in a temp dir OUTSIDE the repo (e.g. <code>$TMP/bun-gpu-accept</code>): <code>bun init -y &amp;&amp; bun add bun-gpu</code>, write the hello-gpu snippet importing from <code>'bun-gpu'</code>, run it. Expected: <code>[ 1, 2, 3, 4, 5, 6, 7, 8 ]</code> from the REGISTRY artifact, not the workspace. Repeat the import line with <code>@bun-win32/gpu</code>. Both green = goal complete.</div>
+
+<div class="step"><span class="id">S15.8</span><strong>Final report to the user:</strong> published versions + links, benchmark table, the parity row→proof mapping (S14.3), every recorded plan deviation (the research-while-building ledger), and known future work: WGSL/GLSL transpile layer and the WebGPU facade downstream of it, fp16 buffer formats (the <code>f16tof32</code> recipe ships instead), DXCore compute-only adapters, D3D12, remaining std.ts kernels cut at the tail (Phase 10b #11), plus any Phase 10b extra that didn't land — each with its one honest line.</div>
+
+<h2 id="appendix">Appendices</h2>
+
+<h3 id="appA">Appendix A — <code>_gpu.ts</code> export → target module map (inventory as of 2026-06-09)</h3>
+<p>Every public export must land in exactly one module and be re-exported by <code>index.ts</code>. Line numbers are approximate anchors — re-locate with Grep.</p>
+<table>
+<tr><th>Export (source line)</th><th>Target module</th><th>Notes</th></tr>
+<tr><td><code>vcall</code> (~203), <code>comRelease</code> (~216), <code>blobRelease</code> (~246)</td><td>com.ts</td><td>Public primitives; verbatim.</td></tr>
+<tr><td><code>DXGI_FORMAT_*</code> (~95–101), <code>D3D11_FILTER_*</code>/<code>D3D11_TEXTURE_ADDRESS_*</code> (~134–137), <code>DEV_*</code> (~140–148, 173), <code>CTX_*</code> (~151–172), <code>SWAP_*</code> (~176–178), <code>IUNKNOWN_*</code> (~179–180), <code>DXGIDEVICE_GET_ADAPTER</code>/<code>DXGIADAPTER_GET_DESC</code> (~181–182) + internal usage/bind/map flags</td><td>constants.ts</td><td>Alphabetize; export the internals too.</td></tr>
+<tr><td><code>Win</code> (~266), <code>CreateWindowOptions</code> (~279), <code>createWindow</code> (~294)</td><td>window.ts</td><td>Keep the visibility fix.</td></tr>
+<tr><td><code>Gpu</code> (~435), <code>createDevice</code> (~486), <code>createComputeDevice</code> (~537)</td><td>device.ts</td><td>+ throw-on-fail, + driver option, + <code>destroyDevice</code>, + <code>hasDevice</code>.</td></tr>
+<tr><td><code>CompiledShader</code> (~614), <code>compile</code> (~621), <code>makeVertexShader</code> (~639), <code>makePixelShader</code> (~649), <code>makeComputeShader</code> (~659)</td><td>shader.ts</td><td>+ guardrails, + <code>preprocessHLSL</code>, + <code>disassemble</code>, + <code>CompileOptions</code>.</td></tr>
+<tr><td><code>makeConstantBuffer</code> (~670), <code>updateConstantBuffer</code> (~688), <code>StructuredBuffer</code>/<code>Options</code> (~694–707), <code>makeStructuredBuffer</code> (~713), <code>readbackBuffer</code> (~1093), <code>updateDynamicBuffer</code> (~1126)</td><td>buffer.ts</td><td>Readback path may be optimized per S4.2, benchmark-gated.</td></tr>
+<tr><td><code>TextureResult</code>/<code>TextureOptions</code> (~779–796), <code>makeTexture</code> (~799)</td><td>texture.ts</td><td>+ <code>readbackTexture</code> (lifted from _snapshot RowPitch walk).</td></tr>
+<tr><td><code>SamplerOptions</code>/<code>makeSampler</code> (~867), <code>setRenderTargets</code> (~903), <code>setViewport</code> (~915), <code>clear</code> (~928), <code>drawFullscreenTriangle</code> (~939), <code>drawPoints</code> (~946), <code>vsSetShaderResources</code> (~953), <code>makeAdditiveBlendState</code> (~965), <code>setBlendState</code> (~994), <code>vsSet</code> (~1005), <code>PsBindings</code>/<code>psSet</code> (~1016), <code>CsBindings</code>/<code>csSet</code> (~1043), <code>dispatch</code> (~1072), <code>copyResource</code> (~1078), <code>generateMips</code> (~1084)</td><td>pipeline.ts</td><td>Verbatim bodies.</td></tr>
+<tr><td>_gpu3d.ts: <code>DepthBuffer</code> (~94), <code>bindGpu3d</code>→<code>bindDepth</code> (~82), <code>makeDepthBuffer</code> (~107), <code>setRenderTargetsWithDepth</code> (~156), <code>clearDepth</code> (~168), <code>setDepthState</code> (~182), <code>setCull</code> (~232), <code>drawTriangles</code> (~264), <code>releaseGpu3d</code>→<code>releaseDepth</code> (~271)</td><td>depth.ts</td><td>Renames aliased in the shim.</td></tr>
+<tr><td>_snapshot.ts: <code>SnapshotStats</code> (~62), <code>CaptureOptions</code> (~81), <code>captureBackBuffer</code> (~91), <code>formatGrid</code> (~246)</td><td>snapshot.ts</td><td>Gdiplus → png.ts encoder.</td></tr>
+<tr><td><em>new:</em> <code>run</code>, <code>Kernel</code>, <code>GpuArray</code>, <code>parseKernelBindings</code>, <code>parseNumthreads</code>, kinds/options types</td><td>kernel.ts</td><td>Phase 8.</td></tr>
+<tr><td><em>new:</em> <code>cbufferLayout</code>, <code>CBufferFieldType</code>, <code>CBufferLayout</code></td><td>cbuffer.ts</td><td>Phase 9.</td></tr>
+<tr><td><em>new:</em> <code>listAdapters</code>, <code>AdapterInfo</code></td><td>adapter.ts</td><td>Phase 7.</td></tr>
+<tr><td><em>new:</em> <code>encodePNG</code></td><td>png.ts</td><td>Adapted from terminal/png.ts.</td></tr>
+</table>
+
+<h3 id="appB">Appendix B — Verified COM vtable slots (runtime-proven; wrong slot segfaults)</h3>
+<pre><code>ID3D11Device:        3 CreateBuffer · 5 CreateTexture2D · 7 CreateShaderResourceView · 8 CreateUnorderedAccessView
+                     9 CreateRenderTargetView · 12 CreateVertexShader · 15 CreatePixelShader · 18 CreateComputeShader
+                     20 CreateBlendState · 21 CreateDepthStencilState · 22 CreateRasterizerState · 23 CreateSamplerState
+                     (21/22 note: a published cheat-sheet had these SWAPPED; the values here are runtime-verified — ground truth)
+ID3D11DeviceContext: 8 PSSetShaderResources · 9 PSSetShader · 10 PSSetSamplers · 11 VSSetShader · 13 Draw · 14 Map · 15 Unmap
+                     16 PSSetConstantBuffers · 24 IASetPrimitiveTopology · 25 VSSetShaderResources · 33 OMSetRenderTargets
+                     35 OMSetBlendState · 41 Dispatch · 44 RSSetViewports · 47 CopyResource · 48 UpdateSubresource
+                     50 ClearRenderTargetView · 54 GenerateMips · 67 CSSetShaderResources · 68 CSSetUnorderedAccessViews
+                     69 CSSetShader · 71 CSSetConstantBuffers
+IDXGISwapChain:      2 Release · 8 Present · 9 GetBuffer
+ID3DBlob:            2 Release · 3 GetBufferPointer · 4 GetBufferSize
+IUnknown:            0 QueryInterface · 2 Release
+IDXGIDevice:         7 GetAdapter        IDXGIAdapter: 8 GetDesc</code></pre>
+<p>Source: Windows 10 SDK <code>d3d11.h</code> declaration order, copied from <code>_gpu.ts</code>/<code>_gpu3d.ts</code>. The depth/raster slots (21/22) and DSV-related context slots used by <code>depth.ts</code> live in <code>_gpu3d.ts</code> — copy from there, never from memory.</p>
+
+<h3 id="appC">Appendix C — Known-traps ledger (every row = a guardrail or an AI.md gotcha)</h3>
+<table>
+<tr><th>Trap (ground truth)</th><th>Consequence</th><th>Plan response</th></tr>
+<tr><td>Backtick inside HLSL embedded in a JS template literal</td><td>Literal terminates early; FXC sees truncated source; baffling errors</td><td><code>guardSource</code> throws with the exact hint (S3.2)</td></tr>
+<tr><td><code>noise()</code> + <code>[unroll]</code></td><td>FXC hangs minutes (compile time-bomb)</td><td>Guard throws unless <code>allowNoise</code> (S3.2)</td></tr>
+<tr><td><code>ID3DInclude</code> callback</td><td>Foreign-thread COM callback — crash class</td><td>TS-side <code>preprocessHLSL</code>; never expose the callback (S3.2)</td></tr>
+<tr><td>FFI struct GC window: awaits between assembling a Buffer-pointer-bearing struct and the call</td><td>Baked-in pointers dangle → E_INVALIDARG/segfault</td><td>All engine paths stay synchronous; documented in AI.md gotchas (S13.1)</td></tr>
+<tr><td>vcall argTypes including <code>this</code></td><td>Spurious leading u64 → segfault on multi-ptr calls</td><td>Copy vcall verbatim; JSDoc states the contract (S2.1)</td></tr>
+<tr><td>Capture after Present (DXGI_SWAP_EFFECT_DISCARD)</td><td>Undefined back-buffer contents</td><td>captureBackBuffer doc + raymarch captures pre-present (S6.2, S10.4)</td></tr>
+<tr><td>HLSL matrices are column-major by default</td><td>Transposed math vs TS row-major writes</td><td>cbufferLayout JSDoc + AI.md gotcha (S9.1)</td></tr>
+<tr><td>RowPitch ≠ width×4 on many GPUs</td><td>Sheared/garbage texture readback</td><td>readbackTexture lifts _snapshot's RowPitch walk (S5.1)</td></tr>
+<tr><td><code>Bun.sleep</code> quantizes to 15.6 ms</td><td>30 fps cap, stuttering demos</td><td>Pace with <code>present(true)</code> vsync; AI.md gotcha (S10.4)</td></tr>
+<tr><td><code>bun:test</code> + FFI segfaults (repo-wide, historic)</td><td>CI-style test runner unusable for GPU paths</td><td>S0.4 re-probe gates the harness choice; logic tests stay pure (S3.4)</td></tr>
+<tr><td>Bun <code>Pointer</code> is branded</td><td>Raw bigint addresses not assignable</td><td><code>Number(x) as Pointer</code> — the one sanctioned narrowing, copied verbatim</td></tr>
+<tr><td>Heavy-entity teardown segfault at process exit (Bun bug)</td><td>Nonzero exit AFTER correct output</td><td>Judge voxelscape-class demos by their <code>[shot]</code> output line (S11.5)</td></tr>
+<tr><td>npm registry read-lag after publish</td><td>False "publish failed" panic</td><td>Poll with backoff (S15.7)</td></tr>
+<tr><td>Stale <code>bun.lock</code> workspace records</td><td>Dependents publish pinned to OLD versions</td><td><code>rm bun.lock &amp;&amp; bun install</code> + preflight gate (S15.2)</td></tr>
+<tr><td>Same resource bound as SRV and UAV in one dispatch</td><td>D3D11 runtime nulls the binding silently</td><td>AI.md gotcha; chaining recipe uses sequential kernels (S8.1)</td></tr>
+<tr><td>repo is autocrlf=true with LF blobs</td><td>Forcing autocrlf=false makes ~200 files look modified</td><td>Never touch line-ending config; LF→CRLF warnings are noise</td></tr>
+</table>
+
+<h3 id="appD">Appendix D — Competitive parity matrix ("everything they do, only better")</h3>
+<p><strong>Standing requirement:</strong> the package must cover every capability of the packages it replaces — at the capability level, demonstrably, with a proof artifact — or the gap must be a documented, deliberate scope decision with a roadmap line. S0.10–S0.12 re-validate this matrix at execution time; S14.3 gates release on it. Downloads/status figures verified 2026-06-09 (PROJECTS.md §4 carries the receipts/URLs).</p>
+
+<h4>D.1 — gpu.js (15,972 dl/wk; dead since Nov 2022; Node GPU mode hard-depends on unbuildable headless-gl)</h4>
+<table>
+<tr><th>gpu.js capability</th><th>bun-gpu answer</th><th>Better because</th><th>Proof artifact</th></tr>
+<tr><td>Write a kernel, run it on the GPU, get arrays back</td><td><code>run(hlsl, buffers)</code></td><td>Real HLSL with real FXC diagnostics (line/col) instead of a brittle JS→GLSL transpiler whose failures were cryptic or missing; strict TS types end to end</td><td>hello-gpu.ts; selftest §6</td></tr>
+<tr><td>CPU fallback when no GPU</td><td>Automatic WARP fallback</td><td>WARP is still the GPU programming model (deterministic, vectorized), not a slow JS reinterpretation; <em>forced</em> WARP for reproducible CI</td><td>selftest §1, §13</td></tr>
+<tr><td>Pipeline mode (chain kernels via textures, no readback)</td><td><code>GpuArray</code> retained buffers across <code>Kernel.dispatch</code> calls</td><td>Explicit, typed, zero hidden texture encodings</td><td>selftest §10</td></tr>
+<tr><td>Kernel maps (multiple outputs per pass)</td><td>Multiple <code>RWStructuredBuffer</code> bindings</td><td>Native to the API, no special "map" mode</td><td>selftest §7 (multi-buffer), probe S8.3c</td></tr>
+<tr><td>combineKernels</td><td>Sequential <code>Kernel</code>s sharing <code>GpuArray</code>s</td><td>Plain function composition; no DSL</td><td>selftest §10</td></tr>
+<tr><td>1D/2D/3D kernels</td><td><code>[numthreads]</code> + <code>groups: [x,y,z]</code></td><td>The real dispatch model, not an abstraction over canvas sizes</td><td>selftest §9</td></tr>
+<tr><td>Graphical output (canvas)</td><td><code>createWindow</code> + render pipeline + <code>present</code>; headless render-to-PNG</td><td>Real window OR fully headless to PNG — gpu.js had no headless image path on Node</td><td>raymarch.ts; selftest §14</td></tr>
+<tr><td>Dynamic arguments / uniforms</td><td><code>uniforms</code> + <code>cbufferLayout</code></td><td>Byte-layout calculated and FXC-validated, not stringly injected</td><td>selftest §11</td></tr>
+<tr><td>Install</td><td><code>bun add bun-gpu</code></td><td>Kilobytes of TS; zero native deps; vs headless-gl's per-VS/Python/Node node-gyp ANGLE builds</td><td>S15.7 acceptance from a clean temp dir</td></tr>
+<tr><td>Write kernels as plain JS functions</td><td><strong>Deliberate non-goal (v1)</strong></td><td>The transpiler is gpu.js's failure mode (brittle, dead). v1 ships HLSL + recipes; a transpile layer is on the documented roadmap (PROJECTS.md calls it future work)</td><td>README "honest scoping"; S15.8 roadmap</td></tr>
+</table>
+
+<h4>D.2 — gl / headless-gl (56,431 dl/wk; semi-active; breaks on each VS/Node combo)</h4>
+<table>
+<tr><th>Capability</th><th>bun-gpu answer</th><th>Better because</th><th>Proof</th></tr>
+<tr><td>Headless rendering without a window</td><td><code>createComputeDevice</code> + render-to-texture + <code>readbackTexture</code>/PNG</td><td>D3D11 (SM 5.0) vs WebGL1; no ANGLE build; works on WARP in CI</td><td>selftest §14; probe S5.5</td></tr>
+<tr><td>readPixels</td><td><code>readbackTexture</code> (RowPitch-correct)</td><td>Typed, pitch-safe</td><td>selftest §14</td></tr>
+<tr><td>Off-thread/embedded use in test suites</td><td>Plain function calls, no event loop hooks</td><td>No native addon lifecycle to crash the runner</td><td>selftest exists</td></tr>
+</table>
+
+<h4>D.3 — @tensorflow/tfjs-node (110,266 dl/wk; frozen since 2024-10; broken on Node 24) and onnxruntime-node (266 MB unpacked)</h4>
+<p><strong>Positioning, not parity (product brief, verbatim):</strong> bun-gpu is the <em>substrate layer</em> such runtimes sit on — never a kernel-for-kernel model-runtime replacement. What we must (and do) prove at the substrate level: trained neural networks (<code>neural-descent.ts</code> — MNIST), a running transformer (<code>nano-gpt.ts</code>), matmul correctness (selftest §12) — all running on this engine after Phase 11. The README says exactly this; overclaiming here would be the one marketing move that destroys credibility.</p>
+
+<h4>D.4 — webgpu / Dawn repack (42,039 dl/wk; 71 MB tarball + postinstall; pre-1.0; official @webgpu/dawn-node never published)</h4>
+<table>
+<tr><th>Capability</th><th>bun-gpu answer</th><th>Better because</th><th>Proof</th></tr>
+<tr><td>Modern compute API from JS</td><td><code>run</code>/<code>Kernel</code>/<code>GpuArray</code></td><td>Kilobytes vs 71 MB; no postinstall download (proxied-CI-safe); stable underlying API (D3D11) vs pre-1.0 churn</td><td>install story + selftest</td></tr>
+<tr><td>Render pipeline</td><td>Full D3D11 pipeline incl. depth, blend, samplers, mips</td><td>Proven by a 30-demo corpus, not a spec-conformance WIP</td><td>Phase 11 sweep</td></tr>
+<tr><td>WGSL / cross-platform portability</td><td><strong>Deliberate non-goal</strong></td><td>Windows-only/Bun-only is the stated, owned trade-off (the repo thesis); say it in the README, own it</td><td>README honest scoping</td></tr>
+</table>
+
+<h4>D.5 — Capabilities NONE of them offer (the moat — each needs a proof artifact)</h4>
+<ul>
+<li>In-process shader toolchain: compile + <strong>disassemble</strong> (+ reflection diagnostics) → shader-doctor-class dev loop (gpu-report.ts).</li>
+<li>Adapter census with VRAM/vendor/software flags (<code>listAdapters</code>) — capability probing for AI agents (selftest §2).</li>
+<li>The raw COM escape hatch (<code>vcall</code> + slot constants) — any D3D11 call we didn't wrap is one function call away (AI.md layer-3 recipe).</li>
+<li>AI-first documentation contract (AI.md) — no incumbent has anything comparable (S13.1).</li>
+<li>Visual-verification primitives built in: <code>captureBackBuffer</code> stats + <code>formatGrid</code> ASCII luminance preview (S6.2).</li>
+<li>Phase 10b extras, each absent from every incumbent: GPU timestamp timing, non-blocking async readback, stream compaction with UAV counters, multi-GPU device selection, fp64 compute (probe-gated), kernel debug logging, GPU memory accounting, indirect dispatch.</li>
+</ul>
+
+<h4>D.6 — What "replace" honestly means (audit-verified caveats — these words go in the README, not under the rug)</h4>
+<table>
+<tr><th>Incumbent</th><th>What bun-gpu replaces</th><th>What it honestly does NOT</th></tr>
+<tr><td><strong>gpu.js</strong></td><td>Every workload class: elementwise compute, image filters, fractals/graphical output, pipeline chaining, kernel maps — plus everything gpu.js architecturally never could (scatter writes, atomics, groupshared, true int/uint, optional fp64, variable-size output).</td><td>The developer experience of "write a plain JS function". Users write HLSL. Say "successor for the workload, not the API"; no mechanical migration of existing gpu.js code; no browser, no macOS/Linux. HLSL strings are opaque to tsc — the type-safety story lives in the buffer/binding layer (parsed registers, kind checks, layout calculators), and the docs must say exactly that.</td></tr>
+<tr><td><strong>gl (headless-gl)</strong></td><td>The use case: headless offscreen render + readPixels for NEWLY WRITTEN code, with no node-gyp/ANGLE and SM 5.0 instead of WebGL1.</td><td>The package, for existing WebGL codebases: anything written against the WebGL API (three.js, regl, pixi, stackgl) cannot run unported — ANGLE exists precisely because GLSL→HLSL is enormous. Also concedes Linux CI containers, headless-gl's dominant deployment target.</td></tr>
+<tr><td><strong>tfjs-node / onnxruntime-node</strong></td><td>The delivery mechanism and the substrate role: zero node-gyp, zero postinstall fetch, zero CUDA contract, kilobytes vs 266 MB, AMD/Intel/NVIDIA via OS-shipped d3d11.dll. Substrate idioms delivered explicitly: dispose/memory accounting, sync + async readback (dataSync/data), GPU-resident buffers across dispatches, adapter selection with fallback.</td><td>The model layer: no ONNX/SavedModel loading, no op library (bring or buy your kernels — std.ts is a starter set, not cuDNN), no autograd/training. Forward-pass substrate only. Never claim "faster than ORT" — not defensible without an op library. Acknowledge DirectML as the incumbent substrate above D3D12 (and its uncertain future, microsoft/onnxruntime#23783).</td></tr>
+<tr><td><strong>webgpu (Dawn)</strong></td><td>The compute+render capability set for Bun-on-Windows with a zero-install story no WebGPU offering can match (67.8 MB tarball / ~20 MB platform packages / install-time downloads vs DLLs already in System32). Audit verdict 2026-06: <strong>no credible zero-install GPU competitor for Windows exists on npm; the niche is occupied only by bun-win32 itself</strong> (nearest: vulkan4bun = Linux-only experimental, @rlabs-inc/sparse = Metal/macOS, Electrobun = bundles Dawn).</td><td>The standard: no API/WGSL portability, no CTS-backed validation layer (HRESULTs and segfaults-on-mistake are the honest deal — own it), SM 5.0 lacks SM 6.x wave intrinsics/16-bit types/64-bit atomics. On Node specifically, npm <code>webgpu</code> is mature and CTS-tested — claim zero-install and Windows-native depth, never correctness superiority.</td></tr>
+</table>
+
+<h3 id="appE">Appendix E — Command cheat sheet</h3>
+<pre><code># verify constantly
+bun run packages/gpu/index.ts                      # loads?
+bunx tsc --noEmit                                  # types, whole repo
+bun test packages/gpu                              # pure-logic tests
+bun run packages/gpu/example/gpu.selftest.ts       # FFI integration suite
+bunx biome format --write packages/gpu             # format
+
+# regression + gates
+bun run scripts/audit.ts --all                     # binding packages unchanged (gpu auto-skipped)
+bun run scripts/nullcheck.ts --all
+bun run scripts/preflight.ts                       # lockfile freshness (release gate)
+
+# release
+rm bun.lock &amp;&amp; bun install
+(cd packages/&lt;name&gt; &amp;&amp; bun publish --access public --otp &lt;code&gt;)   # order: gpu, all, bun-win32, bun-gpu</code></pre>
+
+<h3 id="appF">Appendix F — This plan as the template for future product plans (BUN_SYSMON, BUN_UIA, …)</h3>
+<p>This document doubles as the house standard. To produce the next one ("See BUN_GPU.html? Make one for BUN_SYSMON!"), reproduce the <em>structure and discipline</em>, not the GPU content:</p>
+<ol>
+<li><strong>Ground-truth dossier first.</strong> Verify every load-bearing fact against the live repo + npm registry ON THE DAY OF WRITING, date-stamp it, and mark which rows the executor must re-verify in Phase 0. Use parallel Explore agents: one maps the in-repo assets (the proven demo/helper code being productized — with exact exports, line anchors, and traps), one maps the packaging precedent (terminal for engine packages, a binding package for binding products) and the scripts/gates.</li>
+<li><strong>The research-while-building doctrine block, verbatim.</strong> Plans are maps; files outrank plans; deviations get recorded; failures stop the line.</li>
+<li><strong>Competitive intelligence is mandatory, twice.</strong> At plan time: pull the incumbents from PROJECTS.md §N (downloads, status, gripes with receipts). At execution time (Phase 0): fan out research agents over the incumbents' docs/READMEs/issue trackers to build the <em>capability inventory</em>, then write the parity matrix — every incumbent capability gets an "ours / better-because / proof-artifact" row, a deliberate non-goal with a roadmap line, or it blocks release (the S14.3 gate). "Everything they do, only better" is the bar; honest non-goals (with reasons) are the only exception.</li>
+<li><strong>Phase skeleton:</strong> 0 preflight+re-verification+competitive-intel → 1 skeleton+early commit (multi-agent repo!) → 2..N extraction/build in dependency order, each phase = read-the-source step, bite-sized build steps with real code, a runtime proof probe, pure-logic <code>bun:test</code> where FFI-free, and a commit → examples+selftest+benchmark → demo-corpus regression → unscoped alias → AI.md/README docs with a docs-run gate → quality gates incl. parity gate + baseline diffs → release (versions → lockfile → preflight → dry-run → ONE OTP → ordered publish → registry-poll → clean-room acceptance) → final report with the deviation ledger.</li>
+<li><strong>Tests are real or they don't count.</strong> Exact-value assertions against ground truth (CPU references, FXC, byte-exact roundtrips), guardrail error-path tests, determinism tests, and VISUAL verification for anything visual. The bun:test-vs-FFI probe (S0.4) decides the harness; never let a broken runner downgrade tests to vibes.</li>
+<li><strong>AI-first docs are a release gate, not a nicety:</strong> AI.md = complete surface + capability table + recipes + gotchas + where-to-look; every index.ts export greppable in AI.md; every doc code block executed before commit.</li>
+<li><strong>Every phase commits; the OTP is requested exactly once, after every gate is green.</strong></li>
+</ol>
+
+<p style="color:var(--dim); margin-top:3rem;">Plan authored 2026-06-09 against repo state <code>e975ea4</code> (+ uncommitted PROJECTS.md). Facts verified same day: npm <code>bun-gpu</code> 404; <code>packages/gpu</code> absent; _gpu.ts at 1,340 lines. Executor: re-verify, then build relentlessly.</p>
+
+</body>
+</html>
