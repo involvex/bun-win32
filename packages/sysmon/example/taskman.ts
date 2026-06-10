@@ -17,7 +17,8 @@
 import { runText } from '@bun-win32/terminal';
 import { CpuSampler, NetSampler, ProcessSampler, type ProcessSample, createTicker, memory, monotonicMicroseconds, osInfo, pidStats, tcpSockets, uptimeMs } from '@bun-win32/sysmon';
 
-const cpuSampler = new CpuSampler();
+const cpuSampler = new CpuSampler(); // kilohertz rate-proof sampler (1 ms windows)
+const displaySampler = new CpuSampler(); // per-frame display sampler — 1 ms windows sit under the scheduler's ~15.6 ms counter quantum and read 0
 const processSampler = new ProcessSampler();
 const netSampler = new NetSampler();
 const ticker = createTicker(1);
@@ -40,7 +41,7 @@ let peakHz = 0;
 
 function barRow(width: number, fraction: number): string {
   const filled = Math.round(Math.max(0, Math.min(1, fraction)) * width);
-  return '█'.repeat(filled) + '░'.repeat(width - filled);
+  return '█'.repeat(filled) + '·'.repeat(width - filled); // · stays capture-faithful — shade glyphs rasterize as solid slabs in CAPTURE_PNG
 }
 
 function formatBytes(bytes: number): string {
@@ -60,11 +61,12 @@ await runText({
     const frameDeadline = monotonicMicroseconds() + 24_000;
     while (monotonicMicroseconds() < frameDeadline) {
       ticker.wait();
-      const sample = cpuSampler.sample();
-      perCore = sample.perCore;
-      totalBusy = sample.total;
+      void cpuSampler.sample();
       sampleCount += 1;
     }
+    const displaySample = displaySampler.sample(); // ~33 ms window — wide enough for the kernel's tick granularity
+    perCore = displaySample.perCore;
+    totalBusy = displaySample.total;
     const now = monotonicMicroseconds();
     if (now - lastRateStamp >= 1_000_000) {
       achievedHz = (sampleCount / (now - lastRateStamp)) * 1_000_000;

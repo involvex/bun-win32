@@ -63,6 +63,7 @@ packages/all/screenshots/*
 !packages/all/screenshots/particle-galaxy.png
 !packages/all/screenshots/blackhole.png
 !packages/all/screenshots/fluid.png
+!packages/all/screenshots/taskman.png
 !packages/all/screenshots/slime.png
 !packages/all/screenshots/mandelbulb.png
 !packages/all/screenshots/pathtracer.png
