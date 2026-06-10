@@ -2,6 +2,8 @@ export { listAdapters } from './adapter';
 export type { AdapterInfo } from './adapter';
 export { makeConstantBuffer, makeStructuredBuffer, readbackBuffer, updateConstantBuffer, updateDynamicBuffer } from './buffer';
 export type { StructuredBuffer, StructuredBufferOptions } from './buffer';
+export { cbufferLayout } from './cbuffer';
+export type { CBufferFieldType, CBufferLayout } from './cbuffer';
 export { blobRelease, comRelease, guidBytes, hex, vcall } from './com';
 export * from './constants';
 export { bindDepth, clearDepth, drawTriangles, makeDepthBuffer, releaseDepth, setCull, setDepthState, setRenderTargetsWithDepth } from './depth';
