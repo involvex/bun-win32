@@ -42,6 +42,8 @@ export interface PsBindings {
 export interface CsBindings {
   cb?: readonly bigint[];
   uav?: readonly bigint[];
+  /** Per-UAV initial hidden-counter values (append/consume); -1 keeps the current counter. Length must match uav. */
+  uavInitialCounts?: readonly number[];
   srv?: readonly bigint[];
 }
 
@@ -81,8 +83,14 @@ export function csSet(shader: bigint, bindings: CsBindings = {}): void {
   if (bindings.uav && bindings.uav.length > 0) {
     const arr = Buffer.alloc(8 * bindings.uav.length);
     bindings.uav.forEach((u, i) => arr.writeBigUInt64LE(u, i * 8));
+    let counts: Buffer | null = null;
+    if (bindings.uavInitialCounts !== undefined) {
+      if (bindings.uavInitialCounts.length !== bindings.uav.length) throw new Error(`csSet: uavInitialCounts has ${bindings.uavInitialCounts.length} entries but uav has ${bindings.uav.length}.`);
+      counts = Buffer.alloc(4 * bindings.uavInitialCounts.length);
+      bindings.uavInitialCounts.forEach((count, i) => counts!.writeInt32LE(count, i * 4));
+    }
     // CSSetUnorderedAccessViews: StartSlot, NumUAVs, ppUAVs, pUAVInitialCounts.
-    vcall(context, CTX_CS_SET_UNORDERED_ACCESS_VIEWS, [FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.ptr], [0, bindings.uav.length, arr.ptr!, null], FFIType.void);
+    vcall(context, CTX_CS_SET_UNORDERED_ACCESS_VIEWS, [FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.ptr], [0, bindings.uav.length, arr.ptr!, counts === null ? null : counts.ptr!], FFIType.void);
   }
   if (bindings.srv && bindings.srv.length > 0) {
     const arr = Buffer.alloc(8 * bindings.srv.length);

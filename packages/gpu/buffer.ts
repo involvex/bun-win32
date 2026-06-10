@@ -5,6 +5,7 @@ import { FFIType, toArrayBuffer, type Pointer } from 'bun:ffi';
 import { vcall, comRelease } from './com';
 import {
   CTX_COPY_RESOURCE,
+  CTX_COPY_STRUCTURE_COUNT,
   CTX_FLUSH,
   CTX_MAP,
   CTX_UNMAP,
@@ -12,6 +13,7 @@ import {
   D3D11_BIND_CONSTANT_BUFFER,
   D3D11_BIND_SHADER_RESOURCE,
   D3D11_BIND_UNORDERED_ACCESS,
+  D3D11_BUFFER_UAV_FLAG_APPEND,
   D3D11_CPU_ACCESS_READ,
   D3D11_CPU_ACCESS_WRITE,
   D3D11_MAP_FLAG_DO_NOT_WAIT,
@@ -44,6 +46,8 @@ export interface StructuredBufferOptions {
   count: number;
   uav?: boolean;
   srv?: boolean;
+  /** Give the UAV a hidden append/consume counter (AppendStructuredBuffer/ConsumeStructuredBuffer). Reset it per bind via csSet's uavInitialCounts. */
+  appendCounter?: boolean;
   cpuWritable?: boolean;
   initialData?: Buffer;
 }
@@ -74,7 +78,7 @@ export function makeConstantBuffer(byteSize: number): bigint {
  */
 export function makeStructuredBuffer(options: StructuredBufferOptions): StructuredBuffer {
   const { device } = requireGpu();
-  const { stride, count, uav = false, srv = false, cpuWritable = false, initialData } = options;
+  const { stride, count, uav = false, srv = false, appendCounter = false, cpuWritable = false, initialData } = options;
   const byteWidth = stride * count;
 
   let bindFlags = 0;
@@ -112,7 +116,7 @@ export function makeStructuredBuffer(options: StructuredBufferOptions): Structur
     uavDesc.writeUInt32LE(D3D11_UAV_DIMENSION_BUFFER, 4);
     uavDesc.writeUInt32LE(0, 8); // FirstElement
     uavDesc.writeUInt32LE(count, 12); // NumElements
-    uavDesc.writeUInt32LE(0, 16); // Flags
+    uavDesc.writeUInt32LE(appendCounter ? D3D11_BUFFER_UAV_FLAG_APPEND : 0, 16); // Flags
     const ppUav = Buffer.alloc(8);
     if (vcall(device, DEV_CREATE_UNORDERED_ACCESS_VIEW, [FFIType.u64, FFIType.ptr, FFIType.ptr], [buffer, uavDesc.ptr!, ppUav.ptr!]) !== 0) {
       throw new Error('CreateUnorderedAccessView (structured buffer) failed.');
@@ -138,8 +142,35 @@ export function makeStructuredBuffer(options: StructuredBufferOptions): Structur
 }
 
 /**
+ * Read an append/consume UAV's hidden counter (CopyStructureCount → tiny buffer →
+ * readback). The variable-size-GPU-output primitive: dispatch, then ask how many
+ * elements the kernel actually appended.
+ */
+export function appendCount(uav: bigint): number {
+  const { device, context } = requireGpu();
+  const desc = Buffer.alloc(24);
+  desc.writeUInt32LE(4, 0); // ByteWidth
+  desc.writeUInt32LE(D3D11_USAGE_DEFAULT, 4);
+  desc.writeUInt32LE(0, 8); // BindFlags
+  desc.writeUInt32LE(0, 12); // CPUAccessFlags
+  desc.writeUInt32LE(0, 16); // MiscFlags
+  desc.writeUInt32LE(0, 20); // StructureByteStride
+  const pp = Buffer.alloc(8);
+  if (vcall(device, DEV_CREATE_BUFFER, [FFIType.ptr, FFIType.ptr, FFIType.ptr], [desc.ptr!, null, pp.ptr!]) !== 0) {
+    throw new Error('CreateBuffer (append counter target) failed.');
+  }
+  const target = pp.readBigUInt64LE(0);
+  vcall(context, CTX_COPY_STRUCTURE_COUNT, [FFIType.u64, FFIType.u32, FFIType.u64], [target, 0, uav], FFIType.void);
+  const count = new Uint32Array(readbackBuffer(target, 4))[0]!;
+  comRelease(target);
+  return count;
+}
+
+/**
  * Read back a GPU buffer to host memory: create a STAGING copy, CopyResource into
  * it, Map READ, bulk-copy `byteSize` bytes into owned memory before Unmap.
+ * `byteSize` must equal the buffer's full ByteWidth — CopyResource silently no-ops
+ * when source and destination sizes differ. Slice the result for partial reads.
  * Returns a detached ArrayBuffer. Synchronizes the GPU (the perf cliff to know about).
  */
 export function readbackBuffer(buffer: bigint, byteSize: number): ArrayBuffer {

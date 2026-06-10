@@ -29,6 +29,7 @@ import {
   DXGI_ERROR_DEVICE_RESET,
   GpuArray,
   Kernel,
+  appendCount,
   captureBackBuffer,
   cbufferLayout,
   clear,
@@ -56,6 +57,7 @@ import {
   makeTexture,
   makeVertexShader,
   psSet,
+  readbackBuffer,
   readbackTexture,
   releaseDepth,
   run,
@@ -534,6 +536,48 @@ function runSections(label: string, options: CreateDeviceOptions): void {
     comRelease(blur);
     comRelease(source.srv!);
     comRelease(source.tex);
+  }
+
+  {
+    const N = 1024;
+    const values = new Float32Array(N);
+    let state = 0xc0ffee11;
+    for (let index = 0; index < N; index += 1) {
+      state = (state * 1664525 + 1013904223) >>> 0;
+      values[index] = (state & 0xffff) / 0x1_0000;
+    }
+    const expectedKept = [...values].filter((value) => value > 0.5);
+    const sourceData = Buffer.from(values.buffer);
+    const source = makeStructuredBuffer({ count: N, initialData: sourceData, srv: true, stride: 4 });
+    const kept = makeStructuredBuffer({ appendCounter: true, count: N, stride: 4, uav: true });
+    const compaction = makeComputeShader(
+      compile(
+        `StructuredBuffer<float> source : register(t0);
+         AppendStructuredBuffer<float> kept : register(u0);
+         [numthreads(64,1,1)] void main(uint3 id : SV_DispatchThreadID) {
+           float value = source[id.x];
+           if (value > 0.5) kept.Append(value);
+         }`,
+        'main',
+        'cs_5_0',
+      ),
+    );
+    csSet(compaction, { srv: [source.srv!], uav: [kept.uav!], uavInitialCounts: [0] });
+    dispatch(N / 64);
+    csSet(0n, { srv: [0n], uav: [0n] });
+    const count = appendCount(kept.uav!);
+    check(tag('25 append-count'), count === expectedKept.length, `CopyStructureCount reads ${count}; CPU predicate kept ${expectedKept.length} of ${N}`);
+    // readbackBuffer must read the FULL ByteWidth (CopyResource silently no-ops on size mismatch) — slice afterwards.
+    const payload = [...new Float32Array(readbackBuffer(kept.buffer, N * 4)).slice(0, count)].sort((left, right) => left - right);
+    const reference = [...expectedKept].sort((left, right) => left - right);
+    let setEqual = payload.length === reference.length;
+    for (let index = 0; index < payload.length; index += 1) if (payload[index] !== reference[index]) setEqual = false;
+    check(tag('25 append-payload'), setEqual, 'appended payload set-equals the CPU-kept values (order is GPU-defined)');
+    comRelease(compaction);
+    comRelease(kept.uav!);
+    comRelease(kept.buffer);
+    comRelease(source.srv!);
+    comRelease(source.buffer);
   }
 
   {
