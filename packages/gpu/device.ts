@@ -22,8 +22,6 @@ import {
   SWAP_PRESENT,
 } from './constants';
 
-D3d11.Preload(['D3D11CreateDevice', 'D3D11CreateDeviceAndSwapChain']);
-
 /**
  * A live D3D11 device, immediate context, and DXGI swap chain bound to a window,
  * with the back-buffer render-target view and convenience present/recreate.
@@ -85,6 +83,7 @@ let activeGpu: Gpu | null = null;
  * Gpu becomes the engine's active target for all helper functions.
  */
 export function createDevice(hwnd: bigint, size: { width: number; height: number }, options: CreateDeviceOptions = {}): Gpu {
+  D3d11.Preload(['D3D11CreateDeviceAndSwapChain']);
   const order: readonly D3D_DRIVER_TYPE[] =
     options.driver === 'warp' ? [D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_WARP] : options.driver === 'hardware' ? [D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_HARDWARE] : [D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_WARP];
   let created: { swap: bigint; device: bigint; context: bigint } | null = null;
@@ -140,6 +139,7 @@ export function createDevice(hwnd: bigint, size: { width: number; height: number
  * partial Gpu (swapChain/backBufferRTV are 0; present/recreateRTV throw).
  */
 export function createComputeDevice(options: CreateDeviceOptions = {}): Gpu {
+  D3d11.Preload(['D3D11CreateDevice']);
   const featureLevels = Buffer.alloc(4);
   featureLevels.writeUInt32LE(D3D_FEATURE_LEVEL_11_0, 0);
 
