@@ -8,6 +8,8 @@ export { bindDepth, clearDepth, drawTriangles, makeDepthBuffer, releaseDepth, se
 export type { DepthBuffer } from './depth';
 export { createComputeDevice, createDevice, describeDeviceError, destroyDevice, getDeviceRemovedReason, hasDevice, requireGpu } from './device';
 export type { CreateDeviceOptions, Gpu } from './device';
+export { GpuArray, Kernel, parseKernelBindings, parseNumthreads, run } from './kernel';
+export type { DispatchOptions, KernelArray, KernelBinding, RunOptions, ScalarKind } from './kernel';
 export { clear, copyResource, csSet, dispatch, drawFullscreenTriangle, drawPoints, generateMips, makeAdditiveBlendState, makeSampler, psSet, setBlendState, setRenderTargets, setViewport, vsSet, vsSetShaderResources } from './pipeline';
 export type { CsBindings, PsBindings, SamplerOptions } from './pipeline';
 export { encodePNG, encodePNGFromBGRA } from './png';
