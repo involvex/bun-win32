@@ -6,6 +6,8 @@ export { cbufferLayout } from './cbuffer';
 export type { CBufferFieldType, CBufferLayout } from './cbuffer';
 export { blobRelease, comRelease, guidBytes, hex, vcall } from './com';
 export * from './constants';
+export { createKernelDebugLog } from './debug';
+export type { DebugLogEntry, KernelDebugLog } from './debug';
 export { bindDepth, clearDepth, drawTriangles, makeDepthBuffer, releaseDepth, setCull, setDepthState, setRenderTargetsWithDepth } from './depth';
 export type { DepthBuffer } from './depth';
 export { createComputeDevice, createDevice, describeDeviceError, destroyDevice, deviceFeatures, getDeviceRemovedReason, hasDevice, requireGpu } from './device';

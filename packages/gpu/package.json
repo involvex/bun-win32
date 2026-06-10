@@ -59,6 +59,7 @@
     "cbuffer.ts",
     "com.ts",
     "constants.ts",
+    "debug.ts",
     "depth.ts",
     "device.ts",
     "index.ts",

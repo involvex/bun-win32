@@ -45,6 +45,7 @@ import {
   createComputeDevice,
   createDevice,
   createGpuTimer,
+  createKernelDebugLog,
   createWindow,
   csSet,
   describeDeviceError,
@@ -587,6 +588,30 @@ function runSections(label: string, options: CreateDeviceOptions): void {
     comRelease(kept.buffer);
     comRelease(source.srv!);
     comRelease(source.buffer);
+  }
+
+  {
+    const CAPACITY = 256;
+    const THREADS = 320; // 64 over capacity — proves the drop-when-full contract
+    const log = createKernelDebugLog(CAPACITY, 0);
+    const logger = makeComputeShader(
+      compile(
+        `${log.hlslPrelude}
+         [numthreads(64,1,1)] void main(uint3 id : SV_DispatchThreadID) { DEBUG_LOG(id.x, id.x * 0.5); }`,
+        'main',
+        'cs_5_0',
+      ),
+    );
+    csSet(logger, { uav: [log.uav] });
+    dispatch(THREADS / 64);
+    csSet(0n, { uav: [0n] });
+    const { attempted, entries } = log.read();
+    const threadIds = new Set(entries.map((entry) => entry.threadId));
+    const bitExact = entries.every((entry) => entry.value === entry.threadId * 0.5);
+    check(tag('28 debug-log-cursor'), attempted === THREADS && entries.length === CAPACITY, `attempted ${attempted} (= ${THREADS} threads), stored ${entries.length} (= capacity; overflow dropped as documented)`);
+    check(tag('28 debug-log-values'), bitExact && threadIds.size === entries.length, 'decoded (threadId, value) pairs bit-exact via asuint round-trip, all threadIds distinct');
+    comRelease(logger);
+    log.release();
   }
 
   {
