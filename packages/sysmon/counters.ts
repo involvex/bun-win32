@@ -4,6 +4,8 @@ import { parseMultiSz } from './structs';
 Pdh.Preload(['PdhAddEnglishCounterW', 'PdhCloseQuery', 'PdhCollectQueryData', 'PdhEnumObjectItemsW', 'PdhEnumObjectsW', 'PdhExpandWildCardPathW', 'PdhGetFormattedCounterValue', 'PdhOpenQueryW', 'PdhRemoveCounter']);
 const { PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData, PdhEnumObjectItemsW, PdhEnumObjectsW, PdhExpandWildCardPathW, PdhGetFormattedCounterValue, PdhOpenQueryW, PdhRemoveCounter } = Pdh;
 
+const PDH_CALC_NEGATIVE_DENOMINATOR = 0x8000_07d6;
+const PDH_CALC_NEGATIVE_VALUE = 0x8000_07d8;
 const PDH_CSTATUS_INVALID_DATA = 0xc000_0bba;
 const PDH_INVALID_DATA = 0xc000_0bc6;
 const PDH_MORE_DATA = 0x8000_07d2;
@@ -69,6 +71,9 @@ export class CounterSet {
       throw new Error(
         `PDH 0x${status.toString(16)} for '${this.#counterPaths.get(handle) ?? handle}': rate counters need two collect() calls — the first only establishes the baseline. collect(), wait an interval, collect() again, then value().`,
       );
+    }
+    if (status === PDH_CALC_NEGATIVE_DENOMINATOR || status === PDH_CALC_NEGATIVE_VALUE) {
+      throw new Error(`PDH 0x${status.toString(16)} for '${this.#counterPaths.get(handle) ?? handle}': the two collect() samples were too close together for this rate counter — leave a real interval (≥ ~100 ms) between collects.`);
     }
     if (status !== 0) throw new Error(`PdhGetFormattedCounterValue('${this.#counterPaths.get(handle) ?? handle}') failed: 0x${status.toString(16)}`);
     return this.#valueBuffer.readDoubleLE(8);
