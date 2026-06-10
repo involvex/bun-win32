@@ -3,7 +3,7 @@
 
 import { comRelease } from './com';
 import { createComputeDevice, hasDevice } from './device';
-import { makeConstantBuffer, makeStructuredBuffer, readbackBuffer, updateConstantBuffer, type StructuredBuffer } from './buffer';
+import { makeConstantBuffer, makeStructuredBuffer, readbackBuffer, readbackBufferAsync, updateConstantBuffer, type StructuredBuffer } from './buffer';
 import { csSet, dispatch } from './pipeline';
 import { compile, makeComputeShader, type CompileOptions } from './shader';
 
@@ -112,6 +112,12 @@ export class GpuArray {
 
   read(): KernelArray {
     const bytes = readbackBuffer(this.#resource.buffer, this.length * 4);
+    return this.kind === 'float' ? new Float32Array(bytes) : this.kind === 'int' ? new Int32Array(bytes) : new Uint32Array(bytes);
+  }
+
+  /** Like read(), but never blocks the event loop — the GPU copy is polled across setImmediate turns. */
+  async readAsync(): Promise<KernelArray> {
+    const bytes = await readbackBufferAsync(this.#resource.buffer, this.length * 4);
     return this.kind === 'float' ? new Float32Array(bytes) : this.kind === 'int' ? new Int32Array(bytes) : new Uint32Array(bytes);
   }
 

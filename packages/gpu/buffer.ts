@@ -5,6 +5,7 @@ import { FFIType, toArrayBuffer, type Pointer } from 'bun:ffi';
 import { vcall, comRelease } from './com';
 import {
   CTX_COPY_RESOURCE,
+  CTX_FLUSH,
   CTX_MAP,
   CTX_UNMAP,
   CTX_UPDATE_SUBRESOURCE,
@@ -13,6 +14,7 @@ import {
   D3D11_BIND_UNORDERED_ACCESS,
   D3D11_CPU_ACCESS_READ,
   D3D11_CPU_ACCESS_WRITE,
+  D3D11_MAP_FLAG_DO_NOT_WAIT,
   D3D11_MAP_READ,
   D3D11_MAP_WRITE_DISCARD,
   D3D11_RESOURCE_MISC_BUFFER_STRUCTURED,
@@ -24,6 +26,7 @@ import {
   DEV_CREATE_BUFFER,
   DEV_CREATE_SHADER_RESOURCE_VIEW,
   DEV_CREATE_UNORDERED_ACCESS_VIEW,
+  DXGI_ERROR_WAS_STILL_DRAWING,
   DXGI_FORMAT_UNKNOWN,
 } from './constants';
 import { describeDeviceError, requireGpu } from './device';
@@ -162,6 +165,51 @@ export function readbackBuffer(buffer: bigint, byteSize: number): ArrayBuffer {
   const dataPtr = mapped.readBigUInt64LE(0);
   // Bulk-copy the mapped region into an owned Uint8Array BEFORE Unmap (the mapped
   // pointer dies at Unmap; the copy detaches the result from driver memory).
+  const out = new Uint8Array(byteSize);
+  out.set(new Uint8Array(toArrayBuffer(Number(dataPtr) as Pointer, 0, byteSize)));
+  vcall(context, CTX_UNMAP, [FFIType.u64, FFIType.u32], [staging, 0], FFIType.void);
+  comRelease(staging);
+  return out.buffer;
+}
+
+/**
+ * Read back a GPU buffer WITHOUT blocking the event loop: staging copy, Flush, then
+ * Map(DO_NOT_WAIT) polled across setImmediate turns until the copy completes.
+ * Timers, I/O, and other promises keep running while the GPU finishes.
+ */
+export async function readbackBufferAsync(buffer: bigint, byteSize: number): Promise<ArrayBuffer> {
+  const { device, context } = requireGpu();
+  const desc = Buffer.alloc(24);
+  desc.writeUInt32LE(byteSize, 0);
+  desc.writeUInt32LE(D3D11_USAGE_STAGING, 4);
+  desc.writeUInt32LE(0, 8); // BindFlags
+  desc.writeUInt32LE(D3D11_CPU_ACCESS_READ, 12);
+  desc.writeUInt32LE(0, 16); // MiscFlags
+  desc.writeUInt32LE(0, 20); // StructureByteStride
+  const pp = Buffer.alloc(8);
+  if (vcall(device, DEV_CREATE_BUFFER, [FFIType.ptr, FFIType.ptr, FFIType.ptr], [desc.ptr!, null, pp.ptr!]) !== 0) {
+    throw new Error('CreateBuffer (async readback staging) failed.');
+  }
+  const staging = pp.readBigUInt64LE(0);
+
+  vcall(context, CTX_COPY_RESOURCE, [FFIType.u64, FFIType.u64], [staging, buffer], FFIType.void);
+  vcall(context, CTX_FLUSH, [], [], FFIType.void);
+
+  // The desc/pp Buffers above are dead before the first await; `mapped` is
+  // re-referenced after every await, so nothing FFI-visible spans a GC window.
+  const mapped = Buffer.alloc(16); // pData@0, RowPitch u32@8, DepthPitch u32@12
+  for (;;) {
+    const hr = vcall(context, CTX_MAP, [FFIType.u64, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr], [staging, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, mapped.ptr!]);
+    if (hr === 0) break;
+    if (hr >>> 0 !== DXGI_ERROR_WAS_STILL_DRAWING) {
+      comRelease(staging);
+      throw new Error(`ID3D11DeviceContext::Map (async readback) failed: ${describeDeviceError(hr)}`);
+    }
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+  }
+  const dataPtr = mapped.readBigUInt64LE(0);
   const out = new Uint8Array(byteSize);
   out.set(new Uint8Array(toArrayBuffer(Number(dataPtr) as Pointer, 0, byteSize)));
   vcall(context, CTX_UNMAP, [FFIType.u64, FFIType.u32], [staging, 0], FFIType.void);

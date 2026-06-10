@@ -490,8 +490,49 @@ function runSections(label: string, options: CreateDeviceOptions): void {
   destroyDevice();
 }
 
+async function runAsyncSections(label: string, options: CreateDeviceOptions): Promise<void> {
+  const gpu = createComputeDevice(options);
+  const tag = (name: string): string => `${name} [${label}]`;
+
+  {
+    const values = new Float32Array(262_144);
+    for (let index = 0; index < values.length; index += 1) values[index] = index * 0.5;
+    const array = GpuArray.from(values);
+    // A deliberately heavy dispatch so the staging copy is still in flight when polling starts.
+    const heavy = new Kernel(
+      `RWStructuredBuffer<float> data : register(u0);
+       [numthreads(64,1,1)] void main(uint3 id : SV_DispatchThreadID) {
+         float accumulator = data[id.x];
+         for (uint i = 0; i < 4096; i += 1) accumulator = sqrt(accumulator + 1.0);
+         data[id.x] = accumulator;
+       }`,
+    );
+    // Queue enough work that the GPU is still busy when polling starts — hardware
+    // drains a single dispatch in well under a millisecond, WARP needs only one.
+    const queuedDispatches = label === 'hardware' ? 64 : 1;
+    for (let dispatchIndex = 0; dispatchIndex < queuedDispatches; dispatchIndex += 1) heavy.dispatch({ data: array });
+    let intervalTicks = 0;
+    const interval = setInterval(() => {
+      intervalTicks += 1;
+    }, 1);
+    const asyncResult = await array.readAsync();
+    clearInterval(interval);
+    const syncResult = array.read();
+    let identical = asyncResult.length === syncResult.length;
+    for (let index = 0; index < asyncResult.length; index += 1) if (asyncResult[index] !== syncResult[index]) identical = false;
+    check(tag('22 async-readback-bytes'), identical, `${asyncResult.length} elements byte-equal sync vs async`);
+    check(tag('22 async-readback-liveness'), intervalTicks > 0, `event loop stayed live during await (${intervalTicks} interval ticks)`);
+    array.release();
+    heavy.release();
+  }
+
+  destroyDevice();
+}
+
 runSections('hardware', {});
 runSections('warp', { driver: 'warp' });
+await runAsyncSections('hardware', {});
+await runAsyncSections('warp', { driver: 'warp' });
 
 {
   const hardware = determinismByDriver.get('hardware');
