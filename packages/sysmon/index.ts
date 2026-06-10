@@ -8,12 +8,17 @@ export { EtwSession, etwProviderSchema, etwProviders } from './etw';
 export type { EtwEvent, EtwEventProperty, EtwEventSchema, EtwRunOptions, EtwRunResult, EtwSessionOptions } from './etw';
 export { channels, formatMessage, queryEvents, tailEvents } from './eventlog';
 export type { EventRecord, QueryOptions, TailOptions } from './eventlog';
+export { smbios } from './firmware';
 export { memory, performanceInfo } from './memory';
 export type { PerformanceInfo } from './memory';
 export { NetSampler, interfaceCounters, tcpSockets, udpSockets } from './net';
 export type { InterfaceRate, NamedTcpSocket, NamedUdpSocket, SocketOptions } from './net';
+export { batteryState, powerScheme, powerStatus } from './power';
+export type { BatteryState, PowerScheme, PowerStatus } from './power';
 export { ProcessSampler, pidStats, processImagePath, processTree, processes } from './process';
 export type { PidStats, ProcessSample, ProcessTreeNode } from './process';
+export { sessions } from './sessions';
+export type { SessionInfo } from './sessions';
 export { createSpinTicker, createTicker, monotonicMicroseconds } from './sampler';
 export type { Ticker } from './sampler';
 export {
@@ -34,11 +39,12 @@ export {
   parseProcessSnapshot,
   parseProcessorTimes,
   parseProviderEnumeration,
+  parseSmbios,
   parseTcp6Table,
   parseTcpTable,
   parseUdp6Table,
   parseUdpTable,
 } from './structs';
-export type { CpuTime, EtwProvider, InterfaceCounter, MemoryStatus, PerformanceCounts, ProcessInfo, TcpSocket, UdpSocket } from './structs';
+export type { CpuTime, EtwProvider, InterfaceCounter, MemoryStatus, PerformanceCounts, ProcessInfo, SmbiosBaseboard, SmbiosBios, SmbiosInfo, SmbiosMemoryDevice, SmbiosProcessor, SmbiosSystem, TcpSocket, UdpSocket } from './structs';
 export { bootTime, computerName, cpuLayout, isElevated, osInfo, uptimeMs, userName } from './system';
 export type { CpuLayout, OsInfo } from './system';

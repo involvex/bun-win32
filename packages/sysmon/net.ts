@@ -62,9 +62,9 @@ export function interfaceCounters(): InterfaceCounter[] {
   if (status !== NO_ERROR) throw new Error(`GetIfTable2 failed: ${status}`);
   const tableAddress = Number(tablePointerBuffer.readBigUInt64LE(0)) as Pointer;
   try {
-    const countView = Buffer.from(toArrayBuffer(tableAddress, 0, 4));
+    const countView = Buffer.from(toArrayBuffer(tableAddress, 0, 4).slice(0));
     const count = countView.readUInt32LE(0);
-    const table = Buffer.from(toArrayBuffer(tableAddress, 0, 8 + count * 0x548)); // copy ONCE into owned memory, then free the API allocation
+    const table = Buffer.from(toArrayBuffer(tableAddress, 0, 8 + count * 0x548).slice(0)); // slice(0) COPIES once into owned memory before FreeMibTable (Buffer.from(ArrayBuffer) alone is a view)
     return parseInterfaceTable(table);
   } finally {
     FreeMibTable(tableAddress);

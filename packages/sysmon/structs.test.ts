@@ -11,6 +11,7 @@ import {
   parsePerformanceInfo,
   parseProcessorTimes,
   parseProviderEnumeration,
+  parseSmbios,
   parseTcp6Table,
   parseTcpTable,
   parseUdpTable,
@@ -238,5 +239,51 @@ describe('parseProviderEnumeration', () => {
     expect(providers).toHaveLength(2);
     expect(providers[0]).toEqual({ guid: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', name: 'Alpha-Provider', schemaSource: 1 });
     expect(providers[1]).toEqual({ guid: '11111111-2222-3333-4444-555555555555', name: 'Zeta-Provider', schemaSource: 0 });
+  });
+});
+
+describe('parseSmbios', () => {
+  test('decodes a type-1 structure with a known UUID and 1-based string table', () => {
+    // RawSMBIOSData header (8 B) + type-1 (27 B formatted) + 2-string table + type-127 terminator
+    const formatted = Buffer.alloc(27);
+    formatted.writeUInt8(1, 0); // type 1
+    formatted.writeUInt8(27, 1); // length
+    formatted.writeUInt16LE(0x0100, 2); // handle
+    formatted.writeUInt8(1, 4); // manufacturer → string 1
+    formatted.writeUInt8(2, 5); // product → string 2
+    formatted.writeUInt8(0, 6); // version unset (index 0)
+    formatted.writeUInt8(0, 7); // serial unset
+    // UUID bytes: mixed-endian for 03020100-0504-0706-0809-0A0B0C0D0E0F
+    for (let i = 0; i < 16; i += 1) formatted.writeUInt8(i, 8 + i);
+    const stringTable = Buffer.from('Framework Laptop 13  ', 'latin1');
+    const terminator = Buffer.from([127, 4, 0, 0, 0, 0]); // type-127 + its empty string table
+    const buffer = Buffer.concat([Buffer.from([0, 3, 6, 0, 0, 0, 0, 0]), formatted, stringTable, terminator]);
+    const info = parseSmbios(buffer);
+    expect(info.version).toBe('3.6');
+    expect(info.system.manufacturer).toBe('Framework');
+    expect(info.system.product).toBe('Laptop 13');
+    expect(info.system.serialNumber).toBe('');
+    expect(info.system.uuid).toBe('03020100-0504-0706-0809-0A0B0C0D0E0F');
+  });
+
+  test('type-17 size decoding honors the KB bit and the 0x7FFF extended sentinel', () => {
+    const makeDevice = (rawSize: number, extended: number): Buffer => {
+      const formatted = Buffer.alloc(0x22);
+      formatted.writeUInt8(17, 0);
+      formatted.writeUInt8(0x22, 1);
+      formatted.writeUInt16LE(rawSize, 0x0c);
+      formatted.writeUInt32LE(extended, 0x1c);
+      return Buffer.concat([formatted, Buffer.from([0, 0])]);
+    };
+    const header = Buffer.from([0, 3, 6, 0, 0, 0, 0, 0]);
+    const terminator = Buffer.from([127, 4, 0, 0, 0, 0]);
+    const plain = parseSmbios(Buffer.concat([header, makeDevice(16_384, 0), terminator]));
+    expect(plain.memoryDevices[0]!.sizeBytes).toBe(16_384 * 1024 * 1024);
+    const kilobytes = parseSmbios(Buffer.concat([header, makeDevice(0x8000 | 512, 0), terminator]));
+    expect(kilobytes.memoryDevices[0]!.sizeBytes).toBe(512 * 1024);
+    const extended = parseSmbios(Buffer.concat([header, makeDevice(0x7fff, 49_152), terminator]));
+    expect(extended.memoryDevices[0]!.sizeBytes).toBe(49_152 * 1024 * 1024);
+    const empty = parseSmbios(Buffer.concat([header, makeDevice(0, 0), terminator]));
+    expect(empty.memoryDevices[0]!.sizeBytes).toBe(0);
   });
 });

@@ -99,6 +99,56 @@ export interface ProcessInfo {
   workingSetBytes: number;
 }
 
+export interface SmbiosBaseboard {
+  manufacturer: string;
+  product: string;
+  serialNumber: string;
+  version: string;
+}
+
+export interface SmbiosBios {
+  releaseDate: string;
+  vendor: string;
+  version: string;
+}
+
+export interface SmbiosInfo {
+  baseboard: SmbiosBaseboard;
+  bios: SmbiosBios;
+  memoryDevices: SmbiosMemoryDevice[];
+  processors: SmbiosProcessor[];
+  system: SmbiosSystem;
+  /** SMBIOS spec version, e.g. `3.6`. */
+  version: string;
+}
+
+export interface SmbiosMemoryDevice {
+  locator: string;
+  manufacturer: string;
+  partNumber: string;
+  /** 0 = empty slot. */
+  sizeBytes: number;
+  speedMegatransfers: number;
+}
+
+export interface SmbiosProcessor {
+  coreCount: number;
+  currentSpeedMhz: number;
+  manufacturer: string;
+  maxSpeedMhz: number;
+  socket: string;
+  threadCount: number;
+  version: string;
+}
+
+export interface SmbiosSystem {
+  manufacturer: string;
+  product: string;
+  serialNumber: string;
+  /** Mixed-endian per the spec (first 3 fields LE); `Not present` when the firmware left it 00/FF. */
+  uuid: string;
+}
+
 export interface TcpSocket {
   family: 4 | 6;
   localAddress: string;
@@ -394,6 +444,106 @@ export function parseProviderEnumeration(buffer: Buffer): EtwProvider[] {
   }
   providers.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   return providers;
+}
+
+/**
+ * RawSMBIOSData from GetSystemFirmwareTable('RSMB'): version u8@1/u8@2, structure stream @8.
+ * Each structure: Type u8@0, Length u8@1 (formatted area), Handle u16@2, then a 1-BASED
+ * NUL-terminated string table ending in a double NUL. String index 0 = unset; type 127 ends
+ * the table. Type 17 size: u16@0x0C in MB (bit 15 → KB), 0x7FFF sentinel → extended u32@0x1C.
+ */
+export function parseSmbios(buffer: Buffer): SmbiosInfo {
+  const baseboard: SmbiosBaseboard = { manufacturer: '', product: '', serialNumber: '', version: '' };
+  const bios: SmbiosBios = { releaseDate: '', vendor: '', version: '' };
+  const system: SmbiosSystem = { manufacturer: '', product: '', serialNumber: '', uuid: 'Not present' };
+  const memoryDevices: SmbiosMemoryDevice[] = [];
+  const processors: SmbiosProcessor[] = [];
+  const version = `${buffer.readUInt8(1)}.${buffer.readUInt8(2)}`;
+
+  let offset = 8;
+  while (offset + 4 <= buffer.byteLength) {
+    const type = buffer.readUInt8(offset);
+    const length = buffer.readUInt8(offset + 1);
+    if (length < 4) break;
+
+    const strings: string[] = [];
+    let cursor = offset + length;
+    let current = '';
+    while (cursor < buffer.byteLength) {
+      const byte = buffer.readUInt8(cursor);
+      if (byte === 0) {
+        if (current.length === 0) break; // double NUL terminates the structure
+        strings.push(current);
+        current = '';
+        if (cursor + 1 < buffer.byteLength && buffer.readUInt8(cursor + 1) === 0) break; // cursor stays on the FIRST NUL of the double NUL
+      } else {
+        current += String.fromCharCode(byte);
+      }
+      cursor += 1;
+    }
+
+    const stringAt = (fieldOffset: number): string => {
+      if (fieldOffset >= length) return '';
+      const index = buffer.readUInt8(offset + fieldOffset);
+      return index > 0 && index <= strings.length ? strings[index - 1]!.trim() : '';
+    };
+    const u16At = (fieldOffset: number): number => (fieldOffset + 2 <= length ? buffer.readUInt16LE(offset + fieldOffset) : 0);
+    const u32At = (fieldOffset: number): number => (fieldOffset + 4 <= length ? buffer.readUInt32LE(offset + fieldOffset) : 0);
+    const u8At = (fieldOffset: number): number => (fieldOffset + 1 <= length ? buffer.readUInt8(offset + fieldOffset) : 0);
+
+    if (type === 0) {
+      bios.releaseDate = stringAt(0x08);
+      bios.vendor = stringAt(0x04);
+      bios.version = stringAt(0x05);
+    } else if (type === 1) {
+      system.manufacturer = stringAt(0x04);
+      system.product = stringAt(0x05);
+      system.serialNumber = stringAt(0x07);
+      if (length >= 0x18) {
+        let allZero = true;
+        let allFf = true;
+        for (let i = 0; i < 16; i += 1) {
+          const byte = buffer.readUInt8(offset + 8 + i);
+          if (byte !== 0x00) allZero = false;
+          if (byte !== 0xff) allFf = false;
+        }
+        if (!allZero && !allFf) system.uuid = formatGuid(buffer, offset + 8).toUpperCase();
+      }
+    } else if (type === 2) {
+      baseboard.manufacturer = stringAt(0x04);
+      baseboard.product = stringAt(0x05);
+      baseboard.serialNumber = stringAt(0x07);
+      baseboard.version = stringAt(0x06);
+    } else if (type === 4) {
+      processors.push({
+        coreCount: u8At(0x23),
+        currentSpeedMhz: u16At(0x16),
+        manufacturer: stringAt(0x07),
+        maxSpeedMhz: u16At(0x14),
+        socket: stringAt(0x04),
+        threadCount: u8At(0x25),
+        version: stringAt(0x10),
+      });
+    } else if (type === 17) {
+      const rawSize = u16At(0x0c);
+      let sizeMegabytes = 0;
+      if (rawSize === 0x7fff) sizeMegabytes = u32At(0x1c) & 0x7fff_ffff;
+      else if ((rawSize & 0x8000) !== 0) sizeMegabytes = (rawSize & 0x7fff) / 1024;
+      else sizeMegabytes = rawSize;
+      memoryDevices.push({
+        locator: stringAt(0x10),
+        manufacturer: stringAt(0x17),
+        partNumber: stringAt(0x1a),
+        sizeBytes: sizeMegabytes * 1024 * 1024,
+        speedMegatransfers: u16At(0x15),
+      });
+    } else if (type === 127) {
+      break;
+    }
+
+    offset = cursor + 2;
+  }
+  return { baseboard, bios, memoryDevices, processors, system, version };
 }
 
 /** MIB_TCP6TABLE_OWNER_PID: dwNumEntries u32@0, 56 B rows @4 — ucLocalAddr[16]@0, dwLocalScopeId@16, dwLocalPort@20 (network order), ucRemoteAddr[16]@24, dwRemoteScopeId@40, dwRemotePort@44, dwState@48, dwOwningPid@52. */
