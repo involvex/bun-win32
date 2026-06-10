@@ -3,6 +3,7 @@
 import { CFunction, FFIType, read, type Pointer } from 'bun:ffi';
 
 import { BLOB_RELEASE, IUNKNOWN_RELEASE } from './constants';
+import { untrackResource } from './memory';
 
 const invokers = new Map<string, ReturnType<typeof CFunction>>();
 
@@ -16,7 +17,9 @@ export function blobRelease(blob: bigint): void {
 
 /** Release a COM interface (IUnknown::Release). No-op on a null handle. */
 export function comRelease(thisPtr: bigint): void {
-  if (thisPtr !== 0n) vcall(thisPtr, IUNKNOWN_RELEASE, [], [], FFIType.u32);
+  if (thisPtr === 0n) return;
+  vcall(thisPtr, IUNKNOWN_RELEASE, [], [], FFIType.u32);
+  untrackResource(thisPtr);
 }
 
 /** Pack a canonical GUID string into the 16-byte little-endian layout COM expects. */

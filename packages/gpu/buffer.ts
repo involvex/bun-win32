@@ -30,6 +30,7 @@ import {
   DXGI_FORMAT_UNKNOWN,
 } from './constants';
 import { describeDeviceError, requireGpu } from './device';
+import { trackResource } from './memory';
 
 /** Result of {@link makeStructuredBuffer}: the buffer plus optional UAV/SRV views. */
 export interface StructuredBuffer {
@@ -62,7 +63,9 @@ export function makeConstantBuffer(byteSize: number): bigint {
   if (vcall(device, DEV_CREATE_BUFFER, [FFIType.ptr, FFIType.ptr, FFIType.ptr], [desc.ptr!, null, pp.ptr!]) !== 0) {
     throw new Error('CreateBuffer (constant buffer) failed.');
   }
-  return pp.readBigUInt64LE(0);
+  const buffer = pp.readBigUInt64LE(0);
+  trackResource(buffer, size, 'constantBuffer');
+  return buffer;
 }
 
 /**
@@ -98,6 +101,7 @@ export function makeStructuredBuffer(options: StructuredBufferOptions): Structur
     throw new Error('CreateBuffer (structured buffer) failed.');
   }
   const buffer = pp.readBigUInt64LE(0);
+  trackResource(buffer, byteWidth, 'buffer');
 
   const result: StructuredBuffer = { buffer };
 

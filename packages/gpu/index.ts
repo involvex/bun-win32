@@ -12,6 +12,8 @@ export { createComputeDevice, createDevice, describeDeviceError, destroyDevice, 
 export type { CreateDeviceOptions, Gpu } from './device';
 export { GpuArray, Kernel, parseKernelBindings, parseNumthreads, run } from './kernel';
 export type { DispatchOptions, KernelArray, KernelBinding, RunOptions, ScalarKind } from './kernel';
+export { gpuMemory } from './memory';
+export type { GpuMemoryReport } from './memory';
 export { clear, copyResource, csSet, dispatch, drawFullscreenTriangle, drawPoints, generateMips, makeAdditiveBlendState, makeSampler, psSet, setBlendState, setRenderTargets, setViewport, vsSet, vsSetShaderResources } from './pipeline';
 export type { CsBindings, PsBindings, SamplerOptions } from './pipeline';
 export { encodePNG, encodePNGFromBGRA } from './png';

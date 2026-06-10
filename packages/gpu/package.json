@@ -63,6 +63,7 @@
     "device.ts",
     "index.ts",
     "kernel.ts",
+    "memory.ts",
     "pipeline.ts",
     "png.ts",
     "query.ts",

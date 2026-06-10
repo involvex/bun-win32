@@ -20,9 +20,12 @@ import {
   DEV_CREATE_SHADER_RESOURCE_VIEW,
   DEV_CREATE_TEXTURE_2D,
   DEV_CREATE_UNORDERED_ACCESS_VIEW,
+  DXGI_FORMAT_R16G16B16A16_FLOAT,
+  DXGI_FORMAT_R32G32B32A32_FLOAT,
   DXGI_FORMAT_R8G8B8A8_UNORM,
 } from './constants';
 import { describeDeviceError, requireGpu } from './device';
+import { trackResource } from './memory';
 
 /** Result of {@link makeTexture}: the texture plus optional RTV/SRV/UAV views. */
 export interface TextureResult {
@@ -75,6 +78,10 @@ export function makeTexture(options: TextureOptions): TextureResult {
     throw new Error('CreateTexture2D failed.');
   }
   const tex = pp.readBigUInt64LE(0);
+  // 4 bytes/pixel covers every format this module creates by default; wide formats
+  // (R32G32B32A32 16 B, R16G16B16A16 8 B) adjust the accounting only.
+  const bytesPerPixel = format === DXGI_FORMAT_R32G32B32A32_FLOAT ? 16 : format === DXGI_FORMAT_R16G16B16A16_FLOAT ? 8 : 4;
+  trackResource(tex, w * h * bytesPerPixel, 'texture');
   const result: TextureResult = { tex };
   if (staging) return result;
 

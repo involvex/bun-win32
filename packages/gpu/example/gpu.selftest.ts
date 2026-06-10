@@ -46,10 +46,13 @@ import {
   drawFullscreenTriangle,
   drawTriangles,
   getDeviceRemovedReason,
+  gpuMemory,
   listAdapters,
   makeComputeShader,
+  makeConstantBuffer,
   makeDepthBuffer,
   makePixelShader,
+  makeStructuredBuffer,
   makeTexture,
   makeVertexShader,
   psSet,
@@ -353,6 +356,15 @@ function runSections(label: string, options: CreateDeviceOptions): void {
     check(tag('14 render-depth'), isGreenAt(32, 32) && isRedAt(6, 32) && isGreenAt(58, 32), 'near green wins the overlap; red-only and green-only bands correct');
     releaseDepth();
     setDepthState(false, false);
+    setRenderTargets([]);
+    comRelease(depthPs);
+    comRelease(depthVs);
+    comRelease(depthColor.rtv!);
+    comRelease(depthColor.tex);
+    comRelease(ps);
+    comRelease(vs);
+    comRelease(target.rtv!);
+    comRelease(target.tex);
   }
 
   {
@@ -522,6 +534,42 @@ function runSections(label: string, options: CreateDeviceOptions): void {
     comRelease(blur);
     comRelease(source.srv!);
     comRelease(source.tex);
+  }
+
+  {
+    const baseline = gpuMemory();
+    const tracked = makeStructuredBuffer({ count: 1024, srv: true, stride: 4 });
+    const constants = makeConstantBuffer(20); // rounds up to 32
+    const texture = makeTexture({ w: 16, h: 16, srv: true });
+    const after = gpuMemory();
+    const bufferDelta = (after.bytesByCategory['buffer'] ?? 0) - (baseline.bytesByCategory['buffer'] ?? 0);
+    const constantDelta = (after.bytesByCategory['constantBuffer'] ?? 0) - (baseline.bytesByCategory['constantBuffer'] ?? 0);
+    const textureDelta = (after.bytesByCategory['texture'] ?? 0) - (baseline.bytesByCategory['texture'] ?? 0);
+    check(tag('24 memory-bytes'), bufferDelta === 4096 && constantDelta === 32 && textureDelta === 1024, `byte-exact deltas: buffer +${bufferDelta}, constantBuffer +${constantDelta} (20→32 rounding), texture +${textureDelta}`);
+    check(tag('24 memory-live'), after.liveResources === baseline.liveResources + 3, `liveResources ${baseline.liveResources} → ${after.liveResources}`);
+    comRelease(tracked.srv!);
+    comRelease(tracked.buffer);
+    comRelease(constants);
+    comRelease(texture.srv!);
+    comRelease(texture.tex);
+    const released = gpuMemory();
+    check(tag('24 memory-release'), released.liveResources === baseline.liveResources && released.totalBytes === baseline.totalBytes, `back to baseline (${released.liveResources} live, ${released.totalBytes} bytes)`);
+
+    const leaked = makeStructuredBuffer({ count: 256, stride: 4 });
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...parts: unknown[]): void => {
+      warnings.push(parts.map(String).join(' '));
+    };
+    destroyDevice();
+    console.warn = originalWarn;
+    check(
+      tag('24 memory-leak-warning'),
+      warnings.some((line) => line.includes('live GPU resource')),
+      `destroyDevice with a deliberate leak warned: ${warnings[0] ?? '(none)'}`,
+    );
+    void leaked;
+    createComputeDevice(options);
   }
 
   {

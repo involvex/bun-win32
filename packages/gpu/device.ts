@@ -6,6 +6,7 @@ import D3d11 from '@bun-win32/d3d11';
 import { D3D11_SDK_VERSION, D3D_DRIVER_TYPE } from '@bun-win32/d3d11';
 
 import { comRelease, guidBytes, hex, vcall } from './com';
+import { reportLeaksAndReset } from './memory';
 import {
   D3D11_CREATE_DEVICE_BGRA_SUPPORT,
   D3D_FEATURE_LEVEL_11_0,
@@ -206,9 +207,10 @@ export function describeDeviceError(hr: number): string {
   return hex(code);
 }
 
-/** Release the active device's RTV/swap chain/context/device (reverse creation order) and clear the active state. */
+/** Release the active device's RTV/swap chain/context/device (reverse creation order) and clear the active state. Warns when tracked resources are still alive. */
 export function destroyDevice(): void {
   if (activeGpu === null) return;
+  reportLeaksAndReset();
   comRelease(activeGpu.backBufferRTV);
   comRelease(activeGpu.swapChain);
   comRelease(activeGpu.context);

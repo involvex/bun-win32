@@ -29,6 +29,7 @@ import {
   DXGI_FORMAT_D32_FLOAT,
 } from './constants';
 import { requireGpu, type Gpu } from './device';
+import { trackResource } from './memory';
 
 /** A depth texture and its depth-stencil view. */
 export interface DepthBuffer {
@@ -94,6 +95,7 @@ export function makeDepthBuffer(w: number, h: number): DepthBuffer {
     throw new Error('CreateTexture2D (depth) failed.');
   }
   const tex = ppTex.readBigUInt64LE(0);
+  trackResource(tex, w * h * 4, 'depth');
 
   // D3D11_DEPTH_STENCIL_VIEW_DESC: Format u32@0, ViewDimension u32@4, Flags u32@8,
   // then the Texture2D{MipSlice u32} union @12. 20 bytes total (8-byte aligned alloc).
