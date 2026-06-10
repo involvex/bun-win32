@@ -1,12 +1,15 @@
 import Kernel32, { ProcessAccessRights } from '@bun-win32/kernel32';
+import User32 from '@bun-win32/user32';
 import Ntdll, { STATUS_SUCCESS, SystemInformationClass } from '@bun-win32/ntdll';
 import { monotonicMicroseconds } from './sampler';
 import { type ProcessInfo, decodeUnicodeString, parseProcessSnapshot } from './structs';
 import { cpuLayout } from './system';
 
-Kernel32.Preload(['CloseHandle', 'OpenProcess', 'QueryFullProcessImageNameW']);
+Kernel32.Preload(['CloseHandle', 'GetProcessHandleCount', 'GetProcessIoCounters', 'OpenProcess', 'QueryFullProcessImageNameW']);
+User32.Preload(['GetGuiResources']);
 Ntdll.Preload(['NtQuerySystemInformation']);
-const { CloseHandle, OpenProcess, QueryFullProcessImageNameW } = Kernel32;
+const { CloseHandle, GetProcessHandleCount, GetProcessIoCounters, OpenProcess, QueryFullProcessImageNameW } = Kernel32;
+const { GetGuiResources } = User32;
 const { NtQuerySystemInformation } = Ntdll;
 
 const STATUS_INFO_LENGTH_MISMATCH = 0xc000_0004 | 0;
@@ -269,4 +272,52 @@ export class ProcessSampler {
     }
     return rows;
   }
+}
+
+export interface ProcessIoCounters {
+  otherBytes: number;
+  otherOperations: number;
+  readBytes: number;
+  readOperations: number;
+  writeBytes: number;
+  writeOperations: number;
+}
+
+export interface ProcessObjectCounts {
+  /** GDI objects (GetGuiResources flag 0) — the classic GDI-leak metric. */
+  gdiObjects: number;
+  handleCount: number;
+  /** USER objects (GetGuiResources flag 1). */
+  userObjects: number;
+}
+
+/** Cumulative I/O for one process (GetProcessIoCounters; IO_COUNTERS 48 B = six u64) — per-process disk/IO attribution systeminformation's disksIO() null-stubs on Windows (si#274). Null when access is denied. */
+export function processIoCounters(pid: number): ProcessIoCounters | null {
+  const processHandle = OpenProcess(ProcessAccessRights.PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+  if (processHandle === 0n) return null;
+  const ioBuffer = Buffer.alloc(48);
+  const succeeded = GetProcessIoCounters(processHandle, ioBuffer.ptr);
+  void CloseHandle(processHandle);
+  if (succeeded === 0) return null;
+  return {
+    otherBytes: Number(ioBuffer.readBigUInt64LE(40)),
+    otherOperations: Number(ioBuffer.readBigUInt64LE(16)),
+    readBytes: Number(ioBuffer.readBigUInt64LE(24)),
+    readOperations: Number(ioBuffer.readBigUInt64LE(0)),
+    writeBytes: Number(ioBuffer.readBigUInt64LE(32)),
+    writeOperations: Number(ioBuffer.readBigUInt64LE(8)),
+  };
+}
+
+/** Handle/GDI/USER object counts for one process (GetProcessHandleCount + user32 GetGuiResources) — the leak-hunting trio no JS package exposes. Null when access is denied. */
+export function processObjectCounts(pid: number): ProcessObjectCounts | null {
+  const processHandle = OpenProcess(ProcessAccessRights.PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+  if (processHandle === 0n) return null;
+  const handleCountBuffer = Buffer.alloc(4);
+  const succeeded = GetProcessHandleCount(processHandle, handleCountBuffer.ptr);
+  const gdiObjects = GetGuiResources(processHandle, 0);
+  const userObjects = GetGuiResources(processHandle, 1);
+  void CloseHandle(processHandle);
+  if (succeeded === 0) return null;
+  return { gdiObjects, handleCount: handleCountBuffer.readUInt32LE(0), userObjects };
 }

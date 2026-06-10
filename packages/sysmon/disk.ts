@@ -1,4 +1,5 @@
 import Kernel32 from '@bun-win32/kernel32';
+import { CounterSet, expandCounterPath } from './counters';
 import { parseMultiSz } from './structs';
 
 Kernel32.Preload(['GetDiskFreeSpaceExW', 'GetDriveTypeW', 'GetLogicalDriveStringsW', 'GetVolumeInformationW']);
@@ -81,4 +82,31 @@ function decodeFirstString(buffer: Buffer): string {
   let length = 0;
   while (length * 2 < buffer.byteLength && buffer.readUInt16LE(length * 2) !== 0) length += 1;
   return buffer.subarray(0, length * 2).toString('utf16le');
+}
+
+export interface DiskIoRate {
+  /** PhysicalDisk instance name, e.g. `0 C:` or `_Total`. */
+  instance: string;
+  readBytesPerSecond: number;
+  writeBytesPerSecond: number;
+}
+
+/** Per-physical-disk I/O throughput via PDH `\PhysicalDisk(*)\Disk Read|Write Bytes/sec`, sampled over `sampleMs` — the system-wide numbers systeminformation's disksIO() null-stubs on Windows (si#274). Pair with `processIoCounters` for per-process attribution. */
+export function diskIoCounters(sampleMs = 200): DiskIoRate[] {
+  const readPaths = expandCounterPath('\\PhysicalDisk(*)\\Disk Read Bytes/sec');
+  if (readPaths.length === 0) return [];
+  const counterSet = new CounterSet();
+  try {
+    const instances = readPaths.map((path) => {
+      const instance = /\(([^)]+)\)/.exec(path)?.[1] ?? path;
+      const local = path.replace(/^\\\\[^\\]+/, ''); // expanded paths carry \\MACHINE — strip to the local form
+      return { instance, read: counterSet.add(local), write: counterSet.add(local.replace('Disk Read Bytes/sec', 'Disk Write Bytes/sec')) };
+    });
+    counterSet.collect();
+    Bun.sleepSync(sampleMs);
+    counterSet.collect();
+    return instances.map((entry) => ({ instance: entry.instance, readBytesPerSecond: counterSet.value(entry.read), writeBytesPerSecond: counterSet.value(entry.write) }));
+  } finally {
+    counterSet.dispose();
+  }
 }
