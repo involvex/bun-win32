@@ -2,9 +2,15 @@ export { makeConstantBuffer, makeStructuredBuffer, readbackBuffer, updateConstan
 export type { StructuredBuffer, StructuredBufferOptions } from './buffer';
 export { blobRelease, comRelease, guidBytes, hex, vcall } from './com';
 export * from './constants';
+export { bindDepth, clearDepth, drawTriangles, makeDepthBuffer, releaseDepth, setCull, setDepthState, setRenderTargetsWithDepth } from './depth';
+export type { DepthBuffer } from './depth';
 export { createComputeDevice, createDevice, describeDeviceError, destroyDevice, getDeviceRemovedReason, hasDevice, requireGpu } from './device';
 export type { CreateDeviceOptions, Gpu } from './device';
+export { clear, copyResource, csSet, dispatch, drawFullscreenTriangle, drawPoints, generateMips, makeAdditiveBlendState, makeSampler, psSet, setBlendState, setRenderTargets, setViewport, vsSet, vsSetShaderResources } from './pipeline';
+export type { CsBindings, PsBindings, SamplerOptions } from './pipeline';
 export { compile, disassemble, makeComputeShader, makePixelShader, makeVertexShader, preprocessHLSL } from './shader';
 export type { CompileOptions, CompiledShader } from './shader';
+export { makeTexture, readbackTexture } from './texture';
+export type { TextureOptions, TextureResult } from './texture';
 export { createWindow } from './window';
 export type { CreateWindowOptions, Win } from './window';

@@ -1,0 +1,254 @@
+// Render/compute pipeline state: shader binding, render targets, viewport, clears, draws, dispatch, blend, samplers.
+
+import { FFIType } from 'bun:ffi';
+
+import { vcall } from './com';
+import {
+  CTX_CLEAR_RENDER_TARGET_VIEW,
+  CTX_COPY_RESOURCE,
+  CTX_CS_SET_CONSTANT_BUFFERS,
+  CTX_CS_SET_SHADER,
+  CTX_CS_SET_SHADER_RESOURCES,
+  CTX_CS_SET_UNORDERED_ACCESS_VIEWS,
+  CTX_DISPATCH,
+  CTX_DRAW,
+  CTX_GENERATE_MIPS,
+  CTX_IA_SET_PRIMITIVE_TOPOLOGY,
+  CTX_OM_SET_BLEND_STATE,
+  CTX_OM_SET_RENDER_TARGETS,
+  CTX_PS_SET_CONSTANT_BUFFERS,
+  CTX_PS_SET_SAMPLERS,
+  CTX_PS_SET_SHADER,
+  CTX_PS_SET_SHADER_RESOURCES,
+  CTX_RS_SET_VIEWPORTS,
+  CTX_VS_SET_CONSTANT_BUFFERS,
+  CTX_VS_SET_SHADER,
+  CTX_VS_SET_SHADER_RESOURCES,
+  D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+  D3D11_PRIMITIVE_TOPOLOGY_POINTLIST,
+  D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+  D3D11_TEXTURE_ADDRESS_CLAMP,
+  DEV_CREATE_BLEND_STATE,
+  DEV_CREATE_SAMPLER_STATE,
+} from './constants';
+import { requireGpu } from './device';
+
+export interface PsBindings {
+  cb?: readonly bigint[];
+  srv?: readonly bigint[];
+  samp?: readonly bigint[];
+}
+
+export interface CsBindings {
+  cb?: readonly bigint[];
+  uav?: readonly bigint[];
+  srv?: readonly bigint[];
+}
+
+export interface SamplerOptions {
+  /** D3D11_FILTER value; defaults to MIN_MAG_MIP_LINEAR. */
+  filter?: number;
+  /** D3D11_TEXTURE_ADDRESS_MODE for U/V/W; defaults to CLAMP. */
+  address?: number;
+}
+
+/** Clear a render-target view to the given RGBA color. */
+export function clear(rtv: bigint, color: readonly [number, number, number, number]): void {
+  const { context } = requireGpu();
+  const c = Buffer.alloc(16);
+  c.writeFloatLE(color[0], 0);
+  c.writeFloatLE(color[1], 4);
+  c.writeFloatLE(color[2], 8);
+  c.writeFloatLE(color[3], 12);
+  vcall(context, CTX_CLEAR_RENDER_TARGET_VIEW, [FFIType.u64, FFIType.ptr], [rtv, c.ptr!], FFIType.void);
+}
+
+/** Copy an entire resource (CopyResource). */
+export function copyResource(dst: bigint, src: bigint): void {
+  const { context } = requireGpu();
+  vcall(context, CTX_COPY_RESOURCE, [FFIType.u64, FFIType.u64], [dst, src], FFIType.void);
+}
+
+/** Bind the compute shader plus optional constant buffers, UAVs, and SRVs. */
+export function csSet(shader: bigint, bindings: CsBindings = {}): void {
+  const { context } = requireGpu();
+  vcall(context, CTX_CS_SET_SHADER, [FFIType.u64, FFIType.ptr, FFIType.u32], [shader, null, 0], FFIType.void);
+  if (bindings.cb && bindings.cb.length > 0) {
+    const arr = Buffer.alloc(8 * bindings.cb.length);
+    bindings.cb.forEach((c, i) => arr.writeBigUInt64LE(c, i * 8));
+    vcall(context, CTX_CS_SET_CONSTANT_BUFFERS, [FFIType.u32, FFIType.u32, FFIType.ptr], [0, bindings.cb.length, arr.ptr!], FFIType.void);
+  }
+  if (bindings.uav && bindings.uav.length > 0) {
+    const arr = Buffer.alloc(8 * bindings.uav.length);
+    bindings.uav.forEach((u, i) => arr.writeBigUInt64LE(u, i * 8));
+    // CSSetUnorderedAccessViews: StartSlot, NumUAVs, ppUAVs, pUAVInitialCounts.
+    vcall(context, CTX_CS_SET_UNORDERED_ACCESS_VIEWS, [FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.ptr], [0, bindings.uav.length, arr.ptr!, null], FFIType.void);
+  }
+  if (bindings.srv && bindings.srv.length > 0) {
+    const arr = Buffer.alloc(8 * bindings.srv.length);
+    bindings.srv.forEach((s, i) => arr.writeBigUInt64LE(s, i * 8));
+    vcall(context, CTX_CS_SET_SHADER_RESOURCES, [FFIType.u32, FFIType.u32, FFIType.ptr], [0, bindings.srv.length, arr.ptr!], FFIType.void);
+  }
+}
+
+/** Dispatch a compute workload of the given thread-group counts. */
+export function dispatch(x: number, y = 1, z = 1): void {
+  const { context } = requireGpu();
+  vcall(context, CTX_DISPATCH, [FFIType.u32, FFIType.u32, FFIType.u32], [x, y, z], FFIType.void);
+}
+
+/** Draw a single full-screen triangle (3 verts, SV_VertexID, no IA buffers). */
+export function drawFullscreenTriangle(): void {
+  const { context } = requireGpu();
+  vcall(context, CTX_IA_SET_PRIMITIVE_TOPOLOGY, [FFIType.u32], [D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST], FFIType.void);
+  vcall(context, CTX_DRAW, [FFIType.u32, FFIType.u32], [3, 0], FFIType.void);
+}
+
+/** Draw `count` point primitives (POINTLIST topology, no IA buffers — the VS fetches from a bound SRV via SV_VertexID). */
+export function drawPoints(count: number): void {
+  const { context } = requireGpu();
+  vcall(context, CTX_IA_SET_PRIMITIVE_TOPOLOGY, [FFIType.u32], [D3D11_PRIMITIVE_TOPOLOGY_POINTLIST], FFIType.void);
+  vcall(context, CTX_DRAW, [FFIType.u32, FFIType.u32], [count, 0], FFIType.void);
+}
+
+/** Generate mip levels for a SRV-bound texture (texture must have GENERATE_MIPS misc + a SRV). */
+export function generateMips(srv: bigint): void {
+  const { context } = requireGpu();
+  vcall(context, CTX_GENERATE_MIPS, [FFIType.u64], [srv], FFIType.void);
+}
+
+/**
+ * Create an additive blend state (ID3D11Device::CreateBlendState, slot 20). With
+ * `premultiplied` false the blend is SRC_ALPHA·src + ONE·dst; with it true the
+ * blend is ONE·src + ONE·dst (pure additive). RGB and alpha both add.
+ */
+export function makeAdditiveBlendState(premultiplied = true): bigint {
+  const { device } = requireGpu();
+  // D3D11_BLEND_DESC: AlphaToCoverageEnable BOOL@0, IndependentBlendEnable BOOL@4,
+  // then RenderTarget[8] of D3D11_RENDER_TARGET_BLEND_DESC (8 × u32 each = 32 bytes).
+  // RT desc: BlendEnable@0, SrcBlend@4, DestBlend@8, BlendOp@12, SrcBlendAlpha@16,
+  //          DestBlendAlpha@20, BlendOpAlpha@24, RenderTargetWriteMask@28.
+  const D3D11_BLEND_ONE = 2;
+  const D3D11_BLEND_SRC_ALPHA = 5;
+  const D3D11_BLEND_OP_ADD = 1;
+  const desc = Buffer.alloc(8 + 32 * 8);
+  desc.writeUInt32LE(0, 0); // AlphaToCoverageEnable
+  desc.writeUInt32LE(0, 4); // IndependentBlendEnable
+  const rt = 8; // RenderTarget[0]
+  desc.writeUInt32LE(1, rt + 0); // BlendEnable
+  desc.writeUInt32LE(premultiplied ? D3D11_BLEND_ONE : D3D11_BLEND_SRC_ALPHA, rt + 4); // SrcBlend
+  desc.writeUInt32LE(D3D11_BLEND_ONE, rt + 8); // DestBlend
+  desc.writeUInt32LE(D3D11_BLEND_OP_ADD, rt + 12); // BlendOp
+  desc.writeUInt32LE(D3D11_BLEND_ONE, rt + 16); // SrcBlendAlpha
+  desc.writeUInt32LE(D3D11_BLEND_ONE, rt + 20); // DestBlendAlpha
+  desc.writeUInt32LE(D3D11_BLEND_OP_ADD, rt + 24); // BlendOpAlpha
+  desc.writeUInt32LE(0x0f, rt + 28); // RenderTargetWriteMask = ALL
+  const pp = Buffer.alloc(8);
+  if (vcall(device, DEV_CREATE_BLEND_STATE, [FFIType.ptr, FFIType.ptr], [desc.ptr!, pp.ptr!]) !== 0) {
+    throw new Error('CreateBlendState failed.');
+  }
+  return pp.readBigUInt64LE(0);
+}
+
+/** Create an ID3D11SamplerState. */
+export function makeSampler(options: SamplerOptions = {}): bigint {
+  const { device } = requireGpu();
+  const { filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR, address = D3D11_TEXTURE_ADDRESS_CLAMP } = options;
+  // D3D11_SAMPLER_DESC: Filter@0 AddressU@4 AddressV@8 AddressW@12 MipLODBias@16
+  // MaxAnisotropy@20 ComparisonFunc@24 BorderColor[4]@28 MinLOD@44 MaxLOD@48. (52 bytes)
+  const desc = Buffer.alloc(52);
+  desc.writeUInt32LE(filter, 0);
+  desc.writeUInt32LE(address, 4);
+  desc.writeUInt32LE(address, 8);
+  desc.writeUInt32LE(address, 12);
+  desc.writeFloatLE(0, 16); // MipLODBias
+  desc.writeUInt32LE(1, 20); // MaxAnisotropy
+  desc.writeUInt32LE(0, 24); // ComparisonFunc (NEVER)
+  desc.writeFloatLE(0, 28); // BorderColor
+  desc.writeFloatLE(0, 32);
+  desc.writeFloatLE(0, 36);
+  desc.writeFloatLE(0, 40);
+  desc.writeFloatLE(-3.4e38, 44); // MinLOD
+  desc.writeFloatLE(3.4e38, 48); // MaxLOD
+  const pp = Buffer.alloc(8);
+  if (vcall(device, DEV_CREATE_SAMPLER_STATE, [FFIType.ptr, FFIType.ptr], [desc.ptr!, pp.ptr!]) !== 0) {
+    throw new Error('CreateSamplerState failed.');
+  }
+  return pp.readBigUInt64LE(0);
+}
+
+/** Bind a blend state (OMSetBlendState, slot 35). Pass 0n to restore the default opaque blend. */
+export function setBlendState(blendState: bigint, blendFactor: readonly [number, number, number, number] = [0, 0, 0, 0], sampleMask = 0xffffffff): void {
+  const { context } = requireGpu();
+  const factor = Buffer.alloc(16);
+  factor.writeFloatLE(blendFactor[0], 0);
+  factor.writeFloatLE(blendFactor[1], 4);
+  factor.writeFloatLE(blendFactor[2], 8);
+  factor.writeFloatLE(blendFactor[3], 12);
+  vcall(context, CTX_OM_SET_BLEND_STATE, [FFIType.u64, FFIType.ptr, FFIType.u32], [blendState, blendState === 0n ? null : factor.ptr!, sampleMask], FFIType.void);
+}
+
+/** Bind render targets (OMSetRenderTargets). Pass [] to unbind. */
+export function setRenderTargets(rtvs: readonly bigint[]): void {
+  const { context } = requireGpu();
+  if (rtvs.length === 0) {
+    vcall(context, CTX_OM_SET_RENDER_TARGETS, [FFIType.u32, FFIType.ptr, FFIType.u64], [0, null, 0n], FFIType.void);
+    return;
+  }
+  const arr = Buffer.alloc(8 * rtvs.length);
+  rtvs.forEach((r, i) => arr.writeBigUInt64LE(r, i * 8));
+  vcall(context, CTX_OM_SET_RENDER_TARGETS, [FFIType.u32, FFIType.ptr, FFIType.u64], [rtvs.length, arr.ptr!, 0n], FFIType.void);
+}
+
+/** Set a single full-size viewport (RSSetViewports). */
+export function setViewport(w: number, h: number): void {
+  const { context } = requireGpu();
+  const vp = Buffer.alloc(24); // 6 floats
+  vp.writeFloatLE(0, 0);
+  vp.writeFloatLE(0, 4);
+  vp.writeFloatLE(w, 8);
+  vp.writeFloatLE(h, 12);
+  vp.writeFloatLE(0, 16);
+  vp.writeFloatLE(1, 20);
+  vcall(context, CTX_RS_SET_VIEWPORTS, [FFIType.u32, FFIType.ptr], [1, vp.ptr!], FFIType.void);
+}
+
+/** Bind the pixel shader plus optional constant buffers, SRVs, and samplers. */
+export function psSet(shader: bigint, bindings: PsBindings = {}): void {
+  const { context } = requireGpu();
+  vcall(context, CTX_PS_SET_SHADER, [FFIType.u64, FFIType.ptr, FFIType.u32], [shader, null, 0], FFIType.void);
+  if (bindings.cb && bindings.cb.length > 0) {
+    const arr = Buffer.alloc(8 * bindings.cb.length);
+    bindings.cb.forEach((c, i) => arr.writeBigUInt64LE(c, i * 8));
+    vcall(context, CTX_PS_SET_CONSTANT_BUFFERS, [FFIType.u32, FFIType.u32, FFIType.ptr], [0, bindings.cb.length, arr.ptr!], FFIType.void);
+  }
+  if (bindings.srv && bindings.srv.length > 0) {
+    const arr = Buffer.alloc(8 * bindings.srv.length);
+    bindings.srv.forEach((s, i) => arr.writeBigUInt64LE(s, i * 8));
+    vcall(context, CTX_PS_SET_SHADER_RESOURCES, [FFIType.u32, FFIType.u32, FFIType.ptr], [0, bindings.srv.length, arr.ptr!], FFIType.void);
+  }
+  if (bindings.samp && bindings.samp.length > 0) {
+    const arr = Buffer.alloc(8 * bindings.samp.length);
+    bindings.samp.forEach((s, i) => arr.writeBigUInt64LE(s, i * 8));
+    vcall(context, CTX_PS_SET_SAMPLERS, [FFIType.u32, FFIType.u32, FFIType.ptr], [0, bindings.samp.length, arr.ptr!], FFIType.void);
+  }
+}
+
+/** Bind the vertex shader and its constant buffers (VSSetShader + VSSetConstantBuffers). */
+export function vsSet(shader: bigint, cbs: readonly bigint[] = []): void {
+  const { context } = requireGpu();
+  vcall(context, CTX_VS_SET_SHADER, [FFIType.u64, FFIType.ptr, FFIType.u32], [shader, null, 0], FFIType.void);
+  if (cbs.length > 0) {
+    const arr = Buffer.alloc(8 * cbs.length);
+    cbs.forEach((c, i) => arr.writeBigUInt64LE(c, i * 8));
+    vcall(context, CTX_VS_SET_CONSTANT_BUFFERS, [FFIType.u32, FFIType.u32, FFIType.ptr], [0, cbs.length, arr.ptr!], FFIType.void);
+  }
+}
+
+/** Bind shader-resource views to the vertex shader (VSSetShaderResources). */
+export function vsSetShaderResources(srvs: readonly bigint[], startSlot = 0): void {
+  const { context } = requireGpu();
+  const arr = Buffer.alloc(8 * srvs.length);
+  srvs.forEach((s, i) => arr.writeBigUInt64LE(s, i * 8));
+  vcall(context, CTX_VS_SET_SHADER_RESOURCES, [FFIType.u32, FFIType.u32, FFIType.ptr], [startSlot, srvs.length, arr.ptr!], FFIType.void);
+}
