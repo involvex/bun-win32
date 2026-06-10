@@ -102,3 +102,4 @@ export const IUNKNOWN_RELEASE = 2;
 export const SWAP_GET_BUFFER = 9;
 export const SWAP_PRESENT = 8;
 export const SWAP_RELEASE = 2;
+export const TEX2D_GET_DESC = 10;
