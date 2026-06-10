@@ -4,6 +4,8 @@ export { CpuSampler, cpuTimes, systemTimes } from './cpu';
 export type { CpuSample, SystemTimes } from './cpu';
 export { diskSpace, drives } from './disk';
 export type { DiskSpace, DriveInfo } from './disk';
+export { EtwSession, etwProviderSchema, etwProviders } from './etw';
+export type { EtwEvent, EtwEventProperty, EtwEventSchema, EtwRunOptions, EtwRunResult, EtwSessionOptions } from './etw';
 export { channels, formatMessage, queryEvents, tailEvents } from './eventlog';
 export type { EventRecord, QueryOptions, TailOptions } from './eventlog';
 export { memory, performanceInfo } from './memory';
@@ -20,20 +22,23 @@ export {
   decodeUnicodeString,
   filetimeDeltaMs,
   filetimeToDate,
+  formatGuid,
   formatIpv4Address,
   formatIpv6Address,
   formatNetworkPort,
+  guidToBytes,
   parseInterfaceTable,
   parseMemoryStatusEx,
   parseMultiSz,
   parsePerformanceInfo,
   parseProcessSnapshot,
   parseProcessorTimes,
+  parseProviderEnumeration,
   parseTcp6Table,
   parseTcpTable,
   parseUdp6Table,
   parseUdpTable,
 } from './structs';
-export type { CpuTime, InterfaceCounter, MemoryStatus, PerformanceCounts, ProcessInfo, TcpSocket, UdpSocket } from './structs';
+export type { CpuTime, EtwProvider, InterfaceCounter, MemoryStatus, PerformanceCounts, ProcessInfo, TcpSocket, UdpSocket } from './structs';
 export { bootTime, computerName, cpuLayout, isElevated, osInfo, uptimeMs, userName } from './system';
 export type { CpuLayout, OsInfo } from './system';

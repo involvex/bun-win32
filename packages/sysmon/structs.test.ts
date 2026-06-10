@@ -1,5 +1,20 @@
 import { describe, expect, test } from 'bun:test';
-import { decodeUnicodeString, filetimeDeltaMs, filetimeToDate, formatIpv6Address, parseMemoryStatusEx, parseMultiSz, parsePerformanceInfo, parseProcessorTimes, parseTcp6Table, parseTcpTable, parseUdpTable } from './structs';
+import {
+  decodeUnicodeString,
+  filetimeDeltaMs,
+  filetimeToDate,
+  formatGuid,
+  formatIpv6Address,
+  guidToBytes,
+  parseMemoryStatusEx,
+  parseMultiSz,
+  parsePerformanceInfo,
+  parseProcessorTimes,
+  parseProviderEnumeration,
+  parseTcp6Table,
+  parseTcpTable,
+  parseUdpTable,
+} from './structs';
 
 describe('decodeUnicodeString', () => {
   test('decodes UTF-16LE bytes at an offset', () => {
@@ -186,5 +201,42 @@ describe('parseUdpTable', () => {
     buffer.writeUInt32LE(999, 4 + 8);
     const rows = parseUdpTable(buffer);
     expect(rows[0]).toMatchObject({ family: 4, localAddress: '0.0.0.0', localPort: 53, pid: 999 });
+  });
+});
+
+describe('guid helpers', () => {
+  test('guidToBytes ↔ formatGuid round-trip (mixed-endian)', () => {
+    const guid = '22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716'; // Microsoft-Windows-Kernel-Process
+    const bytes = guidToBytes(guid);
+    expect(bytes[0]).toBe(0xd6); // Data1 LE
+    expect(bytes[4]).toBe(0x7b); // Data2 LE
+    expect(bytes[8]).toBe(0xa0); // Data4 raw
+    expect(formatGuid(bytes, 0)).toBe(guid);
+  });
+
+  test('guidToBytes rejects malformed input', () => {
+    expect(() => guidToBytes('not-a-guid')).toThrow();
+  });
+});
+
+describe('parseProviderEnumeration', () => {
+  test('decodes rows at stride 24 with name offsets, sorted by name', () => {
+    const nameA = Buffer.from('Zeta-Provider ', 'utf16le');
+    const nameB = Buffer.from('Alpha-Provider ', 'utf16le');
+    const buffer = Buffer.alloc(8 + 2 * 24 + nameA.byteLength + nameB.byteLength);
+    buffer.writeUInt32LE(2, 0);
+    const guid = guidToBytes('11111111-2222-3333-4444-555555555555');
+    guid.copy(buffer, 8);
+    buffer.writeUInt32LE(0, 8 + 16); // manifest
+    buffer.writeUInt32LE(8 + 48, 8 + 20); // name offset → Zeta
+    guidToBytes('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee').copy(buffer, 8 + 24);
+    buffer.writeUInt32LE(1, 8 + 24 + 16); // MOF
+    buffer.writeUInt32LE(8 + 48 + nameA.byteLength, 8 + 24 + 20); // name offset → Alpha
+    nameA.copy(buffer, 8 + 48);
+    nameB.copy(buffer, 8 + 48 + nameA.byteLength);
+    const providers = parseProviderEnumeration(buffer);
+    expect(providers).toHaveLength(2);
+    expect(providers[0]).toEqual({ guid: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', name: 'Alpha-Provider', schemaSource: 1 });
+    expect(providers[1]).toEqual({ guid: '11111111-2222-3333-4444-555555555555', name: 'Zeta-Provider', schemaSource: 0 });
   });
 });

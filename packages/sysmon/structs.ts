@@ -11,6 +11,14 @@ export interface CpuTime {
   user: bigint;
 }
 
+export interface EtwProvider {
+  /** Canonical lowercase GUID string, e.g. `22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716`. */
+  guid: string;
+  name: string;
+  /** 0 = manifest (XML schema, decodable), 1 = MOF/WBEM. */
+  schemaSource: number;
+}
+
 export interface InterfaceCounter {
   alias: string;
   description: string;
@@ -134,6 +142,22 @@ export function filetimeToDate(low: number, high: number): Date {
   return new Date((high * 4_294_967_296 + low) / 10_000 - FILETIME_EPOCH_OFFSET_MS);
 }
 
+/** 16 GUID bytes (mixed-endian: Data1 u32 LE, Data2/Data3 u16 LE, Data4 raw) → canonical lowercase string. */
+export function formatGuid(buffer: Buffer, offset: number): string {
+  const data1 = buffer.readUInt32LE(offset).toString(16).padStart(8, '0');
+  const data2 = buffer
+    .readUInt16LE(offset + 4)
+    .toString(16)
+    .padStart(4, '0');
+  const data3 = buffer
+    .readUInt16LE(offset + 6)
+    .toString(16)
+    .padStart(4, '0');
+  let data4 = '';
+  for (let i = 8; i < 16; i += 1) data4 += buffer[offset + i]!.toString(16).padStart(2, '0');
+  return `${data1}-${data2}-${data3}-${data4.slice(0, 4)}-${data4.slice(4)}`;
+}
+
 /** Memory-order IPv4 bytes of a MIB row's u32 → dotted quad. */
 export function formatIpv4Address(value: number): string {
   return `${value & 0xff}.${(value >>> 8) & 0xff}.${(value >>> 16) & 0xff}.${(value >>> 24) & 0xff}`;
@@ -175,6 +199,19 @@ export function formatIpv6Address(buffer: Buffer, offset: number): string {
 /** Network-byte-order port stored in a MIB row's u32 → host order. */
 export function formatNetworkPort(value: number): number {
   return (((value & 0xff) << 8) | ((value >>> 8) & 0xff)) & 0xffff;
+}
+
+/** Canonical GUID string → 16 mixed-endian bytes (Data1 u32 LE, Data2/Data3 u16 LE, Data4 raw) — the registry/ETW wire layout. */
+export function guidToBytes(value: string): Buffer {
+  const match = /^([0-9a-f]{8})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{12})$/i.exec(value);
+  if (match === null) throw new Error(`Invalid GUID: ${value}`);
+  const bytes = Buffer.alloc(16);
+  bytes.writeUInt32LE(Number.parseInt(match[1]!, 16), 0);
+  bytes.writeUInt16LE(Number.parseInt(match[2]!, 16), 4);
+  bytes.writeUInt16LE(Number.parseInt(match[3]!, 16), 6);
+  const data4 = `${match[4]!}${match[5]!}`;
+  for (let i = 0; i < 8; i += 1) bytes[8 + i] = Number.parseInt(data4.slice(i * 2, i * 2 + 2), 16);
+  return bytes;
 }
 
 /**
@@ -340,6 +377,23 @@ export function parseProcessorTimes(buffer: Buffer, coreCount: number): CpuTime[
     };
   }
   return times;
+}
+
+/** PROVIDER_ENUMERATION_INFO (TdhEnumerateProviders): NumberOfProviders u32@0; TRACE_PROVIDER_INFO rows @8+i*24 — GUID@0, SchemaSource u32@16, ProviderNameOffset u32@20 (UTF-16LE NUL-terminated at that offset). Sorted by name. */
+export function parseProviderEnumeration(buffer: Buffer): EtwProvider[] {
+  const count = buffer.readUInt32LE(0);
+  const providers: EtwProvider[] = new Array(count);
+  for (let i = 0; i < count; i += 1) {
+    const base = 8 + i * 24;
+    const nameOffset = buffer.readUInt32LE(base + 20);
+    providers[i] = {
+      guid: formatGuid(buffer, base),
+      name: nameOffset > 0 && nameOffset < buffer.byteLength ? decodeNulTerminatedUnicodeString(buffer, nameOffset, (buffer.byteLength - nameOffset) >> 1) : '',
+      schemaSource: buffer.readUInt32LE(base + 16),
+    };
+  }
+  providers.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return providers;
 }
 
 /** MIB_TCP6TABLE_OWNER_PID: dwNumEntries u32@0, 56 B rows @4 — ucLocalAddr[16]@0, dwLocalScopeId@16, dwLocalPort@20 (network order), ucRemoteAddr[16]@24, dwRemoteScopeId@40, dwRemotePort@44, dwState@48, dwOwningPid@52. */
