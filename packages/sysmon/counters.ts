@@ -18,6 +18,16 @@ export interface CounterItems {
   instances: string[];
 }
 
+export interface GpuProcessUsage {
+  /** Engine-instance count contributing to this pid. */
+  engines: number;
+  /** Highest single-engine utilization — Task Manager's per-process GPU column definition. */
+  maxEnginePercent: number;
+  pid: number;
+  /** Sum across all of the pid's engines (can exceed 100 on multi-engine use). */
+  totalPercent: number;
+}
+
 /**
  * A PDH query: `add` English-named counter paths (locale-proof — the same names on a German or
  * Japanese box), `collect` samples, read `value`s as doubles. RATE counters (anything ending in
@@ -99,6 +109,44 @@ export function expandCounterPath(wildcardPath: string): string[] {
   return parseMultiSz(listBuffer, chars);
 }
 
+/**
+ * Per-process GPU utilization via the PDH GPU Engine counter set — exactly how Task
+ * Manager's GPU column works, and a documented npm monopoly (pidusage#131 has asked for
+ * this since 2021). Samples every `pid_*_engtype_*` instance over `sampleMs` (default 200,
+ * synchronous) and aggregates per pid. Returns [] on machines with no GPU engine counters.
+ */
+export function gpuUsageByProcess(sampleMs = 200): GpuProcessUsage[] {
+  const paths = expandCounterPath('\\GPU Engine(*)\\Utilization Percentage');
+  if (paths.length === 0) return [];
+  const counterSet = new CounterSet();
+  try {
+    const instances: { handle: CounterHandle; pid: number }[] = [];
+    for (const path of paths) {
+      const match = /pid_(\d+)_/.exec(path);
+      if (match === null) continue;
+      instances.push({ handle: counterSet.add(path.replace(/^\\\\[^\\]+/, '')), pid: Number(match[1]) }); // expanded paths carry \\MACHINE — strip to the local form
+    }
+    counterSet.collect();
+    Bun.sleepSync(sampleMs);
+    counterSet.collect();
+    const byPid = new Map<number, GpuProcessUsage>();
+    for (const instance of instances) {
+      const percent = counterSet.value(instance.handle);
+      if (percent <= 0) continue;
+      const row = byPid.get(instance.pid);
+      if (row === undefined) byPid.set(instance.pid, { engines: 1, maxEnginePercent: percent, pid: instance.pid, totalPercent: percent });
+      else {
+        row.engines += 1;
+        row.maxEnginePercent = Math.max(row.maxEnginePercent, percent);
+        row.totalPercent += percent;
+      }
+    }
+    return [...byPid.values()].sort((a, b) => b.maxEnginePercent - a.maxEnginePercent);
+  } finally {
+    counterSet.dispose();
+  }
+}
+
 /** Counter + instance names for one performance object (PdhEnumObjectItemsW, dual size-buffer two-call). */
 export function listCounterItems(objectName: string): CounterItems {
   const objectBuffer = Buffer.from(`${objectName}\0`, 'utf16le');
@@ -129,4 +177,24 @@ export function listCounterObjects(): string[] {
   const status = PdhEnumObjectsW(null, null, listBuffer.ptr, sizeBuffer.ptr, PdhDetailLevel.PERF_DETAIL_WIZARD, 0) >>> 0;
   if (status !== 0) throw new Error(`PdhEnumObjectsW failed: 0x${status.toString(16)}`);
   return parseMultiSz(listBuffer, chars);
+}
+
+/**
+ * One-shot ergonomic sampler: open a CounterSet over the paths, collect twice `sampleMs`
+ * apart (the two-sample rule, handled for you), return `{ path: value }`. The "I just want
+ * these 5 numbers once" API.
+ */
+export function sampleCounters(paths: string[], sampleMs = 200): Record<string, number> {
+  const counterSet = new CounterSet();
+  try {
+    const handles = paths.map((path) => ({ handle: counterSet.add(path), path }));
+    counterSet.collect();
+    Bun.sleepSync(sampleMs);
+    counterSet.collect();
+    const values: Record<string, number> = {};
+    for (const entry of handles) values[entry.path] = counterSet.value(entry.handle);
+    return values;
+  } finally {
+    counterSet.dispose();
+  }
 }
