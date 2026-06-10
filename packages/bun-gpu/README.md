@@ -82,13 +82,13 @@ Measured on an NVIDIA GeForce RTX 4090, Windows 11, Bun 1.4.0 — reproduce with
 
 | Metric | NVIDIA GeForce RTX 4090 (hardware) | Microsoft Basic Render Driver (WARP) |
 |---|---|---|
-| kernel compile (cold / warm) | 3.5 ms / 1.6 ms | 1.8 ms / 1.6 ms |
-| empty dispatch (avg of 1,000) | 5.6 µs | 4.4 µs |
-| readback 1 MB | 1743 MB/s | 1934 MB/s |
-| readback 16 MB | 3562 MB/s | 2470 MB/s |
-| readback 64 MB | 4535 MB/s | 2628 MB/s |
-| SAXPY 1M elements | 34.59 Gelem/s | 1.82 Gelem/s |
-| matmul 256×256 | 1048.9 GFLOPS | 11.1 GFLOPS |
+| kernel compile (cold / warm) | 3.7 ms / 1.6 ms | 1.7 ms / 1.5 ms |
+| empty dispatch (avg of 1,000) | 5.5 µs | 3.1 µs |
+| readback 1 MB | 2190 MB/s | 2334 MB/s |
+| readback 16 MB | 3748 MB/s | 2730 MB/s |
+| readback 64 MB | 5269 MB/s | 2664 MB/s |
+| SAXPY 1M elements | 43.00 Gelem/s | 1.99 Gelem/s |
+| matmul 256×256 | 1489.7 GFLOPS | 17.9 GFLOPS |
 
 The integration selftest (120 exact-value assertions: buffer round-trips, atomics histograms, groupshared reductions, cbuffer-vs-FXC layout proofs, depth-test proofs, determinism) passes on hardware **and** WARP: `bun run example/gpu.selftest.ts`.
 
