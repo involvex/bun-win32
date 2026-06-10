@@ -1,0 +1,84 @@
+{
+  "author": "Stev Peifer <stev@bell.net>",
+  "bugs": {
+    "url": "https://github.com/ObscuritySRL/bun-win32/issues"
+  },
+  "dependencies": {
+    "@bun-win32/core": "workspace:*",
+    "@bun-win32/d3d11": "workspace:*",
+    "@bun-win32/d3dcompiler_47": "workspace:*",
+    "@bun-win32/dxgi": "workspace:*",
+    "@bun-win32/user32": "workspace:*"
+  },
+  "description": "Run HLSL compute and headless rendering on any GPU (NVIDIA/AMD/Intel/WARP) from Bun on Windows — runtime-compiled D3D11 via pure FFI, zero native dependencies.",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "exports": {
+    ".": "./index.ts"
+  },
+  "license": "MIT",
+  "module": "index.ts",
+  "name": "@bun-win32/gpu",
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/ObscuritySRL/bun-win32#readme",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/ObscuritySRL/bun-win32.git",
+    "directory": "packages/gpu"
+  },
+  "type": "module",
+  "version": "1.0.0",
+  "main": "./index.ts",
+  "keywords": [
+    "bun",
+    "compute",
+    "d3d11",
+    "ffi",
+    "gpgpu",
+    "gpu",
+    "gpu.js",
+    "hlsl",
+    "shader",
+    "typescript",
+    "warp",
+    "win32",
+    "windows"
+  ],
+  "files": [
+    "AI.md",
+    "README.md",
+    "adapter.ts",
+    "buffer.ts",
+    "cbuffer.ts",
+    "com.ts",
+    "constants.ts",
+    "depth.ts",
+    "device.ts",
+    "index.ts",
+    "kernel.ts",
+    "pipeline.ts",
+    "png.ts",
+    "shader.ts",
+    "snapshot.ts",
+    "texture.ts",
+    "window.ts"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "scripts": {
+    "example:benchmark": "bun ./example/benchmark.ts",
+    "example:gpu-report": "bun ./example/gpu-report.ts",
+    "example:hello-gpu": "bun ./example/hello-gpu.ts",
+    "example:raymarch": "bun ./example/raymarch.ts",
+    "example:selftest": "bun ./example/gpu.selftest.ts"
+  }
+}
