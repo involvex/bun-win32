@@ -47,6 +47,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .DS_Store
 DISCORD_POST*.md
 BUN_GPU_POST.md
+BUN_SYSMON_POST.md
 TODO.md
 
 # MNIST dataset (downloaded locally by digit-oracle.train.ts; ~65 MB, not committed)
