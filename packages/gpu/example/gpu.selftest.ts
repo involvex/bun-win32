@@ -33,17 +33,21 @@ import {
   cbufferLayout,
   clear,
   clearDepth,
+  comRelease,
   compile,
   createComputeDevice,
   createDevice,
   createGpuTimer,
   createWindow,
+  csSet,
   describeDeviceError,
   destroyDevice,
+  dispatch,
   drawFullscreenTriangle,
   drawTriangles,
   getDeviceRemovedReason,
   listAdapters,
+  makeComputeShader,
   makeDepthBuffer,
   makePixelShader,
   makeTexture,
@@ -57,6 +61,7 @@ import {
   setRenderTargets,
   setRenderTargetsWithDepth,
   setViewport,
+  textureFromPixels,
   vsSet,
 } from '@bun-win32/gpu';
 
@@ -447,6 +452,76 @@ function runSections(label: string, options: CreateDeviceOptions): void {
       return message.includes('TDR') && message.includes('0x887a');
     });
     check(tag('19 removed-mapper'), allMapped, '0x887A0005/6/7 map to named, TDR-hinted messages');
+  }
+
+  {
+    const W = 32;
+    const H = 16;
+    const pixels = new Uint8Array(W * H * 4);
+    for (let y = 0; y < H; y += 1) {
+      for (let x = 0; x < W; x += 1) {
+        const offset = (y * W + x) * 4;
+        pixels[offset] = (x * 8) & 0xff;
+        pixels[offset + 1] = (y * 16) & 0xff;
+        pixels[offset + 2] = ((x + y) % 2) * 255;
+        pixels[offset + 3] = 255;
+      }
+    }
+    const source = textureFromPixels(pixels, W, H);
+    const verbatim = readbackTexture(source.tex, W, H);
+    let uploadExact = true;
+    for (let index = 0; index < pixels.length; index += 1) if (verbatim[index] !== pixels[index]) uploadExact = false;
+    check(tag('23 texture-upload'), uploadExact, `${W}×${H} RGBA upload reads back byte-exact`);
+
+    const destination = makeTexture({ w: W, h: H, uav: true });
+    const blur = makeComputeShader(
+      compile(
+        `Texture2D<float4> source : register(t0);
+         RWTexture2D<float4> destination : register(u0);
+         [numthreads(8,8,1)] void main(uint3 id : SV_DispatchThreadID) {
+           if (id.x >= W || id.y >= H) return;
+           float4 accumulator = 0;
+           for (int dy = -1; dy <= 1; dy += 1) {
+             for (int dx = -1; dx <= 1; dx += 1) {
+               int2 coordinate = clamp(int2(id.xy) + int2(dx, dy), int2(0, 0), int2(W - 1, H - 1));
+               accumulator += source.Load(int3(coordinate, 0));
+             }
+           }
+           destination[id.xy] = accumulator / 9.0;
+         }`,
+        'main',
+        'cs_5_0',
+        { defines: { H, W } },
+      ),
+    );
+    csSet(blur, { srv: [source.srv!], uav: [destination.uav!] });
+    dispatch(Math.ceil(W / 8), Math.ceil(H / 8));
+    csSet(0n, { srv: [0n], uav: [0n] });
+    const blurred = readbackTexture(destination.tex, W, H);
+    let maxDelta = 0;
+    for (let y = 0; y < H; y += 1) {
+      for (let x = 0; x < W; x += 1) {
+        for (let channel = 0; channel < 4; channel += 1) {
+          let sum = 0;
+          for (let dy = -1; dy <= 1; dy += 1) {
+            for (let dx = -1; dx <= 1; dx += 1) {
+              const sampleX = Math.min(W - 1, Math.max(0, x + dx));
+              const sampleY = Math.min(H - 1, Math.max(0, y + dy));
+              sum += pixels[(sampleY * W + sampleX) * 4 + channel]! / 255;
+            }
+          }
+          const expected = Math.round((sum / 9) * 255);
+          const delta = Math.abs(blurred[(y * W + x) * 4 + channel]! - expected);
+          if (delta > maxDelta) maxDelta = delta;
+        }
+      }
+    }
+    check(tag('23 texture-blur'), maxDelta <= 2, `3×3 box blur via Texture2D→RWTexture2D matches CPU reference (max |Δ| = ${maxDelta} of 255)`);
+    comRelease(destination.uav!);
+    comRelease(destination.tex);
+    comRelease(blur);
+    comRelease(source.srv!);
+    comRelease(source.tex);
   }
 
   {

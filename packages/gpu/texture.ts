@@ -7,6 +7,7 @@ import {
   CTX_COPY_RESOURCE,
   CTX_MAP,
   CTX_UNMAP,
+  CTX_UPDATE_SUBRESOURCE,
   D3D11_BIND_RENDER_TARGET,
   D3D11_BIND_SHADER_RESOURCE,
   D3D11_BIND_UNORDERED_ACCESS,
@@ -109,6 +110,24 @@ export function makeTexture(options: TextureOptions): TextureResult {
     }
     result.uav = ppUav.readBigUInt64LE(0);
   }
+  return result;
+}
+
+/**
+ * Create a texture from tightly packed CPU pixels (UpdateSubresource upload with
+ * SrcRowPitch = w × bytesPerPixel). Defaults to an SRV-bound R8G8B8A8 texture —
+ * the image-processing input. Re-uploading while the SRV is bound to a shader
+ * stage is invalid; unbind first.
+ */
+export function textureFromPixels(pixels: Uint8Array, w: number, h: number, options: { format?: number; srv?: boolean; uav?: boolean; bytesPerPixel?: number } = {}): TextureResult {
+  const { context } = requireGpu();
+  const { format = DXGI_FORMAT_R8G8B8A8_UNORM, srv = true, uav = false, bytesPerPixel = 4 } = options;
+  if (pixels.byteLength !== w * h * bytesPerPixel) {
+    throw new Error(`textureFromPixels: pixels is ${pixels.byteLength} bytes but ${w}×${h}×${bytesPerPixel} requires ${w * h * bytesPerPixel}.`);
+  }
+  const result = makeTexture({ w, h, format, srv, uav });
+  const source = Buffer.from(pixels.buffer, pixels.byteOffset, pixels.byteLength);
+  vcall(context, CTX_UPDATE_SUBRESOURCE, [FFIType.u64, FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.u32, FFIType.u32], [result.tex, 0, null, source.ptr!, w * bytesPerPixel, 0], FFIType.void);
   return result;
 }
 

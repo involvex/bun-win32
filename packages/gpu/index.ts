@@ -21,7 +21,7 @@ export { compile, disassemble, makeComputeShader, makePixelShader, makeVertexSha
 export type { CompileOptions, CompiledShader } from './shader';
 export { captureBackBuffer, formatGrid } from './snapshot';
 export type { CaptureOptions, SnapshotStats } from './snapshot';
-export { makeTexture, readbackTexture } from './texture';
+export { makeTexture, readbackTexture, textureFromPixels } from './texture';
 export type { TextureOptions, TextureResult } from './texture';
 export { createWindow } from './window';
 export type { CreateWindowOptions, Win } from './window';
