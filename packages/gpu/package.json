@@ -80,9 +80,10 @@
   },
   "scripts": {
     "example:benchmark": "bun ./example/benchmark.ts",
+    "example:blur": "bun ./example/blur.ts",
     "example:gpu-report": "bun ./example/gpu-report.ts",
     "example:hello-gpu": "bun ./example/hello-gpu.ts",
-    "example:blur": "bun ./example/blur.ts",
+    "example:microbench": "bun ./example/microbench.ts",
     "example:raymarch": "bun ./example/raymarch.ts",
     "example:selftest": "bun ./example/gpu.selftest.ts",
     "example:shader-tty": "bun ./example/shader-tty.ts",
