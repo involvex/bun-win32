@@ -45,8 +45,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Finder (MacOS) folder config
 .DS_Store
-DISCORD_POST.md
-DISCORD_POST2.md
+DISCORD_POST*.md
 TODO.md
 
 # MNIST dataset (downloaded locally by digit-oracle.train.ts; ~65 MB, not committed)
@@ -86,7 +85,9 @@ packages/all/screenshots/*
 !packages/all/screenshots/net-xray.png
 !packages/all/screenshots/ocean.png
 !packages/all/screenshots/raycaster.png
+!packages/all/screenshots/raymarch.png
 !packages/all/screenshots/rf-radar.png
+!packages/all/screenshots/shader-tty.png
 !packages/all/screenshots/sph3d.png
 !packages/all/screenshots/webcam.png
 !packages/all/screenshots/clawd.png
