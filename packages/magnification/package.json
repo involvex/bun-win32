@@ -1,5 +1,5 @@
 {
-  "author": "Stev Peifer <stev@bell.net>",
+  "author": "Stev Peifer <stev.p@outlook.com>",
   "bugs": {
     "url": "https://github.com/ObscuritySRL/bun-win32/issues"
   },
@@ -29,7 +29,7 @@
     "directory": "packages/magnification"
   },
   "type": "module",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "main": "./index.ts",
   "keywords": [
     "bun",

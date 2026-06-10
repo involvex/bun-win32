@@ -120,7 +120,7 @@ const refreshUsage = async (): Promise<void> => {
       const stale = response.status === 401 || response.status === 403;
       if (response.status === 429) {
         const retryAfterSeconds = Number(response.headers.get('retry-after') ?? 0);
-        const backoffMs = Math.max(retryAfterSeconds * 1000, 60_000);
+        const backoffMs = Math.max(retryAfterSeconds * 1000, 90_000);
         nextFetchNotBefore = Date.now() + backoffMs;
         recordFailure('error', `HTTP 429 (rate limited — backing off ${Math.round(backoffMs / 1000)}s)`);
         return;

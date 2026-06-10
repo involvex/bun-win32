@@ -1,5 +1,5 @@
 {
-  "author": "Stev Peifer <stev@bell.net>",
+  "author": "Stev Peifer <stev.p@outlook.com>",
   "description": "Shared base class, runtime extensions, and fundamental Win32 types for @bun-win32 packages.",
   "devDependencies": {
     "@types/bun": "latest"
@@ -24,7 +24,7 @@
     "directory": "packages/core"
   },
   "type": "module",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "main": "./index.ts",
   "keywords": [
     "bun",
