@@ -65,6 +65,8 @@ export class Win32 {
       methodNames.filter((method) => Object.getOwnPropertyDescriptor(this, method)?.configurable !== false).map((method) => [method, this.Symbols[method]!]), //
     );
 
+    if (Object.keys(symbols).length === 0) return;
+
     const library = dlopen(this.name, symbols);
 
     const propertyDescriptorMap = Object.fromEntries(
