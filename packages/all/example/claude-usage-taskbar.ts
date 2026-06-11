@@ -21,8 +21,10 @@
  *   widget — with ShowWindow + SetLayeredWindowAttributes, a PeekMessageW/
  *   TranslateMessage/DispatchMessageW message pump, FillRect, GetDC/ReleaseDC,
  *   and SetWindowPos HWND_TOP reassertion each poll)
- * - gdi32 (GetPixel taskbar color sampling, CreateFontW + TextOutW ClearType text,
- *   CreateSolidBrush, BitBlt + CreateCompatibleBitmap + GetDIBits screenshot verify)
+ * - gdi32 (GetPixel taskbar color sampling, SetDIBitsToDevice single-blit software
+ *   compositing — antialiased rounded bars, gradients, gloss — CreateFontW +
+ *   SetTextAlign + TextOutW ClearType text, BitBlt + CreateCompatibleBitmap +
+ *   GetDIBits screenshot verify)
  * - terminal (encodePNG for the CAPTURE_PNG verification screenshot)
  *
  * Env: CLAUDE_USAGE_X / CLAUDE_USAGE_WIDTH (pixel overrides), CLAUDE_USAGE_POLL_MS
@@ -42,7 +44,6 @@ User32.Preload([
   'DefWindowProcW',
   'DestroyWindow',
   'DispatchMessageW',
-  'FillRect',
   'FindWindowW',
   'GetDC',
   'GetWindowRect',
@@ -60,7 +61,26 @@ User32.Preload([
   'TranslateMessage',
   'UnregisterClassW',
 ]);
-GDI32.Preload(['BitBlt', 'CreateCompatibleBitmap', 'CreateCompatibleDC', 'CreateFontW', 'CreateSolidBrush', 'DeleteDC', 'DeleteObject', 'GetDIBits', 'GetPixel', 'SelectObject', 'SetBkMode', 'SetTextColor', 'TextOutW']);
+GDI32.Preload([
+  'BitBlt',
+  'CreateCompatibleBitmap',
+  'CreateCompatibleDC',
+  'CreateFontW',
+  'DeleteDC',
+  'DeleteObject',
+  'GetDIBits',
+  'GetPixel',
+  'GetTextMetricsW',
+  'IntersectClipRect',
+  'RestoreDC',
+  'SaveDC',
+  'SelectObject',
+  'SetBkMode',
+  'SetDIBitsToDevice',
+  'SetTextAlign',
+  'SetTextColor',
+  'TextOutW',
+]);
 
 const WM_DESTROY = 0x0002;
 const WM_PAINT = 0x000f;
@@ -157,11 +177,23 @@ const formatReset = (resetsAt: string | null): string => {
   return `${days}d ${hours}h`;
 };
 
-const utilizationColor = (utilization: number | null): number => {
-  if (utilization === null) return 0x0080_8080;
-  if (utilization >= 90) return 0x005a_50f0;
-  if (utilization >= 70) return 0x003c_bef5;
-  return 0x0078_c850;
+interface Tint {
+  blue: number;
+  green: number;
+  red: number;
+}
+
+const tintFrom = (rgb: number): Tint => ({ blue: rgb & 0xff, green: (rgb >> 8) & 0xff, red: (rgb >> 16) & 0xff });
+const mixTint = (from: Tint, to: Tint, amount: number): Tint => ({ blue: from.blue + (to.blue - from.blue) * amount, green: from.green + (to.green - from.green) * amount, red: from.red + (to.red - from.red) * amount });
+
+const WHITE_TINT = tintFrom(0xff_ff_ff);
+const CLAY_TINT = tintFrom(0xd9_77_57);
+
+const utilizationGradient = (utilization: number | null): [Tint, Tint] => {
+  if (utilization === null) return [tintFrom(0x5a_5a_64), tintFrom(0x78_78_82)];
+  if (utilization >= 90) return [tintFrom(0xc8_3a_36), tintFrom(0xff_7a_59)];
+  if (utilization >= 70) return [tintFrom(0xc8_82_1e), tintFrom(0xf7_c5_48)];
+  return [tintFrom(0x1f_9d_5b), tintFrom(0x43_d1_7c)];
 };
 
 if (User32.SetProcessDPIAware() === 0) console.error('SetProcessDPIAware failed — taskbar coordinates may be DPI-virtualized.');
@@ -184,13 +216,13 @@ const screenSampleDC = User32.GetDC(0n);
 const sampledColor = GDI32.GetPixel(screenSampleDC, widgetX + widgetWidth + Math.round(24 * scale), widgetY + (taskbarHeight >> 1));
 void User32.ReleaseDC(0n, screenSampleDC);
 const backgroundColor = sampledColor === 0xffff_ffff ? 0x0026_1820 : sampledColor;
-const lift = (color: number, amount: number): number => {
-  const channel = (shift: number): number => Math.min(0xff, Math.round(((color >> shift) & 0xff) + (0xff - ((color >> shift) & 0xff)) * amount));
-  return (channel(16) << 16) | (channel(8) << 8) | channel(0);
-};
-const trackColor = lift(backgroundColor, 0.16);
+const backgroundTint: Tint = { blue: (backgroundColor >> 16) & 0xff, green: (backgroundColor >> 8) & 0xff, red: backgroundColor & 0xff };
+const cardTint = mixTint(backgroundTint, WHITE_TINT, 0.055);
+const cardBorderTint = mixTint(backgroundTint, WHITE_TINT, 0.22);
+const trackTint = mixTint(backgroundTint, WHITE_TINT, 0.13);
+const colorrefOf = (tint: Tint): number => (Math.round(tint.blue) << 16) | (Math.round(tint.green) << 8) | Math.round(tint.red);
 const textColor = 0x00ff_ffff;
-const dimTextColor = lift(backgroundColor, 0.78);
+const dimTextColor = colorrefOf(mixTint(backgroundTint, WHITE_TINT, 0.66));
 
 let closing = false;
 let refreshRequested = false;
@@ -251,15 +283,82 @@ User32.SetWindowPos(hwnd, zOrderAnchor, 0, 0, 0, 0, parentedToTaskbar ? SWP_NOSI
 const primaryFont = GDI32.CreateFontW(-Math.round(12 * scale), 0, 0, 0, 600, 0, 0, 0, 0, 0, 0, 5 /* CLEARTYPE_QUALITY */, 0, wide('Segoe UI').ptr!);
 const percentFont = GDI32.CreateFontW(-Math.round(11 * scale), 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 5 /* CLEARTYPE_QUALITY */, 0, wide('Segoe UI').ptr!);
 
-const rectBuffer = Buffer.alloc(16);
-const fillRectangle = (deviceContext: bigint, left: number, top: number, right: number, bottom: number, color: number): void => {
-  rectBuffer.writeInt32LE(left, 0);
-  rectBuffer.writeInt32LE(top, 4);
-  rectBuffer.writeInt32LE(right, 8);
-  rectBuffer.writeInt32LE(bottom, 12);
-  const brush = GDI32.CreateSolidBrush(color);
-  void User32.FillRect(deviceContext, rectBuffer.ptr!, brush);
-  void GDI32.DeleteObject(brush);
+const frame = Buffer.alloc(widgetWidth * widgetHeight * 4);
+const frameInfo = Buffer.alloc(40);
+frameInfo.writeUInt32LE(40, 0);
+frameInfo.writeInt32LE(widgetWidth, 4);
+frameInfo.writeInt32LE(-widgetHeight, 8);
+frameInfo.writeUInt16LE(1, 12);
+frameInfo.writeUInt16LE(32, 14);
+
+const clamp01 = (value: number): number => (value < 0 ? 0 : value > 1 ? 1 : value);
+const blendPixel = (x: number, y: number, tint: Tint, alpha: number): void => {
+  if (x < 0 || y < 0 || x >= widgetWidth || y >= widgetHeight) return;
+  const index = (y * widgetWidth + x) * 4;
+  frame[index] = Math.round(frame[index] + (tint.blue - frame[index]) * alpha);
+  frame[index + 1] = Math.round(frame[index + 1] + (tint.green - frame[index + 1]) * alpha);
+  frame[index + 2] = Math.round(frame[index + 2] + (tint.red - frame[index + 2]) * alpha);
+};
+
+const drawRoundedRect = (left: number, top: number, right: number, bottom: number, radius: number, tintAt: (x: number, y: number) => Tint, alpha: number, borderTint?: Tint, borderAlpha?: number): void => {
+  const centerX = (left + right) / 2;
+  const centerY = (top + bottom) / 2;
+  const halfWidth = (right - left) / 2 - radius;
+  const halfHeight = (bottom - top) / 2 - radius;
+  for (let y = Math.floor(top) - 1; y <= Math.ceil(bottom) + 1; y++) {
+    for (let x = Math.floor(left) - 1; x <= Math.ceil(right) + 1; x++) {
+      const offsetX = Math.max(Math.abs(x + 0.5 - centerX) - halfWidth, 0);
+      const offsetY = Math.max(Math.abs(y + 0.5 - centerY) - halfHeight, 0);
+      const distance = Math.hypot(offsetX, offsetY) - radius;
+      const coverage = clamp01(0.5 - distance);
+      if (coverage > 0) blendPixel(x, y, tintAt(x + 0.5, y + 0.5), alpha * coverage);
+      if (borderTint && borderAlpha) {
+        const ring = clamp01(1.1 - Math.abs(distance)) * clamp01(0.5 + distance);
+        if (ring > 0) blendPixel(x, y, borderTint, borderAlpha * ring);
+      }
+    }
+  }
+};
+
+const barLeft = Math.round(34 * scale);
+const barRight = widgetWidth - Math.round(62 * scale);
+const barHeight = Math.round(15 * scale);
+
+const cellHeightOf = (font: bigint): number => {
+  const metricsDC = User32.GetDC(0n);
+  const previousFont = GDI32.SelectObject(metricsDC, font);
+  const textMetrics = Buffer.alloc(64);
+  void GDI32.GetTextMetricsW(metricsDC, textMetrics.ptr!);
+  GDI32.SelectObject(metricsDC, previousFont);
+  void User32.ReleaseDC(0n, metricsDC);
+  return textMetrics.readInt32LE(0);
+};
+const primaryTextOffsetY = Math.round((barHeight - cellHeightOf(primaryFont)) / 2);
+const percentTextOffsetY = Math.round((barHeight - cellHeightOf(percentFont)) / 2);
+const textY1 = Math.round(6 * scale);
+const textY2 = Math.round(26 * scale);
+
+const fillRightOf = (rateWindow: RateWindow): number =>
+  rateWindow.utilization === null || rateWindow.utilization <= 0 ? barLeft : Math.max(barLeft + barHeight, barLeft + ((barRight - barLeft) * Math.min(100, rateWindow.utilization)) / 100);
+
+const composeBar = (rowTop: number, rateWindow: RateWindow): void => {
+  const rowBottom = rowTop + barHeight;
+  const pillRadius = barHeight / 2;
+  drawRoundedRect(barLeft, rowTop, barRight, rowBottom, pillRadius, () => trackTint, 1);
+  for (const quarter of [0.25, 0.5, 0.75]) {
+    const tickX = Math.round(barLeft + (barRight - barLeft) * quarter);
+    for (let tickY = rowTop + Math.round(3 * scale); tickY < rowBottom - Math.round(3 * scale); tickY++) blendPixel(tickX, tickY, backgroundTint, 0.45);
+  }
+  if (rateWindow.utilization !== null && rateWindow.utilization > 0) {
+    const fillRight = fillRightOf(rateWindow);
+    const [darkTint, brightTint] = utilizationGradient(rateWindow.utilization);
+    const glossBottom = rowTop + barHeight * 0.45;
+    const fillTintAt = (x: number, y: number): Tint => {
+      const gradient = mixTint(darkTint, brightTint, clamp01((x - barLeft) / (fillRight - barLeft)));
+      return y < glossBottom ? mixTint(gradient, WHITE_TINT, 0.16) : gradient;
+    };
+    drawRoundedRect(barLeft, rowTop, fillRight, rowBottom, pillRadius, fillTintAt, 1);
+  }
 };
 
 let hasDrawn = false;
@@ -267,40 +366,54 @@ const draw = (): void => {
   const deviceContext = User32.GetDC(hwnd);
   if (deviceContext === 0n) return;
   hasDrawn = true;
-  fillRectangle(deviceContext, 0, 0, widgetWidth, widgetHeight, backgroundColor);
+  for (let index = 0; index < frame.length; index += 4) {
+    frame[index] = backgroundTint.blue;
+    frame[index + 1] = backgroundTint.green;
+    frame[index + 2] = backgroundTint.red;
+  }
+  drawRoundedRect(1.5, 2, widgetWidth - 1.5, widgetHeight - 2, 9 * scale, () => cardTint, 1, cardBorderTint, 0.55);
+  drawRoundedRect(5 * scale, 9 * scale, 7.5 * scale, widgetHeight - 9 * scale, 1.25 * scale, () => CLAY_TINT, 1);
+  if (haveData) {
+    composeBar(textY1, fiveHour);
+    composeBar(textY2, sevenDay);
+    if (connectionState !== 'ok' && consecutiveFailures >= 3) {
+      const dotRadius = 2.5 * scale;
+      const dotCenterX = widgetWidth - 9 * scale;
+      drawRoundedRect(dotCenterX - dotRadius, textY1 + barHeight / 2 - dotRadius, dotCenterX + dotRadius, textY1 + barHeight / 2 + dotRadius, dotRadius, () => CLAY_TINT, 1);
+    }
+  }
+  void GDI32.SetDIBitsToDevice(deviceContext, 0, 0, widgetWidth, widgetHeight, 0, 0, 0, widgetHeight, frame.ptr!, frameInfo.ptr!, 0);
   GDI32.SetBkMode(deviceContext, 1 /* TRANSPARENT */);
-  GDI32.SelectObject(deviceContext, primaryFont);
-  const textOut = (x: number, y: number, text: string, color: number): void => {
+  const textOut = (x: number, y: number, text: string, color: number, align: number): void => {
+    void GDI32.SetTextAlign(deviceContext, align);
     GDI32.SetTextColor(deviceContext, color);
     void GDI32.TextOutW(deviceContext, x, y, wide(text).ptr!, text.length);
   };
-  const textY1 = Math.round(6 * scale);
-  const textY2 = Math.round(26 * scale);
   if (haveData) {
-    const barLeft = Math.round(30 * scale);
-    const barRight = widgetWidth - Math.round(64 * scale);
-    const barHeight = Math.round(16 * scale);
-    const drawRow = (rowTop: number, label: string, rateWindow: RateWindow): void => {
+    const drawRowText = (rowTop: number, label: string, rateWindow: RateWindow): void => {
       GDI32.SelectObject(deviceContext, primaryFont);
-      textOut(Math.round(8 * scale), rowTop, label, dimTextColor);
-      textOut(barRight + Math.round(7 * scale), rowTop, formatReset(rateWindow.resetsAt), dimTextColor);
-      fillRectangle(deviceContext, barLeft, rowTop, barRight, rowTop + barHeight, trackColor);
-      if (rateWindow.utilization !== null) {
-        const filledRight = barLeft + Math.round(((barRight - barLeft) * Math.min(100, rateWindow.utilization)) / 100);
-        if (filledRight > barLeft) fillRectangle(deviceContext, barLeft, rowTop, filledRight, rowTop + barHeight, utilizationColor(rateWindow.utilization));
-      }
+      textOut(barLeft - Math.round(6 * scale), rowTop + primaryTextOffsetY, label, dimTextColor, 2 /* TA_RIGHT */);
+      textOut(barRight + Math.round(8 * scale), rowTop + primaryTextOffsetY, formatReset(rateWindow.resetsAt), dimTextColor, 0 /* TA_LEFT */);
       GDI32.SelectObject(deviceContext, percentFont);
       const percentText = formatPercent(rateWindow.utilization);
-      const approximatePercentWidth = Math.round(percentText.length * 6 * scale);
-      textOut(((barLeft + barRight) >> 1) - (approximatePercentWidth >> 1), rowTop + Math.round(1 * scale), percentText, textColor);
+      const percentCenterX = (barLeft + barRight) >> 1;
+      const fillRight = Math.round(fillRightOf(rateWindow));
+      void GDI32.SaveDC(deviceContext);
+      void GDI32.IntersectClipRect(deviceContext, barLeft, rowTop, fillRight, rowTop + barHeight);
+      textOut(percentCenterX, rowTop + percentTextOffsetY, percentText, textColor, 6 /* TA_CENTER */);
+      void GDI32.RestoreDC(deviceContext, -1);
+      void GDI32.SaveDC(deviceContext);
+      void GDI32.IntersectClipRect(deviceContext, fillRight, rowTop, barRight, rowTop + barHeight);
+      textOut(percentCenterX, rowTop + percentTextOffsetY, percentText, dimTextColor, 6 /* TA_CENTER */);
+      void GDI32.RestoreDC(deviceContext, -1);
     };
-    drawRow(textY1, '5h', fiveHour);
-    drawRow(textY2, 'wk', sevenDay);
-    if (connectionState !== 'ok' && consecutiveFailures >= 3) fillRectangle(deviceContext, Math.round(3 * scale), Math.round(3 * scale), Math.round(7 * scale), Math.round(7 * scale), 0x003c_bef5);
+    drawRowText(textY1, '5h', fiveHour);
+    drawRowText(textY2, '7d', sevenDay);
   } else {
-    textOut(Math.round(10 * scale), textY1, 'Claude usage', textColor);
+    GDI32.SelectObject(deviceContext, primaryFont);
+    textOut(Math.round(12 * scale), textY1, 'Claude usage', textColor, 0 /* TA_LEFT */);
     const message = connectionState === 'stale' ? 'token expired — open Claude Code' : connectionState === 'error' ? 'usage fetch failed' : 'loading…';
-    textOut(Math.round(10 * scale), textY2, message, dimTextColor);
+    textOut(Math.round(12 * scale), textY2, message, dimTextColor, 0 /* TA_LEFT */);
   }
   void User32.ReleaseDC(hwnd, deviceContext);
 };
