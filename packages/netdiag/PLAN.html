@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BUN_NETDIAG — Implementation Plan for @bun-win32/netdiag + bun-netdiag</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --fg:#e6edf3; --dim:#8b949e; --accent:#58a6ff; --green:#3fb950; --amber:#d29922; --red:#f85149; --purple:#bc8cff; }
+  * { box-sizing: border-box; }
+  body { background:var(--bg); color:var(--fg); font:15px/1.6 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; margin:0; padding:2rem; max-width:1100px; margin-inline:auto; }
+  h1 { font-size:1.9rem; border-bottom:2px solid var(--accent); padding-bottom:.4rem; }
+  h2 { font-size:1.45rem; color:var(--accent); border-bottom:1px solid var(--border); padding-bottom:.3rem; margin-top:3rem; }
+  h3 { font-size:1.15rem; color:var(--purple); margin-top:2rem; }
+  h4 { font-size:1rem; color:var(--fg); margin-bottom:.3rem; }
+  code { background:var(--panel); border:1px solid var(--border); border-radius:4px; padding:.1em .35em; font:13px/1.5 ui-monospace,"Cascadia Code",Consolas,monospace; }
+  pre { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:1rem; overflow-x:auto; }
+  pre code { background:none; border:none; padding:0; }
+  table { border-collapse:collapse; width:100%; margin:1rem 0; font-size:.92em; }
+  th,td { border:1px solid var(--border); padding:.45rem .6rem; text-align:left; vertical-align:top; }
+  th { background:var(--panel); }
+  .step { background:var(--panel); border:1px solid var(--border); border-left:4px solid var(--accent); border-radius:6px; padding:.7rem 1rem; margin:.8rem 0; }
+  .step .id { color:var(--accent); font-weight:700; font-family:ui-monospace,Consolas,monospace; margin-right:.5rem; }
+  .verify { border-left-color:var(--green); }
+  .verify .id { color:var(--green); }
+  .commit { border-left-color:var(--amber); }
+  .commit .id { color:var(--amber); }
+  .research { border-left-color:var(--purple); }
+  .research .id { color:var(--purple); }
+  .warn { background:#2d1a1a; border:1px solid var(--red); border-radius:8px; padding: .8rem 1rem; margin:1rem 0; }
+  .note { background:#1a2233; border:1px solid var(--accent); border-radius:8px; padding:.8rem 1rem; margin:1rem 0; }
+  .doctrine { background:#1f2a1f; border:1px solid var(--green); border-radius:8px; padding:.8rem 1rem; margin:1rem 0; }
+  .perf { background:#2a2418; border:1px solid var(--amber); border-radius:8px; padding:.8rem 1rem; margin:1rem 0; }
+  .tag { display:inline-block; font-size:.75em; font-weight:700; border-radius:10px; padding:.05em .6em; margin-left:.4em; vertical-align:middle; }
+  .tag.test { background:#1f3d2b; color:var(--green); }
+  .tag.ffi { background:#3d2b1f; color:var(--amber); }
+  .tag.new { background:#2b1f3d; color:var(--purple); }
+  a { color:var(--accent); }
+  .toc li { margin:.2rem 0; }
+  summary { cursor:pointer; color:var(--accent); font-weight:600; }
+</style>
+</head>
+<body>
+
+<h1>BUN_NETDIAG — Implementation Plan: <code>@bun-win32/netdiag</code> + <code>bun-netdiag</code></h1>
+
+<p><strong>For agentic workers:</strong> this plan is designed for end-to-end execution by Claude (Opus 4.8, ultracode) via a <code>/goal</code>. Track phases with TaskCreate/TaskUpdate. Execute tasks in order; each task is bite-sized, verified, and committed before moving on. <strong>Never leave the repo in a broken state.</strong> The goal is complete when <code>bun-netdiag@1.0.0</code> and <code>@bun-win32/netdiag@1.0.0</code> are live on npm, installable, and the post-publish clean-room acceptance test (Phase 15, S15.7) passes.</p>
+
+<p><strong>House standard:</strong> this document is a sibling of <code>packages/gpu/PLAN.html</code> (<em>BUN_GPU</em>) — the gold-standard product plan. It reproduces that plan's structure and discipline exactly: ground-truth dossier → research-while-building doctrine → execute-time competitive intelligence with a parity matrix ("everything the incumbents do, only better" — gated at release) → bite-sized verified phases → real tests → AI-first docs → one-OTP release → clean-room acceptance. <strong>BUN_GPU's Appendix F is the cloning guide this plan was built from; when this plan is silent on a convention, BUN_GPU governs.</strong></p>
+
+<p><strong>Goal:</strong> Build a first-class, zero-native-dependency, AI-first package <code>@bun-win32/netdiag</code> that turns the existing <code>@bun-win32/{iphlpapi, wlanapi, dnsapi, ws2_32}</code> bindings into an ergonomic, locale-proof, syscall-grade network-diagnostics surface: routing table, socket→PID(+module) map, no-admin ICMP ping + traceroute, typed ARP/neighbor table, adapter census, DNS record queries, live per-interface throughput, and WiFi scan/connect — all returned as TypeScript objects decoded from <strong>binary structs</strong>, never scraped from <code>netsh</code>/<code>ping.exe</code>/<code>wmic</code>/<code>arp</code> text. Publish it plus an unscoped <code>bun-netdiag</code> alias, with real tests at every step.</p>
+
+<p><strong>Architecture:</strong> A non-binding "engine" package (precedent: <code>@bun-win32/terminal</code> and <code>@bun-win32/gpu</code>) of flat root modules over the existing binding packages. There is no marshaling layer and no native build step: each public function does a sizing call, allocates a reused buffer, invokes the bound export, and decodes the returned struct with <code>DataView</code>. The binding packages already exist and already have live, on-hardware proof demos (Appendix A) — this package is the wrapper layer that productizes them. No npm dependencies outside the workspace.</p>
+
+<p><strong>Tech stack:</strong> Bun (<code>bun:ffi</code>), TypeScript strict, Biome formatter, the Win32 IP Helper API (<code>iphlpapi.dll</code>), Native WiFi (<code>wlanapi.dll</code>), the DNS API (<code>dnsapi.dll</code>), and Winsock (<code>ws2_32.dll</code>) — all OS-shipped DLLs already in <code>System32</code> on every Windows machine. Windows-only, Bun-only — stated proudly, not apologetically.</p>
+
+<div class="doctrine">
+<h4>⚖ The research-while-building doctrine (read this before every phase)</h4>
+<p>This plan was written on 2026-06-12 against a verified snapshot of the repo and a 20-agent research fleet (Opus 4.8). It is a <strong>map, not the territory</strong>. Rules of engagement:</p>
+<ul>
+<li><strong>The repo, the SDK headers, <code>dumpbin</code>, and observed runtime behavior outrank this plan.</strong> When a quoted export, signature, struct offset, or download figure has drifted, trust ground truth. Update your approach, note the deviation in the commit message and the ledger, and keep going.</li>
+<li><strong>Do not take this plan's word as truth — verify independently.</strong> Every load-bearing fact below carries a re-verification instruction. The research fleet that produced these numbers was explicitly instructed to be skeptical and cite primary sources; you must hold the same bar. A wrong struct offset segfaults; a wrong export name fails to load; a stale download number embarrasses the README. <strong>When in doubt, read the binding package's struct file and run <code>dumpbin //EXPORTS</code> — do not guess.</strong></li>
+<li><strong>Every phase begins by reading the actual source files it touches</strong> — the binding package's <code>structs/*.ts</code> and <code>types/*.ts</code>, plus the proof demo (Appendix A). Code blocks in this plan that quote line anchors give them as of 2026-06-12 — re-locate with Grep if they moved.</li>
+<li><strong>Code blocks marked <span class="tag new">NEW</span> are reference implementations written ahead of time, unexecuted.</strong> They are your starting point, not gospel. Run them, fix them, and prefer what the runtime tells you (the actual bound signature, the actual struct offset) over what this document asserts. Struct offsets in particular are x64-ABI-sensitive — verify each against the binding package's struct file and the Microsoft Learn struct definition.</li>
+<li><strong>When a step's verification fails, stop and debug</strong> (use superpowers:systematic-debugging). Do not pile changes on a broken state. Do not "fix" by weakening the verification.</li>
+<li><strong>If you discover this plan got something wrong, fix your mental model AND record it</strong> — one line in the deviation ledger (S0.9) so the human learns what drifted.</li>
+<li><strong>Verify on real hardware and against OS ground truth.</strong> A route table that matches <code>route print</code>, a socket→PID map that matches <code>netstat -ano</code>, and a ping whose RTT matches <code>ping.exe</code> beat any self-consistent number (Phase 11).</li>
+</ul>
+</div>
+
+<div class="perf">
+<h4>⚡ The performance doctrine (this is what makes netdiag worth shipping — read before every hot-path phase)</h4>
+<p>The entire pitch is "<em>every sample is a syscall, not a process spawn</em>" — a live dashboard polling at sub-millisecond cadence, impossible when <code>default-gateway</code>/<code>ping</code>/<code>node-wifi</code>/<code>systeminformation</code> each cost a <code>CreateProcess</code> + localized text parse (tens of milliseconds and locale-dependent breakage; <code>systeminformation</code> even self-throttles network stats to a 500&nbsp;ms floor). A diagnostics engine that re-allocates and re-parses on every poll throws that advantage away. Performance is a <strong>standing, always-on audit</strong>, not a closing benchmark — every hot-path phase ends by analyzing its inner loop down to allocations, the sizing-call round-trip, the struct-decode loop, and FFI-boundary crossings. <strong>Treat every number below as a floor, not a finish line</strong> — keep hunting for wins this plan never anticipated (the generative pass, G.3). Rules (re-measured per host in S0.6b — <strong>Bun runs on JavaScriptCore, not V8; treat V8 folklore as suspect until measured</strong>; full data in Appendix G):</p>
+<ul>
+<li><strong>Reuse, never re-allocate, in any per-poll loop.</strong> A <code>Buffer.alloc</code> per sample measured <strong>~1064&nbsp;ns</strong> (and the memset dominates); a fresh <code>DataView</code> per parse is <strong>+20&nbsp;ns</strong>; a per-row <code>toArrayBuffer</code>+<code>DataView</code> is <strong>~29×</strong> a single reused view. The sizing-call pattern (call with NULL → get required bytes → allocate → call again) is the engine's signature shape: <strong>keep one growable data buffer and one 4-byte size buffer per table source, grow geometrically, and reuse them across polls.</strong> Decode by wrapping the returned region in ONE <code>DataView</code> and reading typed accessors at computed offsets; pre-size result arrays by <code>dwNumEntries</code>.</li>
+<li><strong>Read <code>buffer.ptr</code> inline at the FFI call — do not cache it across allocations.</strong> Ground truth (repo memory): small <code>Buffer</code> backing stores <strong>relocate</strong> after later allocations, so a cached <code>.ptr</code> can dangle → <code>E_INVALIDARG</code>/garbage. This <em>overrides</em> BUN_GPU's "cache .ptr once" lever for this package's allocation-heavy sizing-call paths. The getter itself costs ~7.3&nbsp;ns (it re-runs <code>ptr(this)</code>); hoist it only within a tight inner loop that does NOT allocate between uses, and re-read it after any allocation.</li>
+<li><strong>Avoid bigint in the hot path; minimize FFI crossings.</strong> The FFI floor is ~5&nbsp;ns/call; a u64→bigint handle return adds ~10&nbsp;ns; a fresh <code>BigInt()</code> arg per call is ~16&nbsp;ns (hoist constant handle args out of poll loops). The socket→PID join key is a <code>number</code> (PID), never a bigint. The macro-opt is structural: one <code>GetExtendedTcpTable</code> call returns the whole table — never one syscall per connection.</li>
+<li><strong>Use <code>DataView</code> typed accessors, not hand-rolled byte math</strong> (on JSC manual byte-OR is ~1.13× <em>slower</em> — the opposite of V8 lore); Big(U)int64Array <em>views</em> are the <strong>slowest</strong> u64 path and often unaligned-illegal. IPv4 address bytes, ports (network byte order — one byteswap), and MIB counters are all <code>DataView.getUint32/getUint16</code> reads. JSC shows <strong>no</strong> monomorphism penalty — don't contort for it.</li>
+<li><strong>Pace dashboards correctly.</strong> <code>Bun.sleep</code> (async) quantizes to ~15.6&nbsp;ms → a 64&nbsp;fps ceiling and stutter; <code>Bun.sleepSync</code> is NOT quantized (~1.5&nbsp;ms), and the proven sub-frame path is a high-resolution waitable timer + <code>setImmediate</code> yield (repo memory: Windows 60fps frame pacing). The "sub-millisecond sampling" claim is about the <em>syscall cost</em>, not the wall-clock poll interval — measure and state both honestly.</li>
+<li><strong>WiFi scan is intentionally slow and that is correct.</strong> Two paths: the OS-cached available-network list (instant — what the existing demos use) and a FRESH scan, <code>WlanScan</code> → ~4&nbsp;s settle → <code>WlanGetAvailableNetworkList</code> (MSDN-sanctioned; verified the repo's wlanapi demos never call <code>WlanScan</code>, so netdiag is the first to implement it — and <code>WlanScan</code> may FLUSH the prior list, so you must wait the full ~4&nbsp;s before reading). Do not "optimize" with <code>WlanRegisterNotification</code> (foreign-thread callback — crash class; MSDN itself blesses "time out and query the current interface state instead of waiting for a notification"). Expose a <code>triggerScan</code> flag so callers pick cached (instant) vs fresh (~4&nbsp;s); document the latency; it is not a hot path.</li>
+<li><strong>Every hot path gets an isolated microbenchmark</strong> (<code>Bun.nanoseconds()</code>, 200k+ warm-up, dead-code sink, median ns/op — the <code>terminal.bench.ts</code> convention): a full route-table poll, a socket→PID table poll, a single <code>IcmpSendEcho</code>, an ARP-table decode, the <code>GetIfTable2</code> throughput delta. Benchmarks DRIVE optimization, not just the README table. A perf baseline is recorded in Phase 0 and <strong>gated at release</strong> (S14.6) exactly like a tsc error.</li>
+<li><strong>Prove it, don't hope — Bun ships <code>bun:jsc</code>.</strong> Every decode loop can be <em>verified</em> optimized: <code>numberOfDFGCompiles(fn) &gt; 0</code> (timing optimized code, not the interpreter), <code>profile(cb)</code> tier breakdown (assert FTL/DFG dominates the table-decode), <code>reoptimizationRetryCount(fn)</code> (climbing = type-unstable deopt), <code>jscDescribe(obj)</code> (Structure/IndexingType X-ray of the row objects), <code>heapStats().objectTypeCounts</code> deltas (gate per-poll allocation at zero after warmup). Full verified toolkit + measured JSC levers in Appendix G.4/G.5 — use them in every microbench and audit.</li>
+<li><strong>Don't satisfice — beating the baseline is the job.</strong> Once a path is correct, <code>profile()</code> it to find the ACTUAL dominant cost (often something this plan never listed — the sizing-call double-invoke, a redundant per-row copy, a bigint conversion), form a hypothesis, microbench an alternative, keep it only if it wins AND stays correct, cast-free, and readable — then go again until returns genuinely diminish. Can a read be hoisted, a table cached for the poll interval, two syscalls fused, a result returned as a typed-array view instead of an object array? Any lever you discover that this plan didn't list — prove it with the G.4 tools and <strong>add it to Appendix G.5</strong>. Never stop at "fast enough."</li>
+</ul>
+</div>
+
+<div class="warn">
+<h4>⚠ Non-negotiable repo rules (from AGENTS.md — these override your defaults)</h4>
+<ul>
+<li><strong>No type casts. Ever.</strong> No <code>as any</code>, no <code>as unknown as T</code>. The shipped exceptions you may copy verbatim: <code>Number(ptr) as Pointer</code> (Bun's branded-Pointer narrowing, used throughout the existing net demos) and the non-null <code>!</code> assertion. If types disagree, the FFI mapping or alias is wrong — fix the root cause.</li>
+<li><strong>No fabrication.</strong> This binds a real OS. Never guess a signature, struct offset, nullability, or export. Verify against <code>dumpbin</code>, the Microsoft Learn page, the SDK header, and the binding package's struct file. Incorrect bindings segfault.</li>
+<li><strong>Alphabetize everything</strong> ASCIIbetically (uppercase before lowercase): exports in <code>index.ts</code>, functions where order isn't semantic, package.json keys per existing precedent, deps.</li>
+<li><strong>No abbreviations</strong> in identifiers (exception: preserved Win32 parameter names — <code>lpBuffer</code>, <code>dwSize</code>). <code>processIdentifier</code>, not <code>procId</code>.</li>
+<li><strong>No premature abstraction.</strong> No helpers/wrappers beyond what a phase requires. Three similar decode lines beat a clever generic decoder — until a measured win or a real third caller justifies it.</li>
+<li><strong>No section comment headers</strong> (<code>// ====</code>). Terse, value-add comments only (struct offsets, byte-order swaps, non-obvious ordering). <code>/** @inheritdoc */</code> on Symbols blocks; nothing more verbose.</li>
+<li><strong>Biome formats</strong> (2-space, line width 240, single quotes, semicolons, LF). Run <code>bunx biome format --write</code> on files you create. Never reintroduce Prettier.</li>
+<li><strong>Bun-native APIs</strong>: <code>Bun.env</code>, <code>Bun.argv</code>, <code>Bun.nanoseconds</code>, <code>bun run</code>; never npm/npx/yarn/node.</li>
+<li><strong>Conventional commits</strong>, lowercase imperative: <code>feat(netdiag): add routing table + default gateway over GetIpForwardTable2</code>. Commit early and often — this is a multi-agent repo; uncommitted work gets <code>git clean</code>ed (ground truth).</li>
+<li><strong>Hex literals with separators</strong> for flags/sizes/offsets: <code>0x0000_0020</code>, <code>0x238</code>.</li>
+<li><strong>Tests never live in a <code>test/</code> directory.</strong> Pure-logic tests are root <code>*.test.ts</code> (terminal precedent); FFI integration tests live in <code>example/</code> (and may BE examples).</li>
+<li><strong>git from repo root</strong>; never <code>git add</code> gitignored files (<code>.scratch/</code>, <code>DISCORD_POST.md</code>, <code>MISSING_APIS.md</code>, <code>TODO.md</code>).</li>
+</ul>
+</div>
+
+<h2 id="dossier">0. Ground-truth dossier (verified 2026-06-12 — re-verify the load-bearing rows in Phase 0)</h2>
+
+<p>Everything below was verified against the live repo and (for incumbents) the npm registry on 2026-06-12 by a skeptical research fleet. <strong>Rows marked ⟳ are load-bearing and MUST be re-verified in Phase 0</strong> — registry numbers move, and a binding export you assume exists may not.</p>
+
+<table>
+<tr><th>Fact</th><th>Value</th><th>Why it matters</th></tr>
+<tr><td>npm name <code>bun-netdiag</code> ⟳</td><td><strong>404 — available</strong> (2026-06-12)</td><td>The unscoped marketing name is free. Re-check in Phase 0; if squatted since, ship <code>@bun-win32/netdiag</code> regardless and surface the alias problem to the user — do not silently pick a different unscoped name.</td></tr>
+<tr><td>npm name <code>@bun-win32/netdiag</code> ⟳</td><td><strong>404 — available</strong></td><td>Scoped name free. Clean namespace.</td></tr>
+<tr><td><code>packages/netdiag</code>, <code>packages/bun-netdiag</code></td><td>Do not exist</td><td>Clean directory.</td></tr>
+<tr><td>Binding packages this wraps</td><td><code>@bun-win32/{iphlpapi, wlanapi, dnsapi, ws2_32}</code> — all exist at v1.0.0+, all depend only on <code>@bun-win32/core</code></td><td>The source of truth. <code>iphlpapi/structs/Iphlpapi.ts</code> ≈1,210 lines; <code>ws2_32</code> ≈1,170; <code>wlanapi</code> ≈446; <code>dnsapi</code> ≈407. <strong>Phase 0 confirms each export this plan names is actually bound</strong> (Appendix A) — if one is missing, adding it to the binding package is a sub-task, not a workaround.</td></tr>
+<tr><td>On-hardware proof demos ⟳</td><td>10 demos already run real syscalls (Appendix A): <code>iphlpapi/example/network-diagnostic.ts</code> + <code>network-map.ts</code>, <code>wlanapi/example/signal-monitor.ts</code> + <code>wifi-diagnostic.ts</code>, <code>dnsapi/example/dns-forensics.ts</code> + <code>dns-tree.ts</code>, <code>ws2_32/example/dns-lookup.ts</code> + <code>socket-diagnostic.ts</code>, <code>all/example/net-xray.ts</code> (socket→PID), <code>all/example/packet-sniffer.ts</code> (driverless capture, admin-only)</td><td>The capability is already de-risked on this machine. These demos are the <strong>extraction source</strong> for the decode logic AND the Phase 11 regression corpus. Read each before writing the module it feeds.</td></tr>
+<tr><td>The verbose "before" ⟳</td><td><code>network-diagnostic.ts</code> hand-decodes <code>FIXED_INFO</code>, the <code>IP_ADAPTER_INFO</code> linked list, <code>MIB_TCPTABLE</code> (20-byte rows), and <code>MIB_IPFORWARDTABLE</code> (56-byte rows) with hardcoded offsets, manual <code>formatIpFromU32</code>, and manual <code>formatPort</code> byteswap — the sizing-call pattern done by hand, four times</td><td>This is exactly what netdiag encapsulates into <code>adapters()</code>/<code>tcpConnections()</code>/<code>routes()</code>/<code>dnsServers()</code>. <strong>Note:</strong> the demo uses the <em>legacy IPv4-only</em> APIs (<code>GetTcpTable</code>, <code>GetIpForwardTable</code>, <code>GetAdaptersInfo</code>). netdiag PREFERS the modern Table2/Extended/Addresses APIs for IPv6 + PID + richer fields, falling back to the legacy ones only where a modern export isn't bound (verify in Phase 0).</td></tr>
+<tr><td>Extraction/packaging precedent</td><td><code>@bun-win32/terminal</code> v1.1.2 — non-binding flat root modules, named exports only, root <code>*.test.ts</code> (pure logic), <code>example/</code> demos with <code>example:*</code> scripts, AI.md + README.md, <code>publishConfig.access: public</code>, <code>sideEffects: false</code></td><td>Copy its package.json shape and key order (Appendix E), AI.md structure, and test convention. <code>@bun-win32/gpu</code> is the most recent application of the same recipe.</td></tr>
+<tr><td>Unscoped alias precedent</td><td><code>packages/bun-win32</code>: package.json + <code>index.ts</code> = exactly <code>export * from '@bun-win32/all';</code></td><td><code>bun-netdiag</code> mirrors this over <code>@bun-win32/netdiag</code>.</td></tr>
+<tr><td><code>scripts/audit.ts</code> / <code>nullcheck.ts</code></td><td>Both skip packages without a <code>structs/</code> dir (and <code>core</code>/<code>template</code>)</td><td><code>netdiag</code> is non-binding → automatically skipped. Run <code>--all</code> anyway to prove no regression elsewhere (~241 accepted-convention notices on mature packages are NOT bugs — never "fix" shipped bindings to silence them).</td></tr>
+<tr><td><code>scripts/preflight.ts</code></td><td>Fails if any <code>bun.lock</code> workspace version record ≠ that package's version</td><td>Release gate. <code>bun install</code> does NOT refresh these records — <code>rm bun.lock &amp;&amp; bun install</code> does (ground truth).</td></tr>
+<tr><td><code>bun:test</code> + FFI ⟳</td><td>Ground truth (repo memory): historically segfaults repo-wide when tests touch FFI; terminal's root tests pass because they are pure logic</td><td>Phase 0 re-probes on the current Bun. Pure-logic tests (address codecs, port byteswap, ICMP-status decode, DNS record-type parse) → <code>bun:test</code>. FFI integration tests → <code>example/netdiag.selftest.ts</code> as a plain script with assertions + non-zero exit on failure (and it doubles as an example).</td></tr>
+<tr><td>The no-admin claim ⟳</td><td><code>IcmpSendEcho</code> needs <strong>no Administrator</strong> and <strong>no node-gyp</strong>; the <code>SIO_RCVALL</code> raw capture in <code>packet-sniffer.ts</code> <strong>requires admin</strong></td><td>Scope "no Administrator" strictly to ICMP ping/traceroute, ARP/route/socket tables, DNS, and WiFi scan. Raw packet capture is an explicitly admin-gated extra, not part of the no-admin pitch.</td></tr>
+<tr><td>Known FFI traps ledger</td><td>See Appendix C</td><td>Each becomes either an API guardrail or an AI.md gotcha.</td></tr>
+<tr><td>Why this wins (market) ⟳ <em>fleet-verified 2026-06-12</em></td><td><code>default-gateway</code> <strong>8.11M/wk</strong> but GitHub-ARCHIVED (2026-02-05) and spawns <code>wmic</code> via execa (Microsoft: WMIC disabled-by-default on Win11 23H2/24H2, removed-on-upgrade 25H2, no longer even a Feature on Demand); <code>ping</code> <strong>189k/wk</strong> spawns <code>ping.exe</code> + regex-parses localized stdout (EN/RU only, breaks on French "temps" #64); <code>node-wifi</code> <strong>2.9k/wk</strong> (stale since 2021) shells <code>netsh</code> (Win11 field-order drift #184, Unicode-SSID mangling #198); <code>local-devices</code> <strong>3.4k/wk</strong> spawns <code>arp -a</code> (fixed-index parser, #75 broken on Windows); <code>net-ping</code> <strong>1.4k/wk</strong> needs node-gyp <code>raw-socket</code> (won't build on Node 23/24 #91) + admin (SOCK_RAW); <code>systeminformation</code> <strong>5.87M/wk</strong> gets ALL Windows net data by spawning PowerShell/WMI/netstat/netsh (500ms throughput floor, PID-only sockets, CVE-2021-21315 shell-injection class)</td><td>Live-fetched from <code>api.npmjs.org</code> + GitHub + Microsoft Learn by the research fleet (full URLs in Appendix D). Phase 0b re-validates; this is the README comparison table. Audit verdict: <strong>no pure-FFI / Bun-native Windows network-diagnostics competitor exists</strong> — the zero-install struct-decode niche is unoccupied.</td></tr>
+</table>
+
+<h2 id="map">1. Deliverables &amp; file map</h2>
+
+<h3>1.1 What ships</h3>
+<table>
+<tr><th>Package</th><th>Version</th><th>Contents</th></tr>
+<tr><td><code>@bun-win32/netdiag</code></td><td>1.0.0</td><td>The engine: adapters, routes, ARP/neighbors, socket→PID(+module), no-admin ping + traceroute, DNS, protocol statistics + live throughput, WiFi scan/connect, the raw escape hatch, address codecs + AI.md + README + 5 examples + tests.</td></tr>
+<tr><td><code>bun-netdiag</code></td><td>1.0.0</td><td>Unscoped alias: <code>export * from '@bun-win32/netdiag';</code> + the full marketing README. The discoverable front door.</td></tr>
+<tr><td><code>@bun-win32/all</code></td><td>minor bump</td><td>Gains <code>@bun-win32/netdiag</code> as a workspace dep (mirroring how it depends on terminal/gpu without necessarily re-exporting). Optionally retargets <code>net-xray.ts</code>/<code>packet-sniffer.ts</code> onto the package as regression shims (Phase 11).</td></tr>
+<tr><td><code>bun-win32</code></td><td>patch bump</td><td>Republished if <code>all</code> changed, so its pinned <code>@bun-win32/all</code> version is current.</td></tr>
+<tr><td>Binding packages (<code>iphlpapi</code>/<code>wlanapi</code>/<code>dnsapi</code>/<code>ws2_32</code>)</td><td>patch bump <em>iff</em> a missing export was added</td><td>If Phase 0/Appendix A finds a needed export unbound, add it to the binding package (with audit + nullcheck green) and version-bump only that package. Most should already be bound.</td></tr>
+</table>
+
+<h3>1.2 <code>packages/netdiag/</code> file map (flat modules, terminal/gpu precedent)</h3>
+<pre><code>packages/netdiag/
+  AI.md           complete AI-first surface contract (Phase 13) — an agent never needs the source
+  README.md       product README: gripes table, 10-line wow, benchmarks, parity matrix (Phase 13)
+  adapters.ts     adapters(): GetAdaptersAddresses — IPv4/IPv6, gateway, DNS, MAC, status, type, link speed (Phase 3)
+  addr.ts         ipv4FromU32, ipv6FromBytes (ws2_32 InetNtopW), macFromBytes, portFromNetworkOrder, decodeSockaddr — pure codecs (Phase 2)
+  arp.ts          neighbors()/arpTable(): GetIpNetTable2 — typed neighbor/ARP table; resolve() optional (Phase 4)
+  constants.ts    TCP states, AF_INET/AF_INET6, ICMP status codes, TCP/UDP table classes, WLAN enums, DNS record types (Phase 2)
+  dns.ts          resolve(name, type), reverse(ip): DnsQuery_W with typed A/AAAA/MX/TXT/NS/SOA/PTR/SRV/CNAME decode (Phase 7)
+  index.ts        alphabetized named re-exports (no default — terminal precedent)
+  netdiag.test.ts pure-logic tests (codecs, byteswap, ICMP-status, DNS-type, struct-offset math)
+  package.json
+  ping.ts         ping(host, opts), pingMany(hosts): IcmpCreateFile + IcmpSendEcho (no admin); structured reply (Phase 6)
+  routes.ts       routes(), defaultGateway(): GetIpForwardTable2 — IPv4/IPv6 routing table (Phase 4)
+  sockets.ts      tcpConnections(), udpListeners(): GetExtendedTcpTable/GetExtendedUdpTable OWNER_PID/OWNER_MODULE → socket→PID(+module) (Phase 5)
+  stats.ts        tcpStatistics()/ipStatistics()/udpStatistics() (GetTcpStatistics…); interfaceCounters() live throughput (GetIfTable2) (Phase 9)
+  tsconfig.json
+  traceroute.ts   traceroute(host, opts): IcmpSendEcho TTL ramp (IP_OPTION_INFORMATION) — no raw socket, no admin (Phase 6)
+  wifi.ts         wifiInterfaces(), wifiScan(), wifiConnection(), wifiConnect (beta): wlanapi (Phase 8)
+  win32.ts        the engine plumbing: sizing-call helper, linked-list walker, the raw escape hatch (call any bound export by name) (Phase 2)
+  example/
+    net-report.ts        professional diagnostic: adapters, routes, sockets→PID, DNS, statistics (Phase 10)
+    netwatch.ts          live route/ARP/socket→PID + per-interface throughput dashboard (the wow) (Phase 10)
+    ping.ts              no-admin ping + traceroute to a host (Phase 10)
+    wifi-scan.ts         WiFi census with RSSI/band/channel/auth (Phase 10)
+    netdiag.selftest.ts  THE integration suite — 14+ real assertions, exit code (Phase 10)
+</code></pre>
+
+<div class="note"><strong>Dependency policy:</strong> <code>@bun-win32/{core, iphlpapi, wlanapi, dnsapi, ws2_32}</code> via <code>workspace:*</code> — the four net DLLs plus core. <code>@bun-win32/kernel32</code> is added ONLY for the optional full-process-image-path resolution and the async-ping <code>CreateEventW</code> handle (the core socket→PID module resolves the owning <em>module name</em> with iphlpapi alone, so the four-net-DLL story holds for the headline surface). No <code>gdiplus</code>, no native code. The install story is brutal: <em>"bun add bun-netdiag" pulls a few kilobytes of TypeScript and zero native binaries; every DLL it calls already ships in <code>C:\Windows\System32</code>.</em></div>
+
+<h3>1.3 Phase map</h3>
+<ol class="toc">
+<li><a href="#p0">Phase 0 — Preflight: environment, ground-truth re-verification, baselines, competitive intel</a></li>
+<li><a href="#p1">Phase 1 — Package skeleton + early commit</a></li>
+<li><a href="#p2">Phase 2 — Foundations: win32.ts, addr.ts, constants.ts (+ pure-logic tests)</a></li>
+<li><a href="#p3">Phase 3 — adapters.ts: the modern adapter census (GetAdaptersAddresses)</a></li>
+<li><a href="#p4">Phase 4 — routes.ts + arp.ts: routing table, default gateway, typed ARP</a></li>
+<li><a href="#p5">Phase 5 — sockets.ts: socket→PID(+module) (GetExtendedTcpTable) — the wedge</a></li>
+<li><a href="#p6">Phase 6 — ping.ts + traceroute.ts: no-admin ICMP (🏁 the flagship)</a></li>
+<li><a href="#p7">Phase 7 — dns.ts: typed DNS record queries</a></li>
+<li><a href="#p8">Phase 8 — wifi.ts: locale-proof WiFi scan/connection (+ beta connect)</a></li>
+<li><a href="#p9">Phase 9 — stats.ts: protocol statistics + live per-interface throughput</a></li>
+<li><a href="#p10">Phase 10 — Examples + the integration selftest + benchmark</a></li>
+<li><a href="#p10b">Phase 10b — Extras wave: judged moat capabilities no JS package offers</a></li>
+<li><a href="#p11">Phase 11 — Cross-validation vs OS ground truth + demo-corpus regression</a></li>
+<li><a href="#p12">Phase 12 — bun-netdiag unscoped alias</a></li>
+<li><a href="#p13">Phase 13 — Documentation: AI.md, README, screenshots</a></li>
+<li><a href="#p14">Phase 14 — Quality gates + parity gate + self-review</a></li>
+<li><a href="#p15">Phase 15 — Release: versions, lockfile, publish (one OTP), post-publish acceptance</a></li>
+<li><a href="#appendix">Appendices A–G</a> (incl. <a href="#appG">G — Performance: hot-path budgets, measured JSC levers, the regression gate</a>)</li>
+</ol>
+
+<h2 id="p0">Phase 0 — Preflight: environment, ground-truth re-verification, baselines, competitive intel</h2>
+<p><em>Purpose: prove the machine, the toolchain, and this plan's load-bearing assumptions before writing a line. Capture baselines you will diff against in Phase 14.</em></p>
+
+<div class="step research"><span class="id">S0.1</span><strong>Read the law.</strong> Read <code>AGENTS.md</code> (repo root) and <code>PROMPT.md</code> §5–§9 (FFI type mapping) in full. Read <code>PROJECTS.md</code> §3 (bun-netdiag, ~lines 101–127) — it is the product brief. Skim <code>packages/gpu/PLAN.html</code> Appendix F (the house standard this plan inherits). The rules there override your instincts.</div>
+
+<div class="step"><span class="id">S0.2</span><strong>Environment check.</strong>
+<pre><code>bun --version
+bun run scripts/doctor.ts
+git status</code></pre>
+Expected: Bun ≥ 1.1, doctor reports prerequisites OK, working tree clean or only known untracked files (<code>PROJECTS.md</code>, <code>packages/netdiag/PLAN.html</code>, <code>packages/netdiag/PLAN_PROMPT.md</code>). If the tree has OTHER uncommitted changes, stop and surface them rather than building on top.</div>
+
+<div class="step"><span class="id">S0.2b</span><strong>Keep the machine awake for the entire run</strong> — the user may be asleep while this executes; the run dies if the machine does. Use the repo's own bindings (<code>Kernel32.SetThreadExecutionState</code>). Write <code>.scratch/keep-awake.ts</code>:
+<pre><code>import Kernel32 from '@bun-win32/kernel32';
+
+const ES_CONTINUOUS = 0x8000_0000;
+const ES_DISPLAY_REQUIRED = 0x0000_0002;
+const ES_SYSTEM_REQUIRED = 0x0000_0001;
+
+const previous = Kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
+if (previous === 0) {
+  console.error('SetThreadExecutionState failed — machine may sleep mid-run.');
+  process.exit(1);
+}
+console.log('keep-awake active (system + display); previous state 0x' + previous.toString(16));
+setInterval(() =&gt; void Kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED), 60_000);</code></pre>
+Launch it as a BACKGROUND process and leave it running for the whole execution; the ES_CONTINUOUS state clears automatically when the process exits, so kill it as the final act of Phase 15. Verify it prints "keep-awake active" and stays alive.</div>
+
+<div class="step verify"><span class="id">S0.3</span><strong>Prove the net stack still works on this machine.</strong> Run the existing proof demos and confirm they print real data:
+<pre><code>bun run packages/iphlpapi/example/network-diagnostic.ts     # hostname, adapters, TCP table, routes
+bun run packages/all/example/net-xray.ts                    # socket -> PID mapping
+bun run packages/dnsapi/example/dns-forensics.ts            # A/NS/SOA/MX/TXT records</code></pre>
+Expected: real adapters, routes, connections with PIDs, and DNS records — not zeros or errors. If a demo fails to load a symbol, that binding export is missing/renamed: record it (it changes Appendix A). If none run, the machine cannot validate this work: stop and report.</div>
+
+<div class="step research"><span class="id">S0.4</span><strong>Re-probe the bun:test + FFI ground truth.</strong> Write a throwaway probe OUTSIDE <code>packages/</code> (<code>.scratch/ffi-probe.test.ts</code>) that calls a trivial bound export under <code>bun:test</code>, run it 3×. <strong>Decision gate:</strong> if it passes reliably, FFI integration tests may use <code>bun:test</code> (name them <code>example/netdiag.integration.test.ts</code>). If it segfaults/flakes, use the plan default: <code>example/netdiag.selftest.ts</code> as a plain script with assertions and exit codes. Delete the probe afterwards.</div>
+
+<div class="step research"><span class="id">S0.5</span><strong>Re-verify npm name availability.</strong>
+<pre><code>curl -s -o /dev/null -w "%{http_code}\n" https://registry.npmjs.org/bun-netdiag             # expect 404
+curl -s -o /dev/null -w "%{http_code}\n" "https://registry.npmjs.org/@bun-win32%2Fnetdiag"  # expect 404</code></pre>
+If <code>bun-netdiag</code> got squatted since 2026-06-12, ship <code>@bun-win32/netdiag</code> regardless and surface the alias problem to the user — do not silently rename.</div>
+
+<div class="step research"><span class="id">S0.5b</span><strong>Confirm every export this plan names is actually bound</strong> (Appendix A is the checklist). For each binding package, grep its <code>structs/*.ts</code> Symbols block and, where in doubt, dump the DLL:
+<pre><code>grep -nE "GetExtendedTcpTable|GetExtendedUdpTable|GetIpForwardTable2|GetIpNetTable2|GetAdaptersAddresses|IcmpCreateFile|IcmpSendEcho|GetIfTable2|GetTcpStatistics|GetBestRoute2|GetUdpStatistics|GetIpStatistics" packages/iphlpapi/structs/Iphlpapi.ts
+grep -nE "WlanOpenHandle|WlanEnumInterfaces|WlanScan|WlanGetAvailableNetworkList|WlanGetNetworkBssList|WlanQueryInterface|WlanFreeMemory|WlanConnect|WlanSetProfile|WlanDisconnect" packages/wlanapi/structs/Wlanapi.ts
+grep -nE "DnsQuery_W|DnsRecordListFree|DnsFree" packages/dnsapi/structs/Dnsapi.ts
+grep -nE "WSAStartup|InetNtopW|inet_ntop|getaddrinfo|ntohs" packages/ws2_32/structs/Ws2_32.ts
+./bin/dumpbin.exe //EXPORTS 'C:\Windows\System32\iphlpapi.dll' | grep -iE "table2|extended|icmp|iftable2|beststroute2"</code></pre>
+<strong>For each export found missing:</strong> open a binding-package addition sub-task (bind it from the SDK header + <code>dumpbin</code>, run <code>audit.ts</code> + <code>nullcheck.ts</code> on that package, commit it). For each export present, note its exact bound signature — the reference implementations below assume signatures that you must confirm. Where a modern export is genuinely unavailable, fall back to the legacy proven API (e.g. <code>GetTcpTable</code> for <code>GetExtendedTcpTable</code>) and record the IPv6/PID capability gap.</div>
+
+<div class="step"><span class="id">S0.6</span><strong>Capture quality-gate baselines</strong> (diffed in Phase 14):
+<pre><code>bunx tsc --noEmit                                          # expect zero errors; if not, STOP — repo is pre-broken
+bun run scripts/audit.ts --all 2&gt;&amp;1 | tail -5      &gt; .scratch/baseline-audit.txt
+bun run scripts/nullcheck.ts --all 2&gt;&amp;1 | tail -5  &gt; .scratch/baseline-nullcheck.txt</code></pre>
+audit <code>--all</code> emits ~241 accepted-convention notices on mature packages (ground truth — NOT bugs). The baseline exists so you can prove the counts didn't change.</div>
+
+<div class="step verify"><span class="id">S0.6b</span><strong>Capture the PERFORMANCE baseline</strong> (gated in S14.6 — perf regressions are release-blocking). Pin the timer resolution, warm up ≥200k iters, and record into <code>.scratch/baseline-perf.txt</code> the floors every later hot path is measured against: median ns/op (<code>Bun.nanoseconds()</code>, dead-code sink, median of 5) of (a) a full <code>GetExtendedTcpTable</code> poll + decode, (b) a <code>GetIpForwardTable2</code> poll + decode, (c) a single <code>IcmpSendEcho</code> round trip to <code>127.0.0.1</code>, (d) the address codecs (<code>ipv4FromU32</code>, <code>portFromNetworkOrder</code>). Record machine spec + NIC (CPU, adapters, Bun version, Windows build) — every ns/µs figure in Appendix G and the README is host-specific and re-verified here, never copied from this plan.</div>
+
+<div class="step research"><span class="id">S0.7</span><strong>Read the source-of-truth files end to end</strong> (budget real time — the wrapper's fidelity depends on it):
+<ul>
+<li><code>packages/iphlpapi/structs/Iphlpapi.ts</code> + <code>types/*.ts</code> — the Symbols block (bound exports) and the MIB struct field types.</li>
+<li><code>packages/iphlpapi/example/network-diagnostic.ts</code> + <code>network-map.ts</code> — the proven sizing-call + struct-decode patterns (the "before").</li>
+<li><code>packages/all/example/net-xray.ts</code> — the socket→PID approach you will productize in Phase 5.</li>
+<li><code>packages/wlanapi/structs/Wlanapi.ts</code> + <code>example/signal-monitor.ts</code> — the proven scan/poll pattern + the notification trap.</li>
+<li><code>packages/dnsapi/structs/Dnsapi.ts</code> + <code>example/dns-forensics.ts</code> — DnsQuery_W + the DNS_RECORD union decode.</li>
+<li><code>packages/ws2_32/structs/Ws2_32.ts</code> + <code>example/socket-diagnostic.ts</code> — address/port helpers (<code>InetNtopW</code>, <code>ntohs</code>).</li>
+<li><code>packages/terminal/package.json</code>, <code>AI.md</code>, <code>terminal.bench.ts</code> — packaging, docs, and benchmark precedents.</li>
+</ul></div>
+
+<div class="step research"><span class="id">S0.8</span><strong>Resolve the <code>.ptr</code> extension question + the relocation hazard.</strong> The decode paths rely on <code>buffer.ptr</code> from <code>core/runtime/extensions.ts</code> (a side-effect import). Confirm how it reaches the module (likely transitively via the binding package's class import) and that <code>packages/netdiag</code> gets it the same way terminal/gpu do. <strong>Critical (repo memory):</strong> small <code>Buffer</code> backing stores RELOCATE after later allocations — so <code>.ptr</code> must be read INLINE at the FFI call, never cached across an allocation. S2.x bakes this rule into <code>win32.ts</code>; verify it at runtime.</div>
+
+<div class="step"><span class="id">S0.9</span><strong>Open the deviation ledger.</strong> Record the starting state in <code>.scratch/bun-netdiag-ledger.md</code>: <code>git rev-parse HEAD</code>, Bun version, the S0.4 harness decision, S0.5b's missing-export list, and S0.8's extensions answer. Every plan deviation from here gets a one-line entry — this file becomes the "what drifted" section of the final report (S15.8).</div>
+
+<h3>Phase 0b — Competitive intelligence (execute-time)</h3>
+<p><em>The parity bar: netdiag must do everything the incumbents do — only better — or document a deliberate non-goal with a reason and a roadmap line. Appendix D is the plan-time matrix; these steps re-validate and extend it with live data, because incumbents move and gripes accumulate. Do not trust this plan's download numbers — re-fetch them.</em></p>
+
+<div class="step research"><span class="id">S0.10</span><strong>Fan out research agents over the incumbents</strong> (parallel; web-capable; Opus 4.8, skeptical, cite primary sources):
+<ul>
+<li><strong>default-gateway</strong> — confirm weekly downloads (api.npmjs.org), GitHub archive status, and that its Windows path depends on <code>wmic</code>, which Microsoft removed from current Windows 11 (find the build/receipt). Capabilities + top gripes with links.</li>
+<li><strong>ping</strong> — downloads, status; confirm it spawns <code>ping.exe</code>, breaks on non-English locale output, and flashes a CMD window in Electron (issue receipts). Capabilities (host/timeout/numeric/deadline).</li>
+<li><strong>node-wifi</strong> — downloads, last publish; confirm <code>netsh</code> scraping and Win11/locale breakage (issues #143, #184). Capabilities (scan/connect/disconnect/getCurrentConnections/deleteConnection).</li>
+<li><strong>local-devices + the arp-scraper cluster</strong> — confirm <code>arp -a</code> spawn + hardcoded Unix flags. Capabilities.</li>
+<li><strong>net-ping + raw-socket</strong> — confirm node-gyp build failures on Node 20/22/24 (issues #87, #91) and the admin requirement for raw ICMP sockets. Capabilities (ping, traceRoute, ICMP sessions).</li>
+<li><strong>landscape + new entrants</strong> — <code>systeminformation</code> (networkInterfaces/networkConnections/networkStats/wifiNetworks — how it gets Windows data, its gripes), Node built-in <code>node:dns</code> (record-type limits), <code>is-reachable</code>, <code>tcp-ping</code>, <code>node-netstat</code>, <code>network-list</code>, any 2025–2026 entrant or Bun-native networking lib. Be honest if a credible zero-install native Windows competitor exists.</li>
+</ul></div>
+
+<div class="step research"><span class="id">S0.11</span><strong>Reconcile against Appendix D.</strong> For every capability the agents found that Appendix D missed: add a row and decide — parity feature (schedule it into Phases 3–9/10b as a concrete task with a proof artifact), or deliberate non-goal (write the reason + roadmap line for the README/AI.md). No third option, no silent drops: the updated matrix is the release gate's checklist (S14.3).</div>
+
+<div class="step research"><span class="id">S0.12</span><strong>Harvest the gripes into design.</strong> Each top gripe becomes one of: an API guardrail, an error-message improvement (quote the gripe; write the message that would have saved that user — e.g. "this returns a struct, not parsed <code>netsh</code> text, so it works on every locale"), a README selling point with the receipt linked, or an AI.md gotcha. Keep the gripe→response list for the final report and the README's "why this exists" section.</div>
+
+<div class="step commit"><span class="id">S0.13</span><strong>No commit</strong> — Phase 0 produces no tracked changes (baselines/research live in <code>.scratch/</code>, gitignored). If S0.5b added a binding-package export, that is its own committed change on its own package.</div>
+
+<h2 id="p1">Phase 1 — Package skeleton + early commit</h2>
+<p><em>Purpose: claim the package directory in git immediately (multi-agent repo: uncommitted work gets <code>git clean</code>ed — ground truth), with a loadable skeleton.</em></p>
+
+<div class="step"><span class="id">S1.1</span><strong>Create <code>packages/netdiag/package.json</code></strong> — modeled byte-for-byte on terminal's shape (Appendix E has the exact key order). Dependencies: <code>@bun-win32/{core, iphlpapi, wlanapi, dnsapi, ws2_32}</code> at <code>workspace:*</code> (+ <code>@bun-win32/kernel32</code> for optional full-image-path PID resolution and the async-ping event). Description: <em>"Syscall-grade network diagnostics for Bun on Windows — routing table, socket→PID map, no-admin ICMP ping/traceroute, ARP, DNS, live throughput, and WiFi — decoded from binary structs, zero native dependencies, no netsh/ping.exe/wmic scraping."</em> Keywords: <code>bun, ffi, win32, windows, network, netstat, ping, traceroute, dns, wifi, arp, routing, diagnostics, typescript</code>. <code>files</code> lists every <code>.ts</code> module + AI.md + README.md (alphabetized). <code>scripts</code>: <code>example:net-report</code>, <code>example:netwatch</code>, <code>example:ping</code>, <code>example:wifi-scan</code>, <code>example:selftest</code>. <code>sideEffects: false</code>, <code>publishConfig.access: public</code>. <strong>Reality check:</strong> diff against terminal's actual package.json before writing — match its exact key order and any field this block missed.</div>
+
+<div class="step"><span class="id">S1.2</span><strong>Create <code>packages/netdiag/tsconfig.json</code></strong> — copy <code>packages/terminal/tsconfig.json</code> verbatim (inherits root config).</div>
+
+<div class="step"><span class="id">S1.3</span><strong>Create placeholder <code>packages/netdiag/index.ts</code></strong>: <code>export const NETDIAG_PACKAGE = '@bun-win32/netdiag';</code> (temporary — replaced as modules land; exists so the package resolves and smoke-runs).</div>
+
+<div class="step"><span class="id">S1.4</span><strong>Create stub <code>AI.md</code> and <code>README.md</code></strong> (one line each: title + "Under construction — completed in Phase 13"). They must exist so <code>files</code> globs and early <code>bun publish --dry-run</code> checks don't fail.</div>
+
+<div class="step verify"><span class="id">S1.5</span><strong>Register the workspace and smoke-test.</strong>
+<pre><code>bun install
+bun run packages/netdiag/index.ts            # expect: exits 0, no output
+bunx tsc --noEmit                             # expect: zero errors</code></pre></div>
+
+<div class="step commit"><span class="id">S1.6</span><strong>Commit the claim</strong> (from repo root):
+<pre><code>git add packages/netdiag
+git commit -m "feat(netdiag): scaffold @bun-win32/netdiag engine package"</code></pre></div>
+
+<h2 id="p2">Phase 2 — Foundations: win32.ts, addr.ts, constants.ts</h2>
+<p><em>Purpose: the engine plumbing every other module depends on — the sizing-call helper (the dominant pattern), the linked-list walker, the raw escape hatch, the address codecs, and the constant tables. Pure-logic where possible, so it is exhaustively unit-tested without a single FFI call.</em></p>
+
+<div class="step"><span class="id">S2.1</span><strong>Create <code>packages/netdiag/win32.ts</code> <span class="tag new">NEW</span> — the sizing-call helper.</strong> Nearly every IP Helper table API uses the two-call idiom: call with a NULL buffer to learn the byte count (returns <code>ERROR_INSUFFICIENT_BUFFER</code> 122 or <code>ERROR_BUFFER_OVERFLOW</code> 111), allocate, call again. This is the engine's hottest shape and the place the perf doctrine lives. Reference implementation — type-check, run, fix:
+<pre><code>import type { Pointer } from 'bun:ffi';
+
+const ERROR_SUCCESS = 0;
+const ERROR_INSUFFICIENT_BUFFER = 122;
+const ERROR_BUFFER_OVERFLOW = 111;
+
+/**
+ * Run a Win32 sizing-call pair. `invoke(bufferPtr, sizePtr)` must accept a NULL
+ * data pointer for the sizing pass and return a Win32 error code. Reuses the
+ * caller-provided growable buffers across polls — never allocate per sample.
+ * .ptr is read INLINE here (Buffers relocate after allocation — repo ground truth).
+ */
+export function sizedCall(state: SizedBufferState, invoke: (dataPtr: Pointer | null, sizePtr: Pointer) =&gt; number): Buffer {
+  state.sizeView.writeUInt32LE(state.buffer.byteLength, 0);
+  let error = invoke(state.buffer.ptr, state.sizeView.ptr);
+  if (error === ERROR_INSUFFICIENT_BUFFER || error === ERROR_BUFFER_OVERFLOW) {
+    const required = state.sizeView.readUInt32LE(0);
+    if (required &gt; state.buffer.byteLength) state.buffer = Buffer.allocUnsafe(required); // grow + reuse
+    state.sizeView.writeUInt32LE(state.buffer.byteLength, 0);
+    error = invoke(state.buffer.ptr, state.sizeView.ptr); // re-read .ptr: buffer just moved
+  }
+  if (error !== ERROR_SUCCESS) throw new Win32Error(error);
+  return state.buffer;
+}
+
+export class SizedBufferState {
+  buffer: Buffer;
+  readonly sizeView: Buffer;
+  constructor(initialBytes = 0x0000_4000) {
+    this.buffer = Buffer.allocUnsafe(initialBytes);
+    this.sizeView = Buffer.allocUnsafe(4);
+  }
+}
+
+export class Win32Error extends Error {
+  readonly code: number;
+  constructor(code: number) {
+    super(`Win32 error ${code}: ${win32ErrorMessage(code)}`);
+    this.code = code;
+    this.name = 'Win32Error';
+  }
+}</code></pre>
+Notes: (1) <code>win32ErrorMessage</code> maps the handful of codes netdiag actually surfaces (5 ACCESS_DENIED, 87 INVALID_PARAMETER, 1168 NOT_FOUND, …) to actionable strings — or calls <code>FormatMessageW</code> via kernel32 if already easy; decide by cohesion. (2) Some APIs (<code>GetIfTable2</code>, <code>GetIpForwardTable2</code>) <em>allocate the table themselves</em> and hand back a pointer you must free with <code>FreeMibTable</code> — those do NOT use <code>sizedCall</code>; they get a thin alloc/decode/free wrapper. Read each API's contract (Appendix B) and pick the right shape.</div>
+
+<div class="step"><span class="id">S2.2</span><strong>Add the linked-list walker + the raw escape hatch to <code>win32.ts</code>.</strong> (1) <code>walkList(headPtr, nextOffset, decode)</code> generalizes the <code>IP_ADAPTER_INFO</code>/<code>IP_ADAPTER_ADDRESSES</code> "follow the <code>Next</code> pointer" pattern from <code>network-diagnostic.ts</code> (offset arithmetic: <code>offset = nextPtr - Number(base.ptr)</code> when the list is inside one buffer; <code>toArrayBuffer(nextPtr, 0, size)</code> when nodes are separately allocated — both forms appear in the demos). (2) The escape hatch: re-export the raw binding packages so any API netdiag didn't wrap is one call away — <code>export { default as Iphlpapi } from '@bun-win32/iphlpapi';</code> etc. This is the moat capability D.5 ("any IP Helper call we didn't wrap is one function call away") and the AI.md layer-3 recipe.</div>
+
+<div class="step"><span class="id">S2.3</span><strong>Create <code>packages/netdiag/addr.ts</code> <span class="tag new">NEW</span> — the address codecs (pure logic).</strong> Centralize what the demos hand-rolled four times: <code>ipv4FromU32(value)</code> (little-endian byte split — copy <code>formatIpFromU32</code>), <code>portFromNetworkOrder(value)</code> (the byteswap), <code>macFromBytes(buf, offset, length)</code>, <code>ipv6FromBytes(buf, offset)</code> (prefer <code>ws2_32.InetNtopW</code> for canonical <code>::</code> compression — verify it's bound in S0.5b; otherwise a pure-TS RFC 5952 formatter), and <code>decodeSockaddr(buf, offset)</code> (reads the <code>sockaddr_in</code>/<code>sockaddr_in6</code> family tag and returns <code>{ family, address, port }</code> — the <code>SOCKADDR_INET</code> union the Table2 APIs return). <strong>Every function here is pure</strong> (Buffer/number in, string/object out) → fully unit-testable without FFI.</div>
+
+<div class="step"><span class="id">S2.4</span><strong>Create <code>packages/netdiag/constants.ts</code> <span class="tag new">NEW</span>.</strong> Alphabetized enums/consts, re-exporting from the binding packages' <code>types/*.ts</code> where they already exist (don't duplicate): TCP connection states (1–12, the <code>MIB_TCP_STATE</code> map from <code>network-diagnostic.ts</code>), <code>AF_INET=2</code>/<code>AF_INET6=23</code>, ICMP reply status codes (<code>IP_SUCCESS=0</code>, <code>IP_REQ_TIMED_OUT=11010</code>, <code>IP_DEST_HOST_UNREACHABLE=11003</code>, …), the TCP/UDP table-class enums (<code>TCP_TABLE_OWNER_PID_ALL</code>, <code>TCP_TABLE_OWNER_MODULE_ALL</code>, <code>UDP_TABLE_OWNER_PID</code>), WLAN opcodes/auth/cipher/interface-state enums, and DNS record-type constants (<code>DNS_TYPE_A=1</code>, <code>AAAA=28</code>, <code>NS=2</code>, <code>CNAME=5</code>, <code>SOA=6</code>, <code>PTR=12</code>, <code>MX=15</code>, <code>TXT=16</code>, <code>SRV=33</code>). Hex literals with separators; verify every numeric value against Microsoft Learn / the SDK header (S0.1 rule).</div>
+
+<div class="step verify"><span class="id">S2.5</span><strong>Pure-logic tests</strong> <span class="tag test">bun:test</span> — <code>packages/netdiag/netdiag.test.ts</code>: <code>ipv4FromU32</code> (known values incl. <code>0.0.0.0</code> and <code>255.255.255.255</code>), <code>portFromNetworkOrder</code> (443, 80, 65535 round-trip vs network order), <code>macFromBytes</code> (zero-pad, separators), <code>decodeSockaddr</code> (a hand-built <code>sockaddr_in</code> and <code>sockaddr_in6</code> buffer), TCP-state and ICMP-status decode (every code maps; unknown → labeled fallback), DNS-type name↔number. ~20 assertions, no FFI touched.
+<pre><code>bun test packages/netdiag/netdiag.test.ts</code></pre></div>
+
+<div class="step verify"><span class="id">S2.6</span><strong>Runtime smoke of the escape hatch + sizing helper.</strong> <code>.scratch/probe-foundation.ts</code>: import <code>Iphlpapi</code> via the escape hatch, drive <code>sizedCall</code> against <code>GetNetworkParams</code> (or another small table), confirm it returns a non-empty buffer and that <code>.ptr</code> is read inline (no <code>E_INVALIDARG</code>). Expect a hostname string decoded from the buffer.</div>
+
+<div class="step commit"><span class="id">S2.7</span>
+<pre><code>git add packages/netdiag
+git commit -m "feat(netdiag): foundations — sizing-call helper, address codecs, constants"</code></pre></div>
+
+<h2 id="p3">Phase 3 — adapters.ts: the modern adapter census (GetAdaptersAddresses)</h2>
+<p><em>Purpose: a typed adapter inventory — IPv4 AND IPv6 unicast/gateway/DNS addresses, MAC, friendly name, status, type, and link speed — replacing the legacy IPv4-only <code>GetAdaptersInfo</code> the demo uses. This is the first real table source and exercises the linked-list walker + sockaddr decode end to end.</em></p>
+
+<div class="step"><span class="id">S3.1</span><strong>Read</strong> the <code>GetAdaptersAddresses</code> contract (Microsoft Learn + <code>iphlpapi/structs</code>) and the <code>IP_ADAPTER_ADDRESSES_LH</code> struct layout (Appendix B). It is a singly-linked list of variable-size nodes, each pointing to further linked lists of unicast/gateway/DNS-server addresses (each an <code>IP_ADAPTER_UNICAST_ADDRESS</code>/<code>_GATEWAY_ADDRESS</code>/<code>_DNS_SERVER_ADDRESS</code> wrapping a <code>SOCKET_ADDRESS</code> → <code>sockaddr</code>). Confirm the x64 offsets against the header; do not trust this plan's offsets blindly.</div>
+
+<div class="step"><span class="id">S3.2</span><strong>Create <code>packages/netdiag/adapters.ts</code> <span class="tag new">NEW</span>.</strong> <code>adapters(family = 'all')</code> returns <code>Adapter[]</code> with a stable class shape (perf: same StructureID across the run — G.5): <code>{ index, name, friendlyName, description, mac, type, operStatus, linkSpeedMbps, mtu, ipv4: string[], ipv6: string[], gateways: string[], dnsServers: string[], dnsSuffix }</code>. Call <code>GetAdaptersAddresses(family, flags, NULL, sizePtr)</code> sizing-first; walk the node list with <code>walkList</code>; for each node walk its three sub-lists decoding each <code>SOCKET_ADDRESS</code> via <code>decodeSockaddr</code>. Wide strings (<code>FriendlyName</code>, <code>Description</code>, <code>DnsSuffix</code>) are UTF-16 pointers → <code>buf.toString('utf16le')</code> up to the NUL (repo memory: Bun's TextDecoder rejects 'utf-16le'; use the Buffer method).</div>
+
+<div class="step verify"><span class="id">S3.3</span><strong>Integration probe.</strong> <code>.scratch/probe-adapters.ts</code>: print <code>adapters()</code> and eyeball it against <code>ipconfig /all</code> — the active adapter's IPv4, gateway, DNS, and MAC must match; at least one adapter must show an IPv6 address (proving the modern API earns its keep over <code>GetAdaptersInfo</code>). Confirm operStatus and link speed are sane.</div>
+
+<div class="step verify"><span class="id">S3.4</span><strong>Perf audit</strong> <span class="tag test">microbench</span>: microbench a full <code>adapters()</code> poll; assert zero per-poll allocation after warmup (reused <code>SizedBufferState</code>; <code>heapStats().objectTypeCounts</code> delta is only the result objects); <code>numberOfDFGCompiles &gt; 0</code> on the decode loop. Compare to the S0.6b baseline. Record ns/poll.</div>
+
+<div class="step commit"><span class="id">S3.5</span><pre><code>git add packages/netdiag &amp;&amp; git commit -m "feat(netdiag): adapter census over GetAdaptersAddresses (IPv4+IPv6)"</code></pre></div>
+
+<h2 id="p4">Phase 4 — routes.ts + arp.ts: routing table, default gateway, typed ARP</h2>
+<p><em>Purpose: the two tables that directly replace archived/scraper incumbents — <code>routes()</code>/<code>defaultGateway()</code> over <code>GetIpForwardTable2</code> (replacing wmic-dependent <code>default-gateway</code>) and <code>neighbors()</code>/<code>arpTable()</code> over <code>GetIpNetTable2</code> (replacing <code>arp -a</code> scrapers). Both Table2 APIs return IPv4+IPv6 in one call and SELF-ALLOCATE the table (free with <code>FreeMibTable</code>) — not the <code>sizedCall</code> shape.</em></p>
+
+<div class="step"><span class="id">S4.1</span><strong>Create <code>routes.ts</code> <span class="tag new">NEW</span>.</strong> <code>routes(family='all')</code> → <code>Route[]</code>: <code>{ destinationPrefix: {address, length}, nextHop, interfaceIndex, metric, protocol, loopback, origin }</code>, decoded from <code>MIB_IPFORWARD_TABLE2</code> (a <code>dwNumEntries</code> count then <code>MIB_IPFORWARD_ROW2</code> rows; each row holds <code>IP_ADDRESS_PREFIX</code> + <code>SOCKADDR_INET</code> fields — decode with <code>decodeSockaddr</code>). <code>defaultGateway(family?)</code> returns the next hop of the lowest-metric <code>0.0.0.0/0</code> (or <code>::/0</code>) route — the direct, locale-proof replacement for <code>default-gateway.gateway()</code>. Call <code>GetIpForwardTable2(family, &amp;tablePtr)</code>, decode from the returned pointer (wrap ONE DataView over the region via <code>toArrayBuffer</code>), then <code>FreeMibTable(tablePtr)</code> in a <code>finally</code>.</div>
+
+<div class="step"><span class="id">S4.2</span><strong>Create <code>arp.ts</code> <span class="tag new">NEW</span>.</strong> <code>neighbors(family='all')</code> / <code>arpTable()</code> → <code>Neighbor[]</code>: <code>{ address, mac, interfaceIndex, state, isRouter, isUnreachable }</code> from <code>MIB_IPNET_TABLE2</code> / <code>MIB_IPNET_ROW2</code> (each row: <code>SOCKADDR_INET Address</code>, <code>PhysicalAddress[32]</code> + length, <code>NeighborState</code>). Same self-alloc/free shape. The <code>state</code> enum (<code>Unreachable/Incomplete/Probe/Delay/Stale/Reachable/Permanent</code>) decodes to readable strings — this is richer than <code>arp -a</code> ever exposed.</div>
+
+<div class="step verify"><span class="id">S4.3</span><strong>Integration probe vs OS ground truth.</strong> <code>routes()</code> vs <code>route print</code> (the default-gateway next hop must match <code>ipconfig</code>'s gateway); <code>neighbors()</code> vs <code>arp -a</code> (same IP→MAC pairs for resolved entries). <code>defaultGateway()</code> must equal the active adapter's gateway from Phase 3. Eyeball, then record the comparison for Phase 11.</div>
+
+<div class="step verify"><span class="id">S4.4</span><strong>Perf audit</strong> <span class="tag test">microbench</span>: microbench <code>routes()</code> and <code>neighbors()</code> polls; verify the table is freed every call (no handle/memory leak — poll 100k times, watch RSS); pre-sized result arrays (G.5); ns/poll vs baseline.</div>
+
+<div class="step commit"><span class="id">S4.5</span><pre><code>git add packages/netdiag &amp;&amp; git commit -m "feat(netdiag): routing table + default gateway + typed ARP (Table2 APIs)"</code></pre></div>
+
+<h2 id="p5">Phase 5 — sockets.ts: socket→PID(+module) — the wedge</h2>
+<p><em>Purpose: per-process socket attribution — the single most-requested thing the scrapers do badly (parsing <code>netstat -ano</code>). Fleet-verified incumbent landscape: <code>node-netstat</code> (2.7k/wk) and <code>systeminformation</code> spawn <code>netstat -nao</code> and text-parse it (PID only); <code>windows-netstat</code> (6/wk, stale) wraps the same <code>GetExtendedTcpTable</code> but via a <strong>node-gyp native build</strong> and returns a <strong>bare PID</strong>; (<code>netstat-node-win</code> — named in early planning — does NOT exist on npm). None are pure-FFI and none resolve the owning module name. netdiag's moat: pure <code>bun:ffi</code> (no native build, no spawn) AND the resolved owning <strong>module name</strong> in the same pass. <code>net-xray.ts</code> already proves the PID path on real hardware.</em></p>
+
+<div class="step"><span class="id">S5.1</span><strong>Read <code>net-xray.ts</code></strong> (the proven decode is <code>poll()</code> ~lines 204–295; lift it) and the <code>GetExtendedTcpTable</code> contract: it takes a <code>TCP_TABLE_CLASS</code> selecting the row shape. <code>TCP_TABLE_OWNER_PID_ALL = 5</code> gives <code>{state, localAddr, localPort, remoteAddr, remotePort, pid}</code> in <strong>24-byte rows</strong> (net-xray warns: the stride is FIXED 24, do NOT derive it from the buffer size; the legacy non-PID <code>MIB_TCPROW</code> is 20 bytes — keep them separate). <code>TCP_TABLE_OWNER_MODULE_ALL = 0x8</code> gives <code>MIB_TCPROW_OWNER_MODULE</code> (a <em>different, larger</em> stride with a trailing <code>OwningModuleInfo</code> — compute it from the SDK, never reuse the PID stride); resolve the module name with the two-call <code>GetOwnerModuleFromTcpEntry(row, TCPIP_OWNER_MODULE_INFO_BASIC, …)</code> → <code>TCPIP_OWNER_MODULE_BASIC_INFO.pModuleName</code> (an offset-pointer INTO the out-buffer — read it relative to the buffer base). IPv4 uses <code>AF_INET</code>; IPv6 uses <code>AF_INET6</code> + the wider <code>MIB_TCP6ROW_*</code> rows with scope IDs — decode both; verify row sizes against Appendix B.</div>
+
+<div class="step"><span class="id">S5.2</span><strong>Create <code>sockets.ts</code> <span class="tag new">NEW</span>.</strong> <code>tcpConnections(opts?)</code> → <code>TcpConnection[]</code>: <code>{ family, localAddress, localPort, remoteAddress, remotePort, state, pid, processName? }</code>; <code>udpListeners(opts?)</code> → <code>UdpEndpoint[]</code> via <code>GetExtendedUdpTable</code> (<code>UDP_TABLE_OWNER_PID = 1</code>, 12-byte rows). Ports are network-order → <code>portFromNetworkOrder</code>; addresses via <code>ipv4FromU32</code>/<code>ipv6FromBytes</code>. <code>processName</code> is resolved lazily and cached per poll: the cheapest path stays inside iphlpapi (the <code>OWNER_MODULE</code> table + <code>GetOwnerModuleFromTcpEntry</code> → module basename, the moat that keeps deps to the four net DLLs); an optional richer mode resolves the full image path via <code>@bun-win32/kernel32</code> (<code>OpenProcess</code> + <code>QueryFullProcessImageNameW</code>, the <code>net-xray.ts pidName()</code> path) — gate it behind a flag and don't resolve names you weren't asked for. Other-user PIDs may return <code>ERROR_ACCESS_DENIED</code> on module resolution — fall back to the bare PID gracefully. Use <code>sizedCall</code> (these are the <em>caller-allocated</em> shape, unlike the Table2 self-alloc APIs).</div>
+
+<div class="step verify"><span class="id">S5.3</span><strong>Integration probe vs <code>netstat -ano</code>.</strong> Pick an <code>ESTABLISHED</code> connection from <code>netstat -ano</code>, find it in <code>tcpConnections()</code>, and assert the PID matches. Confirm IPv6 connections appear (the demo/legacy path often misses them). This comparison is a Phase 11 cross-validation case.</div>
+
+<div class="step verify"><span class="id">S5.4</span><strong>Perf audit</strong> <span class="tag test">microbench</span>: a full <code>tcpConnections()</code> poll is the headline "live dashboard" number. Microbench it; assert zero per-poll allocation beyond result rows; PID join key is a <code>number</code> (no bigint in the loop); ns/poll vs baseline. If <code>processName</code> resolution dominates, prove the per-poll cache works and document the with/without-names cost.</div>
+
+<div class="step commit"><span class="id">S5.5</span><pre><code>git add packages/netdiag &amp;&amp; git commit -m "feat(netdiag): socket->PID(+module) over GetExtendedTcp/UdpTable"</code></pre></div>
+
+<h2 id="p6">Phase 6 — ping.ts + traceroute.ts: no-admin ICMP (🏁 the flagship)</h2>
+<p><em>Purpose: the headline differentiator — structured ICMP ping and traceroute with NO Administrator and NO node-gyp, replacing <code>ping</code> (spawns ping.exe, locale-parse, CMD flash) and <code>net-ping</code> (raw-socket node-gyp + admin). <code>IcmpSendEcho</code> returns a typed reply; traceroute is the same call with an increasing TTL.</em></p>
+
+<div class="note"><strong>API design commitments (frozen here, validated against Phase 0 competitive research):</strong>
+<ul>
+<li><code>ping(host, options?): Promise&lt;PingReply&gt;</code> — resolves a hostname (via <code>dns.resolve</code> or <code>getaddrinfo</code>), opens an ICMP handle with <code>IcmpCreateFile</code> (cached/reused), sends one echo with <code>IcmpSendEcho</code>, decodes the <code>ICMP_ECHO_REPLY</code> into <code>{ alive, address, roundTripMs, ttl, status, statusText, bytes }</code>. <strong>No spawn, no admin, no CMD window, no locale parsing.</strong></li>
+<li><code>pingMany(hosts, options?)</code> — concurrent pings (one handle each, or async <code>IcmpSendEcho2</code> with an event — 10b candidate). The thing scrapers cannot do without forking N processes.</li>
+<li>Timeouts, payload size, TTL, and count are typed options with sane defaults (1s timeout, 32-byte payload). The reply buffer is reused across calls (perf).</li>
+<li><strong>Synchronous FFI under a Promise:</strong> <code>IcmpSendEcho</code> blocks; wrap it so the public API is a Promise but assemble the request struct immediately before the call with NO await between assembly and invocation (the FFI-struct GC window — Appendix C).</li>
+</ul></div>
+
+<div class="step"><span class="id">S6.1</span><strong>Create <code>ping.ts</code> <span class="tag new">NEW</span>.</strong> Implement per the commitments. The <code>ICMP_ECHO_REPLY</code> struct (Appendix B): <code>Address(4) Status(4) RoundTripTime(4) DataSize(2) Reserved(2) DataPtr(8) Options{Ttl,Tos,Flags,OptionsSize,OptionsData}</code> on x64 — verify offsets. Map <code>Status</code> through the ICMP-status table (<code>IP_SUCCESS</code> → alive; <code>IP_REQ_TIMED_OUT</code> → timeout; others → readable). The request payload buffer, reply buffer, and ICMP handle are all reused; <code>.ptr</code> read inline at the call.</div>
+
+<div class="step"><span class="id">S6.2</span><strong>Create <code>traceroute.ts</code> <span class="tag new">NEW</span>.</strong> <code>traceroute(host, options?)</code> → <code>TraceHop[]</code>: loop TTL from 1 to <code>maxHops</code>, sending an echo with that TTL via <code>IP_OPTION_INFORMATION.Ttl</code>; a router that decrements TTL to 0 replies <code>IP_TTL_EXPIRED_TRANSIT</code> (11013) with its own address — that is the hop. Stop when the reply address equals the destination or status is <code>IP_SUCCESS</code>. Each hop: <code>{ ttl, address, roundTripMs, status }</code>. <strong>This is traceroute WITHOUT raw sockets and WITHOUT admin</strong> — a capability <code>net-ping</code> only delivers via its admin-requiring node-gyp raw-socket. Optionally resolve hop hostnames via <code>dns.reverse</code> (Phase 7).</div>
+
+<div class="step verify"><span class="id">S6.3</span><strong>Integration probe vs <code>ping.exe</code>/<code>tracert</code>.</strong> <code>ping('1.1.1.1')</code> RTT must be in the same ballpark as <code>ping.exe 1.1.1.1</code>; <code>ping('does-not-exist.invalid')</code> must resolve-fail cleanly (typed error, no crash); <code>ping('192.0.2.1')</code> (TEST-NET, unroutable) must time out with <code>IP_REQ_TIMED_OUT</code>, not hang. <code>traceroute('8.8.8.8')</code> hop addresses must broadly match <code>tracert 8.8.8.8</code>. <strong>Run as a NON-admin shell</strong> to prove the no-admin claim.</div>
+
+<div class="step verify"><span class="id">S6.4</span><strong>Perf audit</strong> <span class="tag test">microbench</span>: microbench a single <code>IcmpSendEcho</code> round trip to <code>127.0.0.1</code> (loopback removes network variance) — handle reused, buffers reused, zero per-ping allocation. Compare to baseline. The README's "ping cost" claim is the syscall+decode time, NOT the network RTT — state both.</div>
+
+<div class="step commit"><span class="id">S6.5</span><pre><code>git add packages/netdiag &amp;&amp; git commit -m "feat(netdiag): no-admin ICMP ping + traceroute over IcmpSendEcho"</code></pre></div>
+
+<h2 id="p7">Phase 7 — dns.ts: typed DNS record queries</h2>
+<p><em>Purpose: arbitrary DNS record-type queries with typed decode — beyond what Node's <code>node:dns</code> exposes ergonomically and impossible for the text-scrapers. <code>dns-forensics.ts</code> already proves A/NS/SOA/MX/TXT on real servers.</em></p>
+
+<div class="step"><span class="id">S7.1</span><strong>Read <code>dns-forensics.ts</code></strong> and the <code>DnsQuery_W</code> + <code>DNS_RECORD</code> union contract. <code>DnsQuery_W(name, wType, options, NULL, &amp;recordsPtr, NULL)</code> returns a linked list of <code>DNS_RECORD</code> nodes; each node's <code>wType</code> selects which arm of the <code>Data</code> union to decode; free the whole list with <code>DnsRecordListFree</code>/<code>DnsFree</code>. Confirm the per-type struct layouts (Appendix B): <code>A</code> (4-byte IP), <code>AAAA</code> (16 bytes), <code>NS/CNAME/PTR</code> (a wide-string name pointer), <code>MX</code> (preference + exchange), <code>SOA</code> (primary/admin/serial/…), <code>TXT</code> (count + array of string pointers), <code>SRV</code> (priority/weight/port/target).</div>
+
+<div class="step"><span class="id">S7.2</span><strong>Create <code>dns.ts</code> <span class="tag new">NEW</span>.</strong> <code>resolve(name, type='A')</code> → a typed union per record type (discriminated on <code>type</code>) via <code>DnsQuery_W</code> (queries DNS directly). Lift the proven walk + per-type decoders from <code>dns-forensics.ts query()</code> (or the cleaner <code>dns-tree.ts parseRecord()</code>): the <code>DNS_RECORD</code> header is 32 bytes (<code>pNext@0, pName@8, wType@16, wDataLength@18, dwTtl@24, data@32</code>) and each type reads a known size (A=40, AAAA=48, NS/CNAME/PTR=48, MX=48, SRV=56, SOA=72, TXT=40+len, CAA=56). <code>reverse(ip)</code> → PTR names (build the <code>in-addr.arpa</code>/<code>ip6.arpa</code> query name). Walk with <code>walkList</code>; free with <code>DnsRecordListFree</code> in <code>finally</code>; wide-string names via <code>toString('utf16le')</code>. <strong>Also expose <code>lookup(name)</code> over <code>ws2_32 getaddrinfo</code></strong> — the SYSTEM resolver (honors the hosts file and the full resolution policy), a DIFFERENT answer from <code>DnsQuery_W</code>; document the distinction, don't treat them as interchangeable. <strong>Trap (fleet):</strong> the bound <code>getaddrinfo</code> is the ANSI variant (<code>LPCSTR</code> node name) — encode the name as ASCII, not UTF-16, for that call. Document bypassing the resolver cache (<code>DNS_QUERY_BYPASS_CACHE</code>). For configured DNS servers, pick ONE canonical source (<code>GetNetworkParams</code>/<code>FIXED_INFO</code> OR <code>DnsQueryConfig(DnsConfigDnsServerList)</code> — they overlap) to avoid a divergent module.</div>
+
+<div class="step verify"><span class="id">S7.3</span><strong>Integration probe vs <code>nslookup</code>.</strong> <code>resolve('cloudflare.com','A')</code>, <code>resolve('google.com','MX')</code>, <code>resolve('_dmarc.google.com','TXT')</code>, <code>reverse('1.1.1.1')</code> must return records matching <code>nslookup -type=...</code>. Assert the discriminated union narrows correctly under tsc (a TXT result exposes <code>strings</code>, an MX result exposes <code>exchange</code>).</div>
+
+<div class="step commit"><span class="id">S7.4</span><pre><code>git add packages/netdiag &amp;&amp; git commit -m "feat(netdiag): typed DNS record queries + reverse over DnsQuery_W"</code></pre></div>
+
+<h2 id="p8">Phase 8 — wifi.ts: locale-proof WiFi scan/connection (+ beta connect)</h2>
+<p><em>Purpose: the <code>node-wifi</code> replacement — WiFi interface enumeration, network scan with RSSI/auth, and current-connection details, decoded from <code>wlanapi</code> structs instead of scraped from locale-dependent <code>netsh</code> output. <code>signal-monitor.ts</code> proves the scan/poll pattern.</em></p>
+
+<div class="warn"><strong>Scope &amp; risk (from the brief, non-negotiable):</strong> WiFi <strong>scan/query is fully supported</strong>; WiFi <strong>connect ships as a flagged beta</strong> — <code>WlanConnect</code>/<code>WlanSetProfile</code> are signature-correct but UNEXERCISED against a live AP. Verify connection state by POLLING <code>WlanQueryInterface</code>, never by callback. <strong>Never use <code>WlanRegisterNotification</code></strong> (foreign-thread callback → crash class — MSDN blesses "time out and query" instead). <strong>Correction from the research fleet:</strong> the repo's wlanapi demos read the OS-cached available-network list and NEVER call <code>WlanScan</code> — so the fresh-scan sequence (<code>WlanScan</code> → ~4&nbsp;s sleep → <code>WlanGetAvailableNetworkList</code>) is MSDN-sanctioned but UNIMPLEMENTED here; netdiag is the first to wire it, and <code>WlanScan</code> may flush the prior list, so wait the full ~4&nbsp;s.</div>
+
+<div class="step"><span class="id">S8.1</span><strong>Create <code>wifi.ts</code> <span class="tag new">NEW</span>.</strong> Lifecycle: <code>WlanOpenHandle(WLAN_API_VERSION_2_0=0x2)</code> (cached) → <code>WlanEnumInterfaces</code> → per-interface ops → <code>WlanCloseHandle</code> on dispose; every wlanapi-returned pointer freed with <code>WlanFreeMemory</code> in a <code>finally</code> (the demos prove this holds under a 15-iteration poll loop — replicate it or leak native memory). <strong>Lift the verified decoders out of <code>wifi-diagnostic.ts</code> so the magic offsets live in ONE place</strong> (the examples currently re-hardcode them): <code>WLAN_INTERFACE_INFO</code> = 532-byte entries (GUID@0, description-wide@16, state@528); <code>WLAN_AVAILABLE_NETWORK</code> = 628-byte entries (SSID len@512 + bytes@516, signalQuality@604 0–100, securityEnabled@608, auth@612, cipher@616, flags@620 CONNECTED=0x1/HAS_PROFILE=0x2); the queried <code>WLAN_CONNECTION_ATTRIBUTES</code> (ssid@520, bssid@560, phy@568, signal@576, rx@580, tx@584, auth@596, cipher@600). <code>wifiInterfaces()</code> → <code>{ guid, description, state }[]</code>. <code>wifiScan(options?)</code> → returns <code>WifiNetwork[]</code> from <code>WlanGetAvailableNetworkList</code> (<code>{ ssid, bssCount, signalQuality, secured, authAlgorithm, cipherAlgorithm, connectable, hasProfile }</code>); <strong><code>options.triggerScan</code></strong> (default false) chooses cached (instant) vs fresh (<code>WlanScan</code> → ~4&nbsp;s sleep → list; may flush). SSID is raw bytes → decode UTF-8, Unicode/emoji-SSID-proof — a node-wifi failure mode. <code>wifiConnection(interfaceGuid?)</code> → current connection via <code>WlanQueryInterface(WLAN_INTF_OPCODE_CURRENT_CONNECTION=0x7)</code>; the <code>RSSI</code>/<code>CHANNEL_NUMBER</code> opcodes are also bound (unexercised) — expose them too. <code>wifiConnect(...)</code> behind an explicit beta flag; pipe <code>WlanSetProfile</code>'s <code>pdwReasonCode</code> through <code>WlanReasonCodeToString</code> for readable failures. Surface location-consent / <code>ERROR_ACCESS_DENIED</code> distinctly (the fall-2024 Wi-Fi-access/location MSDN behavior change can return an empty list — do not report it as "no networks").</div>
+
+<div class="step verify"><span class="id">S8.2</span><strong>Integration probe vs <code>netsh wlan show networks</code>.</strong> <code>wifiScan()</code> SSIDs must match <code>netsh wlan show networks mode=bssid</code> (on a machine with WiFi; gracefully report "no WiFi interface" on Ethernet-only hosts — that path must not throw). <code>wifiConnection()</code> must match the connected SSID. Confirm a Unicode/emoji SSID (if present) decodes correctly where node-wifi mangles it.</div>
+
+<div class="step commit"><span class="id">S8.3</span><pre><code>git add packages/netdiag &amp;&amp; git commit -m "feat(netdiag): locale-proof WiFi scan + connection details (connect beta)"</code></pre></div>
+
+<h2 id="p9">Phase 9 — stats.ts: protocol statistics + live per-interface throughput</h2>
+<p><em>Purpose: the moat that turns a diagnostics tool into a monitor — TCP/IP/UDP protocol counters (<code>GetTcpStatistics</code> et al., the typed equivalent of <code>netstat -s</code> with NO pure-FFI JS incumbent) and <strong>live per-interface throughput</strong> via <code>GetIfTable2</code> <code>In/OutOctets</code> deltas. <strong>Honest scoping (fleet-corrected):</strong> <code>systeminformation.networkStats()</code> DOES expose <code>rx_sec</code>/<code>tx_sec</code> — but via a slower WMI/Get-Counter-class Windows path at ~1&nbsp;s granularity and WITHOUT the error/discard counters. netdiag's edge is fidelity, not existence: raw-struct read in-process, sub-ms, zero-shell, and it surfaces <code>InErrors</code>/<code>OutErrors</code>/<code>InDiscards</code>/<code>OutDiscards</code> that <code>systeminformation</code> drops.</em></p>
+
+<div class="step"><span class="id">S9.1</span><strong>Create <code>stats.ts</code> <span class="tag new">NEW</span>.</strong> <code>tcpStatistics(family?)</code>/<code>ipStatistics(family?)</code>/<code>udpStatistics(family?)</code> decode the fixed <code>MIB_TCPSTATS</code>/<code>MIB_IPSTATS</code>/<code>MIB_UDPSTATS</code> structs (segments, retransmits, resets, datagrams, …) via the <code>Ex</code> variants for the <code>AF_INET</code>/<code>AF_INET6</code> switch; these counters are 32-bit <code>DWORD</code> and WRAP on busy hosts — treat deltas modulo 2³². <code>interfaceCounters()</code> reads <code>GetIfTable2</code> (<code>MIB_IF_TABLE2</code> → <code>MIB_IF_ROW2</code>). <strong>Caveat (fleet):</strong> <code>MIB_IF_ROW2</code> is a LARGE struct (~0x500+ bytes) with an embedded GUID/alias/description WCHAR array — take <code>InOctets</code>/<code>OutOctets</code>/<code>InErrors</code>/… offsets from <code>netioapi.h</code>, do not guess. Octet counters are <strong>ULONG64</strong> and a busy 10GbE NIC exceeds 2⁵³ in hours → read them as bigint (<code>read.u64</code>/<code>getBigUint64</code>), do the delta in bigint, then narrow the per-sec result to <code>number</code>. Provide a <code>throughput(intervalMs)</code> async helper that samples twice and returns <code>{ interfaceIndex, name, rxBytesPerSec, txBytesPerSec, rxErrors, txErrors }[]</code> — the live dashboard primitive, paced by a hi-res timer (not async <code>Bun.sleep</code>).</div>
+
+<div class="step verify"><span class="id">S9.2</span><strong>Integration probe.</strong> <code>interfaceCounters()</code> octet totals must climb across two samples while traffic flows; <code>throughput(1000)</code> during a download must show a non-trivial <code>rxBytesPerSec</code> on the active adapter that broadly matches Task Manager's network graph. <code>tcpStatistics()</code> segment counts must be plausible and climb.</div>
+
+<div class="step verify"><span class="id">S9.3</span><strong>Perf audit</strong> <span class="tag test">microbench</span>: <code>interfaceCounters()</code> poll cost (the throughput sampler runs it on a timer); u64 reads via <code>read.u64</code> not bigint views; reused buffer; ns/poll vs baseline. Pace <code>throughput</code>'s interval with a high-res waitable timer, never async <code>Bun.sleep</code> (15.6 ms quantize).</div>
+
+<div class="step commit"><span class="id">S9.4</span><pre><code>git add packages/netdiag &amp;&amp; git commit -m "feat(netdiag): protocol statistics + live per-interface throughput (GetIfTable2)"</code></pre></div>
+
+<h2 id="p10">Phase 10 — Examples, the integration selftest, the benchmark</h2>
+<p><em>Purpose: the runnable proof surface. Every public function is exercised by a real example AND an assertion in the selftest. The examples follow the repo's mandatory JSDoc-header + Preload conventions (AGENTS.md).</em></p>
+
+<div class="step"><span class="id">S10.1</span><strong><code>example/netdiag.selftest.ts</code></strong> — THE integration suite (the harness S0.4 chose). ≥14 real assertions with exit code: (1) <code>adapters()</code> returns ≥1 with a non-empty MAC; (2) the active adapter has a gateway; (3) <code>defaultGateway()</code> equals it; (4) <code>routes()</code> contains a default route; (5) <code>neighbors()</code> resolves the gateway's MAC; (6) <code>tcpConnections()</code> returns rows with valid PIDs; (7) at least one connection's PID maps to a running process; (8) IPv6 appears in adapters or sockets; (9) <code>ping('127.0.0.1')</code> is alive with RTT ≥ 0; (10) <code>ping</code> of TEST-NET times out cleanly; (11) <code>traceroute('1.1.1.1')</code> returns ≥1 hop; (12) <code>resolve('cloudflare.com')</code> returns an A record; (13) <code>reverse('1.1.1.1')</code> returns a name; (14) <code>tcpStatistics()</code> has plausible counts; (15) WiFi: scan returns an array OR "no interface" is reported without throwing. Each assertion prints PASS/FAIL; non-zero exit on any failure.</div>
+
+<div class="step"><span class="id">S10.2</span><strong><code>example/net-report.ts</code></strong> — the professional diagnostic: a richly formatted single-shot report (adapters, routes, default gateway, socket→PID table, DNS servers + a sample query, protocol statistics). ANSI formatting via <code>console.log</code> (never <code>WriteConsoleW</code> — fails in ConPTY). Honors <code>DEMO_DURATION_MS</code>-style headless exit if it polls.</div>
+
+<div class="step"><span class="id">S10.3</span><strong><code>example/netwatch.ts</code></strong> — the wow: a live full-screen dashboard refreshing socket→PID, the route/ARP tables, and per-interface throughput at a paced interval (high-res timer), proving the sub-spawn-cost polling claim. Headless mode: run N frames, print a summary, exit 0.</div>
+
+<div class="step"><span class="id">S10.4</span><strong><code>example/ping.ts</code> + <code>example/wifi-scan.ts</code></strong> — the focused demos: no-admin ping + traceroute to a CLI-supplied host; a WiFi census with signal bars. Both with the mandatory JSDoc header (Title, Description, APIs demonstrated grouped by package, <code>Run:</code> line).</div>
+
+<div class="step verify"><span class="id">S10.5</span><strong><code>example/benchmark.ts</code></strong> <span class="tag test">microbench</span> — the README number generator: route-table poll ns, socket→PID poll ns, ICMP round-trip ns (loopback), ARP decode ns, throughput sample ns, plus "samples/sec" for each table (the headline vs a process-spawn baseline — measure an actual <code>execSync('route print')</code> once to quote the multiple honestly). All numbers come from THIS gated run, never copied from Appendix G.</div>
+
+<div class="step verify"><span class="id">S10.6</span><strong>Run everything.</strong>
+<pre><code>bun run packages/netdiag/example/netdiag.selftest.ts    # expect exit 0, all PASS
+bun run packages/netdiag/example/net-report.ts
+DEMO_FRAMES=120 bun run packages/netdiag/example/netwatch.ts
+bun run packages/netdiag/example/benchmark.ts</code></pre>
+Fix anything that fails before committing (systematic-debugging). Do not weaken an assertion to make it pass.</div>
+
+<div class="step commit"><span class="id">S10.7</span><pre><code>git add packages/netdiag &amp;&amp; git commit -m "feat(netdiag): examples, integration selftest, benchmark"</code></pre></div>
+
+<h2 id="p10b">Phase 10b — Extras wave (post-selftest, pre-cross-validation)</h2>
+<p><em>Each is a judged capability that NO JS network library offers, validated by the Phase 0 moat research before building. Add only those that pass a feasibility probe; <code>log()</code> any cut with the reason (no silent scope-trimming). Each lands with its own selftest assertion + AI.md entry.</em></p>
+<div class="note"><strong>Verified by the research fleet (Opus 4.8, primary-source).</strong> All nine candidate APIs are confirmed bound in <code>iphlpapi/structs/Iphlpapi.ts</code> (exact line anchors in Appendix A). Three framings were corrected and are reflected below — <strong>do not regress them:</strong> ESTATS RTT/retransmits is admin-gated (not no-admin); live throughput has a partial incumbent (<code>systeminformation</code>); socket→PID has node-gyp incumbents (the moat is pure-FFI + module-name, Phase 5).</div>
+<ol>
+<li><strong>Async / massively-parallel ping</strong> via <code>IcmpSendEcho2</code> + a Win32 <strong>Event</strong> (kernel32 <code>CreateEventW</code>) — fan out a /24 sweep concurrently from one process, no admin, no N threads. <strong>Use the Event form, NEVER the <code>ApcRoutine</code> callback</strong> (the APC fires on a foreign/alertable thread → JSCallback segfault class; repo memory). Call returns <code>ERROR_IO_PENDING</code>; <code>WaitForMultipleObjects</code> / poll from JS, then <code>IcmpParseReplies</code>. <strong>Each in-flight request needs its OWN reply buffer kept alive until its event signals</strong> — do not share one buffer. Proof: ping a /24 in &lt;1s; wall time ≪ N×timeout proves true concurrency.</li>
+<li><strong>Per-connection ESTATS</strong> via <code>GetPerTcpConnectionEStats</code>. <strong>HONESTY GATE (fleet correction):</strong> live RTT / retransmits / cwnd (<code>FineRtt</code>/<code>Data</code>/<code>SndCong</code>/<code>Path</code>) require <code>SetPerTcpConnectionEStats</code> to enable collection, which <strong>requires the Administrators group</strong> (<code>ERROR_ACCESS_DENIED</code> + UAC) — so they ship admin-gated, and you MUST read <code>Rw.EnableCollection</code> first and refuse to surface <code>Ros</code>/<code>Rod</code> if FALSE (MSDN: the data is otherwise undefined/"meaningless random data"). The ONE no-admin slice is <code>TcpConnectionEstatsSynOpts</code> (negotiated MSS/SACK/WinScale per connection, no enable needed) — unique to FFI, worth shipping in the no-admin tier. Never present un-enabled ESTATS as RTT.</li>
+<li><strong>Best-route / source-address selection</strong> via <code>GetBestRoute2</code>/<code>GetBestInterfaceEx</code> — "which interface, source IP, and next hop will the kernel use to reach X?", IPv4 AND IPv6, decoded from <code>MIB_IPFORWARD_ROW2</code> + <code>SOCKADDR_INET</code>. No incumbent (they parse <code>route print</code>). Proof: best route to <code>8.8.8.8</code> → returned source address is one of this host's unicast IPs and next-hop equals the default gateway.</li>
+<li><strong>Per-process bandwidth (the fusion moat)</strong> — join <code>tcpConnections()</code> (PID + module, Phase 5) × per-flow byte counters into <code>{ pid, processName, rxBytesPerSec, txBytesPerSec }</code>. No incumbent assembles this; each datum would be a separate spawn. Note the byte-per-flow source: ESTATS <code>DataBytesOut/In</code> (admin) or per-interface attribution — pick the honest one and document the admin tier.</li>
+<li><strong>Change events — the SAFE push path</strong> (fleet correction): prefer the <strong>overlapped-EVENT</strong> form <code>NotifyAddrChange</code>/<code>NotifyRouteChange</code> (signal an OVERLAPPED event; bind it and <code>WaitForSingleObject</code> from JS) — these are NOT foreign-thread callbacks and are the right primitive for live route/address streaming. <strong>Avoid the <code>*2</code> callback variants</strong> (<code>NotifyRouteChange2</code>/<code>NotifyUnicastIpAddressChange</code> — IP Helper invokes them on its own worker thread → JSCallback crash class). Polled-diff (re-read + diff on an interval) is the always-safe fallback. Emit add/remove/change for routes/addresses.</li>
+<li><strong>Path MTU discovery</strong> — <code>IcmpSendEcho</code> with <code>IP_OPTION_INFORMATION.Flags = IP_FLAG_DF (0x02)</code> and a binary-searched payload; a too-small path replies <code>IP_PACKET_TOO_BIG (11009)</code>. Cross-check against the local egress MTU (<code>MIB_IF_ROW2.Mtu</code> / <code>MIB_IPINTERFACE_ROW.NlMtu</code>, both no-admin). Treat a DF black-hole timeout as "can't determine", not MTU=0. No clean incumbent (today: <code>ping -f -l</code> text-parse or raw sockets).</li>
+<li><strong>WiFi BSS census</strong> via <code>WlanGetNetworkBssList</code> — per-BSSID <strong>signed-dBm RSSI</strong> (<code>lRssi</code>, distinct from the 0–100 signalQuality), channel-center-frequency, MAC, PHY, beacon/IE blob. <strong>netdiag must author this decoder from scratch</strong> (the package has only an opaque <code>PWLAN_BSS_LIST</code> alias, no example) and walk VARIABLE-length entries via <code>ulIeOffset+ulIeSize</code> (no fixed stride). Verify <code>WLAN_BSS_ENTRY</code> offsets against MSDN before shipping.</li>
+<li><strong>ARP/ND table WRITE</strong> (admin-gated) — <code>CreateIpNetEntry2</code>/<code>DeleteIpNetEntry2</code>/<code>ResolveIpNetEntry2</code> add/remove static entries and force on-wire resolution of an IP→MAC. <strong>READ is no-admin (Phase 4); WRITE requires admin</strong> — gate it behind an elevation check and assert <code>ERROR_ACCESS_DENIED</code> when unelevated (prove the boundary honestly). <code>ResolveIpNetEntry2</code> (force-resolve a live LAN host) has no JS incumbent.</li>
+<li><strong>The raw escape hatch, documented</strong> — a layer-3 AI.md recipe showing how to call any unbound IP Helper API through the re-exported <code>Iphlpapi</code> with <code>sizedCall</code>.</li>
+</ol>
+<div class="step commit"><span class="id">S10b.1</span>Commit each extra separately: <code>feat(netdiag): async subnet ping sweep via IcmpSendEcho2</code>, etc.</div>
+
+<h2 id="p11">Phase 11 — Cross-validation vs OS ground truth + demo-corpus regression</h2>
+<p><em>Purpose: the regression analog. Two complementary proofs: (a) netdiag's output matches the OS's own tools, and (b) the existing on-hardware demos still represent the capability after productization.</em></p>
+
+<div class="step verify"><span class="id">S11.1</span><strong>Cross-validate against the built-in tools</strong> (write <code>.scratch/crossval.ts</code> that runs both and diffs): <code>routes()</code> vs <code>route print -4</code> + <code>-6</code>; <code>defaultGateway()</code> vs <code>ipconfig</code>; <code>neighbors()</code> vs <code>arp -a</code>; <code>tcpConnections()</code> PIDs vs <code>netstat -ano</code>; <code>adapters()</code> vs <code>ipconfig /all</code>; <code>resolve()</code> vs <code>nslookup</code>; <code>ping()</code> RTT vs <code>ping.exe</code>; <code>wifiScan()</code> vs <code>netsh wlan show networks</code>. Discrepancies that aren't timing/ordering are bugs — fix them. Record the comparison table for the README ("verified against the OS's own tools").</div>
+
+<div class="step verify"><span class="id">S11.2</span><strong>Retarget the proof demos (optional shims).</strong> Where natural, rewrite the decode bodies of <code>net-xray.ts</code> / a slimmed <code>network-diagnostic</code>-style demo to call netdiag instead of hand-decoding — proving the package reproduces the proven output. <strong>net-xray's <code>SELFCHECK=1</code> headless JSON mode (~lines 650–757, emitting <code>tcpRows</code>/<code>udpRows</code>/<code>established</code>/<code>sampleRemote</code>) is a ready-made regression hook</strong> — diff netdiag's numbers against it. Judge retargeted demos by printed data matching, not exit code (heavy demos can segfault at teardown — Appendix C). Keep <code>packet-sniffer.ts</code> as-is (admin-only raw capture is out of netdiag's no-admin scope; reference it from AI.md as the escape-hatch example) — its ONLY netdiag-relevant piece is <code>discoverLocalIp()</code> (UDP-connect(<code>8.8.8.8:53</code>)+<code>getsockname</code>, no admin), which netdiag adopts as its local-egress-IP utility in <code>addr.ts</code>/<code>win32.ts</code>.</div>
+
+<div class="step commit"><span class="id">S11.3</span><pre><code>git add packages/netdiag packages/all &amp;&amp; git commit -m "test(netdiag): cross-validate vs OS tools; retarget net demos"</code></pre></div>
+
+<h2 id="p12">Phase 12 — bun-netdiag unscoped alias</h2>
+<div class="step"><span class="id">S12.1</span><strong>Create <code>packages/bun-netdiag/</code></strong> mirroring <code>packages/bun-win32/</code>: <code>package.json</code> (name <code>bun-netdiag</code>, dep <code>@bun-win32/netdiag: workspace:*</code>, the full marketing README, <code>publishConfig.access: public</code>) + <code>index.ts</code> = exactly <code>export * from '@bun-win32/netdiag';</code> + <code>tsconfig.json</code>.</div>
+<div class="step verify"><span class="id">S12.2</span><pre><code>bun install
+bun run packages/bun-netdiag/index.ts     # resolves
+bunx tsc --noEmit</code></pre></div>
+<div class="step commit"><span class="id">S12.3</span><pre><code>git add packages/bun-netdiag &amp;&amp; git commit -m "feat(bun-netdiag): unscoped alias for @bun-win32/netdiag"</code></pre></div>
+
+<h2 id="p13">Phase 13 — Documentation: AI.md, README, screenshots</h2>
+<p><em>AI-first docs are a release gate, not a nicety (house standard). Every <code>index.ts</code> export must be greppable in AI.md; every doc code block must be executed before commit.</em></p>
+
+<div class="step"><span class="id">S13.1</span><strong><code>AI.md</code></strong> — the complete surface contract: every exported function with its signature, return shape, the underlying Win32 API, whether it needs admin, and a one-line example; a capability table; the layer-3 raw-escape-hatch recipe; and a GOTCHAS section drawn from Appendix C (the FFI-struct GC window, <code>.ptr</code> relocation, WiFi connect beta, the no-admin scope, the WiFi-scan latency, network-byte-order ports, IPv6 scope IDs). Keep it generic per the repo rule (substitute names; don't invent prose).</div>
+
+<div class="step"><span class="id">S13.2</span><strong><code>README.md</code></strong> (and the <code>bun-netdiag</code> alias README — the discoverable one): the gripes→response table (Appendix D, with live receipt links), the 10-line wow (<code>defaultGateway()</code> + a no-admin <code>ping()</code> + <code>tcpConnections()</code> with PIDs), the benchmark numbers (from S10.5's gated run only), the parity matrix, and the honest "what this does NOT replace" section (Appendix D.6). State Windows-only/Bun-only proudly.</div>
+
+<div class="step"><span class="id">S13.3</span><strong>Screenshots</strong> — capture <code>netwatch.ts</code> (the live dashboard) and <code>net-report.ts</code> for the README. Add the <code>!</code>-whitelist line to <code>.gitignore</code> for any committed showcase capture.</div>
+
+<div class="step verify"><span class="id">S13.4</span><strong>Docs-run gate.</strong> Execute every code block in AI.md and both READMEs; grep that every <code>index.ts</code> export appears in AI.md. Fix drift.</div>
+
+<div class="step commit"><span class="id">S13.5</span><pre><code>git add packages/netdiag packages/bun-netdiag .gitignore &amp;&amp; git commit -m "docs(netdiag): AI.md, README, parity matrix, screenshots"</code></pre></div>
+
+<h2 id="p14">Phase 14 — Quality gates + parity gate + self-review</h2>
+<div class="step verify"><span class="id">S14.1</span><strong>Type + format + load.</strong> <code>bunx tsc --noEmit</code> (zero errors), <code>bunx biome format --write packages/netdiag packages/bun-netdiag</code> (no diffs after), every module imports clean.</div>
+<div class="step verify"><span class="id">S14.2</span><strong>Regression gates.</strong> <code>bun run scripts/audit.ts --all</code> and <code>nullcheck.ts --all</code> — diff against the S0.6 baselines; counts MUST be unchanged (netdiag is non-binding → auto-skipped; any binding-export addition from S0.5b must itself be audit/nullcheck-clean).</div>
+<div class="step verify"><span class="id">S14.3</span><strong>Parity gate.</strong> Walk the Appendix D matrix as updated by S0.11: every incumbent capability is either covered (with its proof artifact green in the selftest) or a documented non-goal with a roadmap line. Any uncovered capability with no decision BLOCKS release.</div>
+<div class="step verify"><span class="id">S14.4</span><strong>Test sweep.</strong> <code>bun test packages/netdiag</code> (pure-logic) + the selftest exit 0 + cross-validation (S11.1) clean.</div>
+<div class="step verify"><span class="id">S14.5</span><strong>No-admin proof.</strong> Run the selftest in a NON-elevated shell — every assertion except any explicitly admin-gated extra must pass. This is the headline claim; prove it.</div>
+<div class="step verify"><span class="id">S14.6</span><strong>Performance gate.</strong> Re-run the microbenchmarks; a &gt;~10% regression vs the S0.6b baseline OR any forbidden hot-loop pattern (per-poll <code>Buffer.alloc</code>, cached-across-alloc <code>.ptr</code>, bigint in a decode loop, per-row <code>toArrayBuffer</code>) BLOCKS release. Run the generative pass once more: <code>profile()</code> the hottest path and try one more un-anticipated win; fold any proven gain into Appendix G.5.</div>
+<div class="step"><span class="id">S14.7</span><strong>Self-review.</strong> Use superpowers:requesting-code-review on the diff; address findings. Confirm no casts, alphabetized exports, no abbreviations, no comment-block headers, hex literals with separators.</div>
+
+<h2 id="p15">Phase 15 — Release: versions, lockfile, publish (one OTP), post-publish acceptance</h2>
+<div class="step"><span class="id">S15.1</span><strong>Set versions:</strong> <code>@bun-win32/netdiag</code> 1.0.0, <code>bun-netdiag</code> 1.0.0; minor-bump <code>@bun-win32/all</code> if it gained the dep; patch-bump <code>bun-win32</code> if <code>all</code> changed; patch-bump any binding package that gained an export.</div>
+<div class="step"><span class="id">S15.2</span><strong>Refresh the lockfile</strong> (ground truth — <code>bun install</code> alone does NOT update workspace version records): <code>rm bun.lock &amp;&amp; bun install</code>.</div>
+<div class="step verify"><span class="id">S15.3</span><strong>Preflight gate:</strong> <code>bun run scripts/preflight.ts</code> — must pass (no stale lockfile records). Then <code>bunx tsc --noEmit</code> once more.</div>
+<div class="step verify"><span class="id">S15.4</span><strong>Dry-run publish</strong> each package: <code>cd packages/&lt;name&gt; &amp;&amp; bun publish --dry-run --access public</code> — confirm the <code>files</code> list ships exactly the intended modules + AI.md + README, no <code>.scratch</code>/screenshots/tests-as-garbage.</div>
+<div class="step warn"><span class="id">S15.5</span><strong>Request the OTP exactly once</strong>, after every gate is green. Publish on ONE code, in dependency order: any bumped binding package → <code>@bun-win32/netdiag</code> → <code>@bun-win32/all</code> (if bumped) → <code>bun-win32</code> (if bumped) → <code>bun-netdiag</code>. Always <code>bun publish --access public</code> (scoped <code>@bun-win32</code> is private-by-default; <code>npm publish</code> won't resolve <code>workspace:*</code>). Never prompt per package.</div>
+<div class="step verify"><span class="id">S15.6</span><strong>Registry propagation</strong> — read-lag is normal; poll with backoff, don't declare failure on a transient 404.</div>
+<div class="step verify"><span class="id">S15.7</span><strong>Clean-room acceptance</strong> (the real finish line): in a fresh temp dir OUTSIDE the repo, <code>bun add bun-netdiag</code>, then run a script that calls <code>defaultGateway()</code>, a no-admin <code>ping('1.1.1.1')</code>, and <code>tcpConnections()</code> — assert real data, exit 0. This proves the published package (with its pinned <code>workspace:*</code>→exact deps) actually installs and runs for a stranger. Watch for the nested-exact-pin trap (repo memory): if an old <code>@bun-win32/core</code> nests under the bindings, fix in the consumer or republish dependents.</div>
+<div class="step commit"><span class="id">S15.8</span><strong>Final report + cleanup.</strong> Kill the keep-awake process. Write the deviation ledger summary (what drifted from this plan), the gripe→response list, the verified benchmark table, and the parity-matrix outcome. Tag/commit as the repo convention dictates.</div>
+
+<h2 id="appendix">Appendices</h2>
+
+<h3 id="appA">Appendix A — API → module map + the proof-demo inventory (verify in Phase 0)</h3>
+<p>Every public export lands in exactly one module and is re-exported by <code>index.ts</code>. <strong>The "bound?" column is this plan's plan-time expectation — S0.5b confirms each against the binding package's Symbols block; a "no" means a binding-package addition sub-task.</strong> Demos are the on-hardware proof + the decode-logic source.</p>
+<table>
+<tr><th>netdiag module / function</th><th>Underlying Win32 API (DLL)</th><th>Bound? (verify)</th><th>Proof demo (decode source)</th></tr>
+<tr><td><code>adapters.ts</code> — <code>adapters()</code></td><td><code>GetAdaptersAddresses</code> (iphlpapi); legacy fallback <code>GetAdaptersInfo</code></td><td>expected yes</td><td><code>iphlpapi/example/network-diagnostic.ts</code> (GetAdaptersInfo), <code>network-map.ts</code></td></tr>
+<tr><td><code>routes.ts</code> — <code>routes()</code>, <code>defaultGateway()</code></td><td><code>GetIpForwardTable2</code> + <code>FreeMibTable</code> (iphlpapi); legacy <code>GetIpForwardTable</code></td><td>verify (Table2)</td><td><code>network-diagnostic.ts</code> (GetIpForwardTable)</td></tr>
+<tr><td><code>arp.ts</code> — <code>neighbors()</code> (read); <code>resolve()</code>/write (10b, admin)</td><td><code>GetIpNetTable2</code> :212 + <code>FreeMibTable</code> :174; <code>ResolveIpNetEntry2</code> :276, <code>CreateIpNetEntry2</code> :153 (iphlpapi); legacy <code>GetIpNetTable</code></td><td><strong>yes</strong> (fleet-confirmed)</td><td><strong>NO demo</strong> — build + verify fresh; READ no-admin, WRITE admin (S4.3)</td></tr>
+<tr><td><code>sockets.ts</code> — <code>tcpConnections()</code>, <code>udpListeners()</code></td><td><code>GetExtendedTcpTable</code> :185, <code>GetExtendedUdpTable</code>, <code>GetOwnerModuleFromTcpEntry</code> :226 (iphlpapi)</td><td><strong>yes</strong> (fleet-confirmed)</td><td><code>all/example/net-xray.ts</code> <code>poll()</code> ~204–295 (24-byte OWNER_PID, the only PID proof)</td></tr>
+<tr><td><code>ping.ts</code> — <code>ping()</code>, <code>pingMany()</code></td><td><code>IcmpCreateFile</code> :254, <code>IcmpSendEcho</code> :256, <code>IcmpSendEcho2</code> :257, <code>IcmpParseReplies</code> :255 (iphlpapi)</td><td><strong>yes</strong> (fleet-confirmed)</td><td><strong>NO committed demo</strong> — PROJECTS.md notes a live review ping (<code>IP_SUCCESS</code>); build + verify fresh, re-confirm no-admin (S6)</td></tr>
+<tr><td><code>traceroute.ts</code> — <code>traceroute()</code></td><td><code>IcmpSendEcho</code> + <code>IP_OPTION_INFORMATION.Ttl</code> (use <code>...32</code> on x64) (iphlpapi)</td><td>via ping</td><td><strong>NO demo</strong> — new (TTL ramp; <code>IP_TTL_EXPIRED_TRANSIT</code>=11013 per hop)</td></tr>
+<tr><td><code>dns.ts</code> — <code>resolve()</code>, <code>reverse()</code></td><td><code>DnsQuery_W</code>, <code>DnsRecordListFree</code> (dnsapi)</td><td>expected yes</td><td><code>dnsapi/example/dns-forensics.ts</code>, <code>dns-tree.ts</code></td></tr>
+<tr><td><code>wifi.ts</code> — <code>wifiScan()</code>, <code>wifiInterfaces()</code>, <code>wifiConnection()</code></td><td><code>WlanOpenHandle/EnumInterfaces/Scan/GetAvailableNetworkList/GetNetworkBssList/QueryInterface/FreeMemory</code> (wlanapi)</td><td>expected yes</td><td><code>wlanapi/example/signal-monitor.ts</code>, <code>wifi-diagnostic.ts</code></td></tr>
+<tr><td><code>wifi.ts</code> — <code>wifiConnect()</code> <span class="tag new">beta</span></td><td><code>WlanConnect</code>, <code>WlanSetProfile</code> (wlanapi)</td><td>bound, UNEXERCISED</td><td>none (ship beta; poll <code>WlanQueryInterface</code> to verify)</td></tr>
+<tr><td><code>stats.ts</code> — <code>tcp/ip/udpStatistics()</code>, <code>interfaceCounters()</code>, <code>throughput()</code></td><td><code>GetTcpStatistics(Ex/Ex2)</code> :236–238, <code>GetIpStatistics</code> :216, <code>GetUdpStatistics</code> :243, <code>GetIfTable2</code> :195 (iphlpapi)</td><td><strong>yes</strong> (fleet-confirmed)</td><td><strong>NO demo</strong> — new (ULONG64 octet delta; partial incumbent <code>systeminformation</code>)</td></tr>
+<tr><td><code>addr.ts</code> — codecs</td><td><code>InetNtopW</code>, <code>ntohs</code> (ws2_32) for IPv6/edge cases</td><td>expected yes</td><td><code>ws2_32/example/socket-diagnostic.ts</code>, <code>dns-lookup.ts</code></td></tr>
+<tr><td><code>win32.ts</code> — escape hatch</td><td>re-exports the raw binding packages</td><td>n/a</td><td>all of the above</td></tr>
+<tr><td><em>10b extras</em></td><td><code>IcmpSendEcho2</code>, <code>GetPerTcpConnectionEStats</code>, <code>GetBestRoute2</code>/<code>GetBestInterfaceEx</code>, <code>NotifyRouteChange2</code> (polled-diff), <code>WlanGetNetworkBssList</code></td><td>verify each</td><td>probe-gated</td></tr>
+</table>
+
+<h3 id="appB">Appendix B — Struct layouts to verify (x64; wrong offset = garbage or segfault)</h3>
+<p>These are the load-bearing layouts. <strong>Verify every offset against the Microsoft Learn struct page AND the binding package's <code>types/*.ts</code> before decoding</strong> — x64 alignment/padding is unforgiving, and the legacy demos give some offsets you can cross-check.</p>
+<pre><code>MIB_TCPROW_OWNER_PID (24 B):    dwState(4) dwLocalAddr(4) dwLocalPort(4) dwRemoteAddr(4) dwRemotePort(4) dwOwningPid(4)
+MIB_TCP6ROW_OWNER_PID:          ucLocalAddr(16) dwLocalScopeId(4) dwLocalPort(4) ucRemoteAddr(16) dwRemoteScopeId(4) dwRemotePort(4) dwState(4) dwOwningPid(4)
+MIB_TCPROW (legacy, 20 B):      dwState(4) dwLocalAddr(4) dwLocalPort(4) dwRemoteAddr(4) dwRemotePort(4)     [network-diagnostic.ts proven]
+MIB_IPFORWARDROW (legacy,56 B): dest(4) mask(4) policy(4) nextHop(4) ifIndex(4) type(4) proto(4) age(4) nextHopAS(4) metric1(4)…  [proven]
+MIB_IPFORWARD_ROW2:             InterfaceLuid(8) InterfaceIndex(4) DestinationPrefix{Prefix(SOCKADDR_INET 28) PrefixLength(1)} NextHop(SOCKADDR_INET 28) … Metric(4) Protocol(4) …  (verify full size)
+MIB_IPNET_ROW2:                 Address(SOCKADDR_INET 28) InterfaceIndex(4) InterfaceLuid(8) PhysicalAddress(32) PhysicalAddressLength(4) State(4) Flags(4) ReachabilityTime(8)
+SOCKADDR_INET (union):          si_family(2) at +0 selects sockaddr_in{sin_port(2) sin_addr(4)} or sockaddr_in6{sin6_port(2) sin6_flowinfo(4) sin6_addr(16) sin6_scope_id(4)}
+MIB_IF_ROW2:                    InterfaceLuid(8) InterfaceIndex(4) … huge struct … InOctets(u64) InUcastPkts(u64) … OutOctets(u64) …  (read octets via read.u64; verify offsets — this struct is large)
+ICMP_ECHO_REPLY (x64):          Address(4) Status(4) RoundTripTime(4) DataSize(2) Reserved(2) Data(ptr 8) Options{Ttl(1) Tos(1) Flags(1) OptionsSize(1) OptionsData(ptr 8)}
+IP_OPTION_INFORMATION:          Ttl(UCHAR=1) Tos(1) Flags(1; IP_FLAG_DF=0x02) OptionsSize(1) OptionsData(PUCHAR 8). x64: MSDN says use IP_OPTION_INFORMATION32; for traceroute/PMTU OptionsData=NULL/Size=0 so only the 4 leading bytes matter — wrong size/align ⇒ IcmpSendEcho ERROR_INVALID_PARAMETER. Validate vs a live loopback ping first.
+TCP/UDP table classes:          GetExtendedTcpTable OWNER_PID_ALL=5 (24B rows) · OWNER_MODULE_ALL=0x8 (MIB_TCPROW_OWNER_MODULE, LARGER variable stride w/ trailing OwningModuleInfo — compute from SDK, do NOT reuse 24B) · GetExtendedUdpTable OWNER_PID=1 (12B)
+FIXED_INFO:                     HostName(char[132]@0) DomainName(char[132]@0x84) CurrentDnsServer(ptr@0x108) DnsServerList.Next(ptr@0x110) DnsServerList.IpAddress.String(char[16]@0x118)  [proven]
+IP_ADAPTER_ADDRESSES_LH:        Length(4) IfIndex(4) Next(ptr@8) AdapterName(ptr) FirstUnicastAddress(ptr) … FriendlyName(ptr,wide) PhysicalAddress(8)+Length(4) … (variable; walk Next; verify against header)
+DNS_RECORD (32B header):        pNext@0 pName@8(wide) wType@16(2) wDataLength@18(2) Flags@20(4) dwTtl@24(4) data@32{union}. Per-type read size (from the dns demos): A=40 AAAA=48 NS/CNAME/PTR=48 MX=48(pref@40) SRV=56(prio/wt/port@40/42/44) SOA=72 TXT=40+len CAA=56
+WLAN_INTERFACE_INFO (532B):     InterfaceGuid@0(16) strInterfaceDescription@16(256 WCHAR) isState@528(4). GUID@0 ⇒ pass the entry ptr directly as pInterfaceGuid (a deliberate trick the demos use)
+WLAN_AVAILABLE_NETWORK (628B):  strProfileName@0(512) DOT11_SSID{len@512 ucSSID@516[32]} wlanSignalQuality@604(0..100) bSecurityEnabled@608 auth@612 cipher@616 dwFlags@620(CONNECTED=0x1 HAS_PROFILE=0x2). x64-verified vs MSDN by the fleet
+WLAN_BSS_ENTRY (variable):      NO in-repo decoder — netdiag authors it. dot11Bssid(6 MAC) lRssi(LONG signed dBm ≠ the 0..100 quality) uLinkQuality ulChCenterFrequency(kHz) + trailing IE blob via ulIeOffset+ulIeSize ⇒ walk per-entry, NOT a fixed stride. Verify offsets vs MSDN before coding</code></pre>
+
+<h3 id="appC">Appendix C — Known-traps ledger (every row = a guardrail or an AI.md gotcha)</h3>
+<table>
+<tr><th>Trap (ground truth)</th><th>Consequence</th><th>Plan response</th></tr>
+<tr><td>Bun <code>Buffer</code> <code>.ptr</code> relocation — small backing stores MOVE after a later allocation</td><td>Cached <code>.ptr</code> dangles → <code>E_INVALIDARG</code>/garbage decode</td><td>Read <code>.ptr</code> INLINE at the FFI call; re-read after any alloc; overrides BUN_GPU's cache-.ptr lever (S0.8, S2.1)</td></tr>
+<tr><td>FFI struct GC window — an <code>await</code> between assembling a Buffer-pointer-bearing struct and the call</td><td>Baked-in pointers dangle → <code>E_INVALIDARG</code>/segfault</td><td>Assemble the ICMP/sockaddr request struct immediately before the synchronous call; no await between (S6.1)</td></tr>
+<tr><td><code>WlanRegisterNotification</code> / <code>DnsServiceBrowse</code> — foreign-thread/worker completion callbacks</td><td>Crash class under Bun FFI</td><td>WiFi scan uses the poll pattern; change-watching is polled-diff (10b #5); both APIs are non-goals (S8, AI.md)</td></tr>
+<tr><td>Network-byte-order ports in MIB tables</td><td>443 reads as 47873 if not byteswapped</td><td><code>portFromNetworkOrder</code> centralizes the swap (S2.3); unit-tested (S2.5)</td></tr>
+<tr><td>Table2 APIs self-allocate and must be freed with <code>FreeMibTable</code></td><td>Handle/memory leak on every poll if not freed</td><td><code>FreeMibTable</code> in a <code>finally</code>; the perf audit polls 100k× watching RSS (S4.1, S4.4)</td></tr>
+<tr><td>Legacy IPv4-only APIs (<code>GetTcpTable</code>/<code>GetAdaptersInfo</code>/<code>GetIpForwardTable</code>)</td><td>Silent IPv6 + PID blind spots — the demo's limitation</td><td>Prefer Extended/Table2/Addresses; fall back only if a modern export is unbound, and record the gap (S0.5b)</td></tr>
+<tr><td>WiFi connect (<code>WlanConnect</code>/<code>WlanSetProfile</code>) unexercised vs a live AP</td><td>Unknown real-world behavior</td><td>Ship behind a beta flag; verify by polling <code>WlanQueryInterface</code>, never callback (S8)</td></tr>
+<tr><td><strong>fleet:</strong> ESTATS read without <code>SetPerTcpConnectionEStats</code> enable (admin)</td><td>MSDN: <code>Ros</code>/<code>Rod</code> are undefined "meaningless random data" — would surface garbage as RTT</td><td>Gate RTT/Data/SndCong behind elevation; read <code>Rw.EnableCollection</code> FIRST and refuse if FALSE; only <code>SynOpts</code> is no-admin (10b #2)</td></tr>
+<tr><td><strong>fleet:</strong> <code>IP_OPTION_INFORMATION</code> on x64</td><td>Wrong size/alignment ⇒ <code>IcmpSendEcho</code> returns <code>ERROR_INVALID_PARAMETER</code> (breaks traceroute/PMTU)</td><td>MSDN: use <code>IP_OPTION_INFORMATION32</code> on x64; validate vs a live loopback ping before claiming (S6.2, 10b #6)</td></tr>
+<tr><td><strong>fleet:</strong> two TCP-row strides — 24B OWNER_PID vs 20B legacy vs LARGER OWNER_MODULE</td><td>Reusing a stride mis-parses the whole table; <code>pModuleName</code> is an offset-pointer INTO the out-buffer</td><td>Compute each stride from the SDK; net-xray warns "do NOT derive from bufferSize"; read <code>pModuleName</code> relative to the buffer base (S5.1)</td></tr>
+<tr><td><strong>fleet:</strong> bound <code>getaddrinfo</code> is the ANSI variant; two divergent DNS paths/config sources</td><td>UTF-16 node name fails; <code>DnsQuery_W</code> vs <code>getaddrinfo</code> give different answers; <code>GetNetworkParams</code> vs <code>DnsQueryConfig</code> overlap</td><td>Encode ASCII for <code>getaddrinfo</code>; document the two resolution paths; pick ONE canonical DNS-server source (S7.2)</td></tr>
+<tr><td><strong>fleet:</strong> ARP/ND table WRITE (<code>CreateIpNetEntry2</code>/<code>Delete</code>/<code>Set</code>)</td><td>Requires admin (READ does not) — a silent write would violate the no-admin promise</td><td>Gate writes behind an elevation check; assert <code>ERROR_ACCESS_DENIED</code> unelevated; reads stay no-admin (10b #8)</td></tr>
+<tr><td><strong>fleet:</strong> <code>Notify*2</code> change callbacks (<code>NotifyRouteChange2</code>/<code>NotifyUnicastIpAddressChange</code>)</td><td>IP Helper fires them on its own worker thread → foreign-thread JSCallback crash class</td><td>Use the SAFE overlapped-EVENT form (<code>NotifyAddrChange</code>/<code>NotifyRouteChange</code>) + <code>WaitForSingleObject</code>, or polled-diff (10b #5)</td></tr>
+<tr><td><strong>fleet:</strong> ARP read, ICMP ping/traceroute, and WiFi connect have ZERO existing proof demo</td><td>Three headline capabilities are bound but un-exercised in the repo corpus</td><td>Build + verify each FRESH on hardware (and re-confirm the no-admin claim for ICMP) — do not assume from the binding alone (S4.3, S6.3, S8.2)</td></tr>
+<tr><td>"No Administrator" overclaim</td><td>Raw <code>SIO_RCVALL</code> capture DOES need admin</td><td>Scope the claim to ICMP/tables/DNS/WiFi-scan; raw capture is an admin-gated escape-hatch example (dossier, AI.md)</td></tr>
+<tr><td>Wide strings via <code>TextDecoder('utf-16le')</code></td><td>Bun's TextDecoder type rejects 'utf-16le'</td><td>Use <code>buf.toString('utf16le')</code> up to NUL for FriendlyName/DNS names (S3.2, S7.2)</td></tr>
+<tr><td>Bun branded <code>Pointer</code></td><td>Raw bigint addresses not assignable to FFI ptr params</td><td><code>Number(x) as Pointer</code> — the one sanctioned narrowing, copied from the demos</td></tr>
+<tr><td>Heavy live-dashboard teardown segfault at process exit (Bun bug)</td><td>Nonzero exit AFTER correct output</td><td>Judge <code>netwatch</code>/retargeted demos by printed data, not exit code (S11.2)</td></tr>
+<tr><td><code>Bun.sleep</code> async quantizes to 15.6 ms</td><td>Dashboard capped ~64 fps, stutters</td><td>High-res waitable timer + <code>setImmediate</code>; <code>sleepSync</code> is NOT quantized (S9.3, S10.3)</td></tr>
+<tr><td><code>bun:test</code> + FFI segfaults (repo-wide, historic)</td><td>CI-style runner unusable for FFI paths</td><td>S0.4 re-probe gates the harness; logic tests stay pure (S2.5)</td></tr>
+<tr><td>npm registry read-lag after publish</td><td>False "publish failed" panic</td><td>Poll with backoff (S15.6)</td></tr>
+<tr><td>Stale <code>bun.lock</code> workspace records / nested exact-pin</td><td>Dependents publish/install pinned to OLD versions</td><td><code>rm bun.lock &amp;&amp; bun install</code> + preflight gate + clean-room acceptance (S15.2, S15.7)</td></tr>
+<tr><td><strong>perf:</strong> <code>Buffer.alloc</code> per poll / per-row <code>toArrayBuffer</code>+DataView / bigint in decode loop</td><td>~1064 ns/alloc + GC; ~29× per-row; bigint churn</td><td>Reused <code>SizedBufferState</code>; one DataView over the region; <code>number</code> keys; zero-alloc assertion (S14.6)</td></tr>
+</table>
+
+<h3 id="appD">Appendix D — Competitive parity matrix ("everything they do, only better")</h3>
+<p><strong>Standing requirement:</strong> netdiag must cover every capability of the packages it replaces — demonstrably, with a proof artifact — or the gap is a documented deliberate scope decision with a roadmap line. S0.10–S0.12 re-validate this matrix at execution time; S14.3 gates release on it. <strong>Download/status figures are plan-time (2026-06-12, from PROJECTS.md §3) and MUST be re-fetched live in Phase 0b — do not ship a number you didn't re-verify.</strong></p>
+
+<h4>D.1 — default-gateway (8.11M/wk; GitHub-ARCHIVED 2026-02-05, last npm 7.2.2 in 2023; spawns wmic via execa — WMIC disabled-by-default on Win11 24H2, removed-on-upgrade 25H2)</h4>
+<table>
+<tr><th>default-gateway capability</th><th>netdiag answer</th><th>Better because</th><th>Proof artifact</th></tr>
+<tr><td><code>gateway4async()</code> / <code>gateway6async()</code> — default gateway IP + interface</td><td><code>defaultGateway(family?)</code></td><td>Reads <code>GetIpForwardTable2</code> directly — no <code>wmic</code> (which Microsoft removed from current Windows 11), no <code>execa</code> spawn, no parse; works on every locale; IPv4 AND IPv6</td><td>selftest #3; crossval vs <code>ipconfig</code> (S11.1)</td></tr>
+<tr><td>Cross-platform (Linux/macOS too)</td><td><strong>Deliberate non-goal</strong></td><td>Windows-only by design (the repo thesis). default-gateway's Windows backend is the broken part; netdiag is "the Windows backend done right"</td><td>README honest scoping</td></tr>
+</table>
+
+<h4>D.2 — ping (189k/wk; v1.0.0 Oct 2025, active but thin; spawns ping.exe + regex-parses localized stdout — parser handles EN/RU only, breaks on French "temps" #64)</h4>
+<table>
+<tr><th>ping capability</th><th>netdiag answer</th><th>Better because</th><th>Proof</th></tr>
+<tr><td><code>ping.promise.probe(host, {timeout, extra, numeric})</code></td><td><code>ping(host, options)</code></td><td><code>IcmpSendEcho</code> — no <code>ping.exe</code> spawn at all (no dependence on the host's localized ping.exe text contract), no locale-dependent output parsing (the #1 ping gripe, #64/#26/#133), structured <code>{alive,roundTripMs,ttl,status}</code> read from the struct; no admin. <em>Honest:</em> current ping sets <code>windowsHide:true</code>, so the old "CMD-flash" gripe is mostly mitigated — lead with the locale/no-spawn wins, not the flash.</td><td>selftest #9–10; crossval vs <code>ping.exe</code></td></tr>
+<tr><td>Many hosts</td><td><code>pingMany()</code> / async subnet sweep (10b #1)</td><td>Concurrent without N process forks; <code>IcmpSendEcho2</code> async</td><td>10b proof: /24 in &lt;1s</td></tr>
+</table>
+
+<h4>D.3 — node-wifi (2.9k/wk; stale since 2021, "seeking maintainers", 61 open issues; spawns netsh — locale literal #143, Win11 field-order drift #184, Unicode-SSID mangling #198)</h4>
+<table>
+<tr><th>node-wifi capability</th><th>netdiag answer</th><th>Better because</th><th>Proof</th></tr>
+<tr><td><code>scan()</code></td><td><code>wifiScan()</code></td><td>wlanapi structs — locale-proof, Unicode/emoji-SSID-proof, no Win11 <code>netsh</code> parser drift</td><td>selftest #15; crossval vs <code>netsh wlan show networks</code></td></tr>
+<tr><td><code>getCurrentConnections()</code></td><td><code>wifiConnection()</code></td><td><code>WlanQueryInterface</code> — typed signal/rate/BSSID/auth</td><td>crossval vs <code>netsh wlan show interfaces</code></td></tr>
+<tr><td><code>connect()</code> / <code>disconnect()</code> / <code>deleteConnection()</code></td><td><code>wifiConnect()</code> <span class="tag new">beta</span> / <code>wifiDisconnect()</code></td><td>No <code>netsh</code> spawn — BUT unexercised vs a live AP; ships beta with the caveat (honest)</td><td>README beta note; poll <code>WlanQueryInterface</code></td></tr>
+</table>
+<div class="note"><strong>Honest caveat the README MUST state (fleet, not netdiag-specific):</strong> per MSDN "Changes to API behavior for Wi-Fi access and location" (rolling out from a fall-2024 feature release), <code>WlanGetAvailableNetworkList</code>/<code>WlanScan</code>/<code>WlanGetNetworkBssList</code>/<code>WlanQueryInterface(current_connection)</code> return <code>ERROR_ACCESS_DENIED</code> for a non-System32 user-context process unless precise-location consent is granted (one-time prompt). netdiag sits on the same wlanapi surface as node-wifi's <code>netsh</code>, so both are hit identically — this is NOT a regression netdiag introduces, but netdiag cannot be sold as "WiFi scan always works, no consent." Surface a clear location-consent error, not a silent empty list.</div>
+
+<h4>D.4 — local-devices (3.4k/wk; spawns <code>arp -a</code>, fixed-index parser, #75 single-host broken on Windows) &amp; net-ping/raw-socket (1.4k+1.8k/wk; node-gyp, won't build Node 23/24 #91, npm-11 overrides broken; SOCK_RAW needs admin)</h4>
+<table>
+<tr><th>Capability</th><th>netdiag answer</th><th>Better because</th><th>Proof</th></tr>
+<tr><td>local-devices: list <code>{name,ip,mac}</code> on the LAN (<code>arp -a</code> + an active TCP-:80 subnet sweep to warm the cache)</td><td><code>neighbors()</code> (+ a no-admin ping sweep for active discovery)</td><td><code>GetIpNetTable2</code> — typed neighbor table with reachability STATE, no <code>arp -a</code> spawn (no maxBuffer/SIGTERM/PATH fragility, #10/#62/#39), no fixed-index parser, IPv6 ND too. <em>Honest gap:</em> like <code>arp -a</code>, <code>GetIpNetTable2</code> reads only the OS cache — to match local-devices' active discovery netdiag must run its own prober (its no-admin <code>pingMany()</code> sweep, 10b #1) and do reverse-DNS for the <code>name</code> field.</td><td>selftest #5; crossval vs <code>arp -a</code></td></tr>
+<tr><td>net-ping: <code>pingHost</code>, <code>traceRoute</code>, ICMP sessions</td><td><code>ping()</code>, <code>traceroute()</code>, <code>pingMany()</code></td><td>No node-gyp (raw-socket won't build on Node 20/24), no Administrator (raw ICMP sockets require it); traceroute via TTL ramp, not raw sockets</td><td>selftest #9–11; S14.5 non-admin run</td></tr>
+<tr><td>net-ping: socket→PID (netstat-class)</td><td><code>tcpConnections()</code> / <code>udpListeners()</code></td><td><code>GetExtendedTcpTable</code> OWNER_PID/MODULE — one syscall, no <code>netstat -ano</code> parse</td><td>selftest #6–7; crossval vs <code>netstat -ano</code></td></tr>
+</table>
+
+<h4>D.5 — The moat (each needs a proof artifact). Two honest tiers — fleet-verified.</h4>
+<p><strong>Genuinely zero JS incumbent</strong> (no package does it at all, by any means):</p>
+<ul>
+<li>No-admin <strong>traceroute</strong> via <code>IcmpSendEcho</code> TTL ramp — every JS traceroute spawns <code>tracert</code> or needs an admin raw socket (10b path; net-ping/nodejs-traceroute).</li>
+<li><strong>Best-route/source-IP selection</strong> via <code>GetBestRoute2</code> (today: parse <code>route print</code>) (10b #3); <strong>path-MTU</strong> via DF probe (10b #6); typed <strong>ARP/ND table with neighbor STATE + IPv6 + force-resolve</strong> (<code>arp -a</code> is IPv4-only, stateless, localized) (Phase 4, 10b #8).</li>
+<li>Typed <strong>protocol statistics</strong> (<code>netstat -s</code> has no pure-FFI JS reader) (Phase 9); <strong>per-connection ESTATS</strong> SynOpts no-admin / RTT admin-gated (10b #2); <strong>WiFi BSS census</strong> with signed-dBm RSSI/channel/PHY (10b #7).</li>
+<li><strong>Per-process bandwidth fusion</strong> — socket→PID×byte-counters in one view (10b #4); the raw escape hatch; the AI-first AI.md contract.</li>
+</ul>
+<p><strong>Only we do it without the node-gyp/shell tax</strong> (incumbents exist but pay a price netdiag doesn't):</p>
+<ul>
+<li><strong>socket→PID</strong>: <code>node-netstat</code>/<code>systeminformation</code> spawn <code>netstat -nao</code> (PID only); <code>windows-netstat</code> wraps the same API but via a <strong>node-gyp native build</strong> (bare PID, stale) — netdiag is pure FFI, no spawn, AND resolves the owning <strong>module name</strong> (OWNER_MODULE) in one pass (Phase 5).</li>
+<li><strong>Live throughput</strong>: <code>systeminformation.networkStats()</code> exposes <code>rx_sec</code>/<code>tx_sec</code>, but via a slower WMI/Get-Counter Windows path at ~1&nbsp;s granularity and WITHOUT error/discard counters — netdiag reads the raw struct in-process, sub-ms, zero-shell, with <code>InErrors</code>/<code>OutErrors</code>/<code>Discards</code> (Phase 9).</li>
+<li><strong>Sub-spawn-cost LIVE polling</strong> of the whole set in one dashboard (<code>netwatch.ts</code>; benchmark.ts quotes the samples/sec multiple vs an actual <code>route print</code> spawn).</li>
+</ul>
+
+<h4>D.6 — What "replace" honestly means (these words go in the README, not under the rug)</h4>
+<table>
+<tr><th>Incumbent</th><th>What netdiag replaces</th><th>What it honestly does NOT</th></tr>
+<tr><td><strong>default-gateway</strong></td><td>The Windows code path (wmic-dependent, archived) — done right via a direct syscall, plus full routing table, not just the gateway.</td><td>Linux/macOS. netdiag is Windows-only by design; on those platforms default-gateway's other backends still apply.</td></tr>
+<tr><td><strong>ping</strong></td><td>The capability: structured ICMP echo with RTT/TTL/status, no spawn, no admin, no locale parse, plus traceroute and concurrent pings.</td><td>Cross-platform ping; the exact <code>ping.exe</code> output text (we return a struct, not the CLI's lines).</td></tr>
+<tr><td><strong>node-wifi</strong></td><td>Scan + current-connection (locale/Unicode-proof structs). Connect/disconnect shipped beta.</td><td>Battle-tested connect across every adapter/driver — connect is unexercised vs a live AP (stated). No cross-platform.</td></tr>
+<tr><td><strong>local-devices / net-ping / arp-scrapers</strong></td><td>The neighbor table, socket→PID, and ICMP/traceroute capabilities — typed, no spawn, no node-gyp, no admin.</td><td>Active host discovery beyond the OS neighbor cache (an <code>arp -a</code> scrape and a netdiag <code>neighbors()</code> both only see cached entries — neither pings the subnet unless you ask; the async sweep, 10b #1, is netdiag's answer). Cross-platform. ARP-table WRITE (add/delete) is a probe-gated extra, not v1 core.</td></tr>
+<tr><td><strong>systeminformation</strong> (5.87M/wk; positioning, not parity)</td><td>The same Windows network fields — but decoded from structs in-process instead of via spawned PowerShell/WMI (<code>networkStats</code>), <code>netstat -nao</code> (<code>networkConnections</code>, PID-only), and <code>netsh</code> (wifi). netdiag has no 500&nbsp;ms throughput floor, adds the owning MODULE name and error/discard counters SI drops, and has no shell to inject into (SI's spawn model is the root of CVE-2021-21315, CISA-KEV).</td><td>Its breadth (CPU/mem/disk/OS/battery/docker — that's <code>@bun-win32/sysmon</code>'s lane) and its genuine cross-platform reach. netdiag is network-only, Windows-only, Bun-only — deep not wide; for a Linux/macOS/Node consumer SI is the answer.</td></tr>
+<tr><td><strong>node:dns</strong> (built-in; DNS angle)</td><td>Struct-level record control: <code>resolve(name, type)</code> via <code>DnsQuery_W</code> for arbitrary record types, plus <code>lookup()</code> via <code>getaddrinfo</code> (the system resolver, hosts-file-aware).</td><td>node:dns (c-ares) is fixed to A/AAAA/CAA/CNAME/MX/NAPTR/NS/PTR/SOA/SRV/TLSA/TXT — NO HTTPS/SVCB/DS/DNSKEY/generic rrtypes, no raw-wire/EDNS/DNSSEC control, and <code>resolve()</code> never consults the OS resolver config or hosts file. node:dns is mature, cross-platform, and zero-setup — netdiag's edge is record-type reach + the system-resolver path, not portability.</td></tr>
+</table>
+<p><strong>Audit verdict (fleet, 2026-06-12):</strong> a WebSearch sweep for a Bun-native / pure-FFI Windows network-diagnostics package (bun-netstat, Bun iphlpapi/wlanapi FFI, …) returned only the Win32 API docs and the spawn/node-gyp incumbents above. <strong>No credible zero-install pure-FFI Windows network-diagnostics competitor exists on npm</strong> — the niche is occupied only by bun-win32 itself. netdiag's honest, durable claims are: zero native build, zero process spawn, locale/Unicode/Windows-version-proof struct reads, no-admin ICMP, PID+module socket attribution, and sub-spawn-cost polling — NOT cross-platform reach, maturity, or freedom from the OS Wi-Fi location-consent gate.</p>
+
+<h3 id="appE">Appendix E — Command cheat sheet + package.json key order</h3>
+<pre><code># verify constantly
+bun run packages/netdiag/index.ts                       # loads?
+bunx tsc --noEmit                                        # types, whole repo
+bun test packages/netdiag                               # pure-logic tests
+bun run packages/netdiag/example/netdiag.selftest.ts    # FFI integration suite (non-admin shell!)
+bunx biome format --write packages/netdiag
+
+# regression + gates
+bun run scripts/audit.ts --all                          # binding packages unchanged (netdiag auto-skipped)
+bun run scripts/nullcheck.ts --all
+bun run scripts/preflight.ts                            # lockfile freshness (release gate)
+
+# cross-validate vs the OS's own tools (Phase 11)
+route print  ·  ipconfig /all  ·  arp -a  ·  netstat -ano  ·  nslookup  ·  ping.exe  ·  netsh wlan show networks
+
+# release
+rm bun.lock &amp;&amp; bun install
+(cd packages/&lt;name&gt; &amp;&amp; bun publish --access public --otp &lt;code&gt;)   # order: bumped binding(s), netdiag, all, bun-win32, bun-netdiag</code></pre>
+<p>package.json key order (from <code>packages/terminal</code>, copy exactly): <code>author, bugs, dependencies, description, devDependencies, exports, license, module, name, peerDependencies, private, publishConfig, homepage, repository, type, version, main, keywords, files, sideEffects, engines, scripts</code>.</p>
+
+<h3 id="appF">Appendix F — Lineage</h3>
+<p>This plan is a direct application of <code>packages/gpu/PLAN.html</code> Appendix F (the house standard for product plans). It reproduces that plan's discipline — ground-truth dossier, research-while-building doctrine, execute-time competitive intelligence with a parity matrix gated at release, bite-sized verified phases, real tests, AI-first docs, one-OTP release, clean-room acceptance, and an always-on performance audit. The differences are domain, not method: netdiag is a <em>wrapper over existing binding packages with existing on-hardware proof demos</em> (so Phase 11 is cross-validation-against-OS + demo-retargeting, not a 30-demo migration), and the perf story is the <em>sizing-call/struct-decode</em> hot path (so the <code>.ptr</code>-relocation rule overrides BUN_GPU's cache-.ptr lever). When this plan is silent, BUN_GPU governs.</p>
+
+<h3 id="appG">Appendix G — Performance: hot-path budgets, measured JSC levers, the regression gate</h3>
+<p>A diagnostics engine whose pitch is "every sample is a syscall, not a spawn" must not squander that with per-poll allocation, so performance is audited every phase (the ⚡ doctrine box), not benchmarked once. <strong>Bun runs on JavaScriptCore, not V8</strong> — the ns/op levers below are measured patterns (re-verify on the release host in S0.6b); the syscall/poll/RTT numbers are produced by this plan's own benchmark (S10.5), never here. Tiers: LLInt → Baseline → DFG → FTL (no Maglev/Sparkplug); shapes are <strong>Structures</strong> with a <strong>butterfly</strong>/<strong>IndexingType</strong> (not V8 hidden-class Maps); the GC is <strong>Riptide</strong> (concurrent mark-sweep, generational eden).</p>
+
+<h4>G.1 — Measured FFI/JS levers (ns/op on the authoring host; re-verify; several contradict V8 lore)</h4>
+<table>
+<tr><th>Decision</th><th>Fast</th><th>Slow</th><th>Factor</th><th>Rule</th></tr>
+<tr><td><code>Buffer.alloc</code> per poll vs reused growable buffer</td><td>reuse ≈ free</td><td>~1064 ns</td><td><strong>~1600×</strong></td><td>One <code>SizedBufferState</code> per table source; grow geometrically; reuse across polls (the memset is the cost — <code>allocUnsafe</code>)</td></tr>
+<tr><td>per-row <code>toArrayBuffer</code>+<code>DataView</code> vs ONE reused view over the region</td><td>~6 ns</td><td>~171 ns</td><td><strong>~29×</strong></td><td>Wrap the returned table region in ONE DataView; read rows by computed offset</td></tr>
+<tr><td>new <code>DataView</code> per parse vs cached</td><td>~0.3 ns</td><td>~20.8 ns</td><td>~72×</td><td>Hold the view as a persistent field</td></tr>
+<tr><td><code>buffer.ptr</code>: read inline vs the relocation hazard</td><td>~7.3 ns getter</td><td>dangling ptr → <code>E_INVALIDARG</code></td><td>correctness</td><td>Read inline at the call; re-read after any alloc — do NOT cache across allocations (overrides BUN_GPU)</td></tr>
+<tr><td>u32 read: <code>DataView.getUint32</code> vs manual byte-OR</td><td>~1.17 ns</td><td>~1.31 ns</td><td>1.13× (DataView wins)</td><td>Typed accessor; don't hand-roll (V8-contradiction)</td></tr>
+<tr><td>u64 octet read: <code>read.u64</code> vs Big(U)int64Array view</td><td>~26.6 ns</td><td>slowest + alignment-illegal</td><td>—</td><td><code>read.u64</code> for 64-bit counters; never bigint typed-array views; keep per-sec math in <code>number</code></td></tr>
+<tr><td>FFI floor / u64→bigint return / fresh <code>BigInt()</code> arg</td><td>—</td><td>~5 / +10 / +16 ns</td><td>—</td><td>One table call, not one per row; PID join key is <code>number</code>; hoist constant handle args out of the poll loop</td></tr>
+<tr><td>result array: pre-sized + index vs push / holey</td><td>~1.06–1.64 ns/el</td><td>~2.4–2.8 ns/el</td><td>1.5–1.7×</td><td>Pre-size by <code>dwNumEntries</code>, fill by index, no holes; same class shape per run</td></tr>
+<tr><td>pacing: async <code>Bun.sleep(1)</code> vs <code>sleepSync(1)</code> / hi-res timer</td><td>~1.5 ms</td><td>~15.6 ms</td><td>~10×</td><td>Dashboard cadence via hi-res waitable timer + <code>setImmediate</code>; async sleep is quantized</td></tr>
+</table>
+
+<h4>G.2 — Hot-path inventory (each gets a microbenchmark + a baseline entry)</h4>
+<table>
+<tr><th>Hot path</th><th>Budget</th><th>Phase</th></tr>
+<tr><td><code>tcpConnections()</code> full poll (the live-dashboard headline)</td><td>ns/poll; 0 alloc after warmup; number-keyed</td><td>S5.4</td></tr>
+<tr><td><code>routes()</code> / <code>neighbors()</code> Table2 poll</td><td>ns/poll; table freed every call; pre-sized rows</td><td>S4.4</td></tr>
+<tr><td><code>adapters()</code> linked-list walk + sockaddr decode</td><td>ns/poll; 0 alloc beyond result objects</td><td>S3.4</td></tr>
+<tr><td>single <code>IcmpSendEcho</code> round trip (loopback)</td><td>syscall+decode ns (NOT network RTT); handle+buffers reused</td><td>S6.4</td></tr>
+<tr><td><code>interfaceCounters()</code> / <code>throughput()</code> sample</td><td>ns/sample; u64 via read.u64; reused buffer</td><td>S9.3</td></tr>
+<tr><td>whole-table benchmark (samples/sec vs a process-spawn baseline)</td><td>the README numbers — from the gated run only</td><td>S10.5</td></tr>
+</table>
+
+<h4>G.3 — The discipline</h4>
+<ol>
+<li><strong>Baseline (S0.6b)</strong> records the table-poll/ICMP/codec floors on the release host before any work.</li>
+<li><strong>Every table-source phase</strong> (3, 4, 5, 9) ends with a microbenchmark asserting zero per-poll allocation after warmup and (for self-alloc APIs) no leak across 100k polls.</li>
+<li><strong>Release gate (S14.6)</strong> re-runs everything; a &gt;~10% regression vs baseline OR any forbidden hot-loop pattern blocks release.</li>
+<li><strong>README numbers</strong> (samples/sec, ns/poll, the spawn-vs-syscall multiple) come only from the gated run — never copied from this appendix.</li>
+<li><strong>Generative pass (the real spirit — every hot-path phase).</strong> <code>profile()</code> the path to find the true hot spot, then try at least one optimization this plan didn't anticipate — a table cached for the poll interval, a fused two-syscall read, a result returned as a typed-array view instead of an object array, a cheaper sizing-call seed size — measure it, fold any proven win into G.5. "Meets baseline" is the floor; beating it is the job.</li>
+<li><strong>Methodology</strong> (terminal.bench.ts convention): <code>Bun.nanoseconds()</code>; warm ≥200k iters; assert <code>numberOfDFGCompiles(fn) &gt; 0</code> (else you're timing the interpreter); folded sink vs dead-code elimination; vary offsets to defeat hoisting; <code>gcAndSweep()</code> between (not within) trials; median of ≥5.</li>
+</ol>
+
+<h4>G.4 — The <code>bun:jsc</code> optimization toolkit (Bun-only: prove the decode side is optimized, don't hope)</h4>
+<table>
+<tr><th><code>bun:jsc</code> export</th><th>Use</th></tr>
+<tr><td><code>numberOfDFGCompiles(fn)</code></td><td>≥1 after warmup ⇒ timing optimized code. Gate every microbench on it (0 ⇒ never got hot).</td></tr>
+<tr><td><code>profile(cb)</code> + sampling profiler</td><td>Tier breakdown + hottest frame. Assert FTL/≥DFG dominates the table-decode loop; finds the real cost to optimize.</td></tr>
+<tr><td><code>reoptimizationRetryCount(fn)</code></td><td>Climbs on type instability (e.g. a row object whose shape varies). Rising ⇒ stabilize the class shape, don't micro-opt the body.</td></tr>
+<tr><td><code>jscDescribe(obj)</code> / <code>jscDescribeArray(arr)</code></td><td>X-ray the Structure/IndexingType of <code>TcpConnection</code>/<code>Route</code> rows and readback arrays; reveals holes/shape transitions.</td></tr>
+<tr><td><code>heapStats().objectTypeCounts</code></td><td>Sum before/after a poll for the real allocated-object delta — the zero-allocation-per-poll gate. (Top-level <code>objectCount</code> reads stale/0 — sum <code>objectTypeCounts</code>.)</td></tr>
+<tr><td><code>gcAndSweep()</code> / <code>edenGC()</code></td><td>Quiesce the heap between trials. (<code>totalCompileTime()</code> reads 0 on some builds — don't rely on it.)</td></tr>
+</table>
+
+<h4>G.5 — Measured JSC alloc / array / native-read levers (host-specific factors; re-verify; directions are JSC-structural)</h4>
+<table>
+<tr><th>Lever</th><th>Rule</th></tr>
+<tr><td>native read from a returned/mapped <code>Pointer</code></td><td><code>toArrayBuffer</code> the table region ONCE; one reused <code>DataView</code> for ≤32-bit fields (a JSC intrinsic, ~1.8× faster than <code>read.u32</code>); <code>read.u64</code> for 64-bit octet counters; NEVER a DataView/toArrayBuffer per row (~29×) and never a per-byte <code>read.u8</code> loop</td></tr>
+<tr><td>scratch/table buffers</td><td>Allocate via <code>Buffer.allocUnsafe</code> (the memset in <code>Buffer.alloc</code> is ~4× the cost); overwrite the bytes you read; never per-poll</td></tr>
+<tr><td>result rows</td><td>Pre-size by <code>dwNumEntries</code>, fill by index; prefer a class with all fields up front (same StructureID) over object literals with late adds (~2× on the read side); typed-array columns for purely-numeric readouts</td></tr>
+<tr><td><code>bun --smol</code></td><td>RSS-only knob, 1.75–4.12× slower on a poll loop; never present a <code>--smol</code> number as the engine's ceiling</td></tr>
+</table>
+
+<p style="color:var(--dim); margin-top:3rem;">Plan authored 2026-06-12 as a sibling of <code>packages/gpu/PLAN.html</code> (the house standard). Facts verified same day by a 20-agent Opus-4.8 research fleet: npm <code>bun-netdiag</code> 404 (available); <code>packages/netdiag</code> absent; binding packages <code>iphlpapi</code>/<code>wlanapi</code>/<code>dnsapi</code>/<code>ws2_32</code> present with 10 on-hardware proof demos. <strong>Executor: do not trust these numbers or offsets — re-verify each in Phase 0, then build relentlessly.</strong></p>
+
+</body>
+</html>
