@@ -14,7 +14,7 @@
  * Run: bun run example/netdiag.selftest.ts
  */
 
-import { adapters, defaultGateway, neighbors, ping, resolve, reverse, routes, tcpConnections, tcpStatistics, traceroute, wifiScan } from '../index';
+import { adapters, bestRoute, defaultGateway, neighbors, pathMtu, ping, pingSweep, resolve, reverse, routes, tcpConnections, tcpStatistics, traceroute, wifiBssList, wifiScan } from '../index';
 
 let failures = 0;
 function check(label: string, condition: boolean, detail = ''): void {
@@ -81,6 +81,22 @@ try {
   wifiDetail = (error as Error).message.slice(0, 48);
 }
 check('15 WiFi scan returns an array OR reports cleanly', wifiReportedCleanly, wifiDetail);
+
+// Extras (10b)
+const best = bestRoute('1.1.1.1');
+check(
+  '16 bestRoute() source IP is a local adapter address',
+  allAdapters.some((adapter) => adapter.ipv4.includes(best.sourceAddress)),
+  `src ${best.sourceAddress} via ${best.nextHop}`,
+);
+
+const mtu = pathMtu('1.1.1.1');
+check('17 pathMtu() determines a sane MTU', mtu.determined && mtu.mtu >= 576 && mtu.mtu <= 1500, `${mtu.mtu}`);
+
+check('18 wifiBssList() returns an array', Array.isArray(wifiBssList()));
+
+const sweep = gateway === undefined ? [] : await pingSweep(gateway, { timeoutMs: 1000 });
+check('19 pingSweep() finds the gateway alive on its /24', gateway === undefined || sweep.some((reply) => reply.address === gateway && reply.alive), `${sweep.filter((reply) => reply.alive).length} hosts alive`);
 
 console.log(`\n${failures === 0 ? '\x1b[32m✓ all checks passed\x1b[0m' : `\x1b[31m✗ ${failures} check(s) failed\x1b[0m`}`);
 process.exit(failures === 0 ? 0 : 1);
