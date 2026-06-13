@@ -980,6 +980,24 @@
         "typescript": "^5",
       },
     },
+    "packages/netdiag": {
+      "name": "@bun-win32/netdiag",
+      "version": "1.0.0",
+      "dependencies": {
+        "@bun-win32/core": "workspace:*",
+        "@bun-win32/dnsapi": "workspace:*",
+        "@bun-win32/iphlpapi": "workspace:*",
+        "@bun-win32/kernel32": "workspace:*",
+        "@bun-win32/wlanapi": "workspace:*",
+        "@bun-win32/ws2_32": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+      },
+      "peerDependencies": {
+        "typescript": "^5",
+      },
+    },
     "packages/normaliz": {
       "name": "@bun-win32/normaliz",
       "version": "1.0.1",
@@ -1916,6 +1934,8 @@
 
     "@bun-win32/netapi32": ["@bun-win32/netapi32@workspace:packages/netapi32"],
 
+    "@bun-win32/netdiag": ["@bun-win32/netdiag@workspace:packages/netdiag"],
+
     "@bun-win32/normaliz": ["@bun-win32/normaliz@workspace:packages/normaliz"],
 
     "@bun-win32/ntdll": ["@bun-win32/ntdll@workspace:packages/ntdll"],
@@ -2170,6 +2190,8 @@
 
     "@bun-win32/netapi32/@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
 
+    "@bun-win32/netdiag/@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
+
     "@bun-win32/normaliz/@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
 
     "@bun-win32/ntdll/@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
@@ -2411,6 +2433,8 @@
     "@bun-win32/ncrypt/@types/bun/bun-types": ["bun-types@1.3.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-4N0ig0fEomHt5R0KCFWjovxow98rIoRwKolrYdCcknNwMekCXRnWEUvgu5soYV8QXtVsrUD8B95MBOZGPvr6KQ=="],
 
     "@bun-win32/netapi32/@types/bun/bun-types": ["bun-types@1.3.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-4N0ig0fEomHt5R0KCFWjovxow98rIoRwKolrYdCcknNwMekCXRnWEUvgu5soYV8QXtVsrUD8B95MBOZGPvr6KQ=="],
+
+    "@bun-win32/netdiag/@types/bun/bun-types": ["bun-types@1.3.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-4N0ig0fEomHt5R0KCFWjovxow98rIoRwKolrYdCcknNwMekCXRnWEUvgu5soYV8QXtVsrUD8B95MBOZGPvr6KQ=="],
 
     "@bun-win32/normaliz/@types/bun/bun-types": ["bun-types@1.3.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-4N0ig0fEomHt5R0KCFWjovxow98rIoRwKolrYdCcknNwMekCXRnWEUvgu5soYV8QXtVsrUD8B95MBOZGPvr6KQ=="],
 

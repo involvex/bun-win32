@@ -1,0 +1,84 @@
+{
+  "author": "Stev Peifer <stev.p@outlook.com>",
+  "bugs": {
+    "url": "https://github.com/ObscuritySRL/bun-win32/issues"
+  },
+  "dependencies": {
+    "@bun-win32/core": "workspace:*",
+    "@bun-win32/dnsapi": "workspace:*",
+    "@bun-win32/iphlpapi": "workspace:*",
+    "@bun-win32/kernel32": "workspace:*",
+    "@bun-win32/wlanapi": "workspace:*",
+    "@bun-win32/ws2_32": "workspace:*"
+  },
+  "description": "Syscall-grade network diagnostics for Bun on Windows — routing table, socket→PID map, no-admin ICMP ping/traceroute, ARP, DNS, live throughput, and WiFi — decoded from binary structs, zero native dependencies, no netsh/ping.exe/wmic scraping.",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "exports": {
+    ".": "./index.ts"
+  },
+  "license": "MIT",
+  "module": "index.ts",
+  "name": "@bun-win32/netdiag",
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/ObscuritySRL/bun-win32#readme",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/ObscuritySRL/bun-win32.git",
+    "directory": "packages/netdiag"
+  },
+  "type": "module",
+  "version": "1.0.0",
+  "main": "./index.ts",
+  "keywords": [
+    "bun",
+    "ffi",
+    "win32",
+    "windows",
+    "network",
+    "netstat",
+    "ping",
+    "traceroute",
+    "dns",
+    "wifi",
+    "arp",
+    "routing",
+    "diagnostics",
+    "typescript"
+  ],
+  "files": [
+    "AI.md",
+    "README.md",
+    "adapters.ts",
+    "addr.ts",
+    "arp.ts",
+    "constants.ts",
+    "dns.ts",
+    "index.ts",
+    "ping.ts",
+    "routes.ts",
+    "sockets.ts",
+    "stats.ts",
+    "traceroute.ts",
+    "wifi.ts",
+    "win32.ts"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "scripts": {
+    "example:net-report": "bun ./example/net-report.ts",
+    "example:netwatch": "bun ./example/netwatch.ts",
+    "example:ping": "bun ./example/ping.ts",
+    "example:selftest": "bun ./example/netdiag.selftest.ts",
+    "example:wifi-scan": "bun ./example/wifi-scan.ts"
+  }
+}
