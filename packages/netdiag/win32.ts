@@ -1,10 +1,11 @@
-import type { Pointer } from 'bun:ffi';
+import Iphlpapi from '@bun-win32/iphlpapi';
+import { read, toArrayBuffer, type Pointer } from 'bun:ffi';
 
 export { default as Dnsapi } from '@bun-win32/dnsapi';
-export { default as Iphlpapi } from '@bun-win32/iphlpapi';
 export { default as Kernel32 } from '@bun-win32/kernel32';
 export { default as Wlanapi } from '@bun-win32/wlanapi';
 export { default as Ws2_32 } from '@bun-win32/ws2_32';
+export { Iphlpapi };
 
 const ERROR_SUCCESS = 0x0000_0000;
 const ERROR_BUFFER_OVERFLOW = 0x0000_006f; // 111 — Table sizing return
@@ -99,5 +100,30 @@ export function* walkList(base: Buffer, headPointer: number, nextOffset: number)
     const offset = pointer - baseAddress;
     yield offset;
     pointer = Number(base.readBigUInt64LE(offset + nextOffset));
+  }
+}
+
+const mibTableOut = Buffer.allocUnsafeSlow(8);
+
+/**
+ * Decode a self-allocating Table2 API (GetIpForwardTable2 / GetIpNetTable2): the
+ * API allocates the table and writes its pointer into the out buffer; we read
+ * NumEntries, wrap the row region in ONE Buffer over native memory, decode each
+ * row, and ALWAYS FreeMibTable in `finally` (or leak native memory every poll).
+ * `invoke(tablePointer)` receives the reused 8-byte out buffer pointer and
+ * returns a Win32 error code.
+ */
+export function mibTable<T>(invoke: (tablePointer: Pointer) => number, firstRowOffset: number, rowSize: number, decodeRow: (table: Buffer, rowOffset: number) => T): T[] {
+  const error = invoke(mibTableOut.ptr);
+  if (error !== ERROR_SUCCESS) throw new Win32Error(error);
+  const tablePointer = Number(mibTableOut.readBigUInt64LE(0)) as Pointer;
+  try {
+    const numEntries = read.u32(tablePointer, 0);
+    const table = Buffer.from(toArrayBuffer(tablePointer, 0, firstRowOffset + numEntries * rowSize));
+    const rows: T[] = new Array(numEntries);
+    for (let index = 0; index < numEntries; index++) rows[index] = decodeRow(table, firstRowOffset + index * rowSize);
+    return rows;
+  } finally {
+    Iphlpapi.FreeMibTable(tablePointer);
   }
 }
