@@ -1,4 +1,5 @@
 export { automation, initialize, uninitialize } from './automation';
+export { AutomationElementMode, CacheRequest, createCacheRequest, DEFAULT_CACHE_PROPERTIES } from './cache';
 export { comRelease, guid, hresult, vcall } from './com';
 export { type ElementProperties, matches, type Selector } from './condition';
 export { ControlType, PatternId, PropertyConditionFlags, PropertyId, SLOT, TreeScope } from './constants';

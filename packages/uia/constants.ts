@@ -191,6 +191,12 @@ export const SLOT = {
   get_CachedAutomationId: 61,
   get_CachedClassName: 62,
   get_CachedBoundingRectangle: 75,
+  // IUIAutomationCacheRequest
+  AddProperty: 3,
+  AddPattern: 4,
+  put_TreeScope: 7,
+  put_TreeFilter: 9,
+  put_AutomationElementMode: 11,
   // IUIAutomationElementArray
   get_Length: 3, // PROVEN
   GetElement: 4, // PROVEN

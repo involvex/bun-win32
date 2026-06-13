@@ -6,6 +6,7 @@ import { FFIType } from 'bun:ffi';
 import User32 from '@bun-win32/user32';
 
 import { automation } from './automation';
+import type { CacheRequest } from './cache';
 import { comRelease, hresult, vcall } from './com';
 import { compileCondition, type ElementProperties, matches, type Selector } from './condition';
 import { ControlType, S_OK, SLOT, TreeScope } from './constants';
@@ -35,13 +36,23 @@ import { getBstr, getHandle, getLong, getRect, type Rect } from './reads';
 const scratch8 = Buffer.alloc(8);
 const scratch4 = Buffer.alloc(4);
 
-/** Read the four properties the client-side matcher needs, in one pass. */
+/** Read the four properties the client-side matcher needs, in one pass (live). */
 function readProperties(ptr: bigint): ElementProperties {
   return {
     automationId: getBstr(ptr, SLOT.get_CurrentAutomationId),
     className: getBstr(ptr, SLOT.get_CurrentClassName),
     controlType: getLong(ptr, SLOT.get_CurrentControlType),
     name: getBstr(ptr, SLOT.get_CurrentName),
+  };
+}
+
+/** Read the matcher's four properties from the prefetched cache (zero further round-trips). */
+function readCachedProperties(ptr: bigint): ElementProperties {
+  return {
+    automationId: getBstr(ptr, SLOT.get_CachedAutomationId),
+    className: getBstr(ptr, SLOT.get_CachedClassName),
+    controlType: getLong(ptr, SLOT.get_CachedControlType),
+    name: getBstr(ptr, SLOT.get_CachedName),
   };
 }
 
@@ -173,6 +184,59 @@ export class Element {
     } finally {
       comRelease(condition);
     }
+  }
+
+  /**
+   * Every descendant matching the selector, prefetched through one cached round-trip. The returned
+   * Elements expose their cached* properties with zero further round-trips. The caller owns them.
+   */
+  findAllCached(selector: Selector, request: CacheRequest, scope: number = TreeScope.TreeScope_Descendants): Element[] {
+    const pAutomation = automation();
+    const { condition, needsClientFilter } = compileCondition(pAutomation, selector);
+    try {
+      if (vcall(this.ptr, SLOT.FindAllBuildCache, [FFIType.i32, FFIType.u64, FFIType.u64, FFIType.ptr], [scope, condition, request.ptr, scratch8.ptr!]) !== S_OK) return [];
+      const pArray = scratch8.readBigUInt64LE(0);
+      if (pArray === 0n) return [];
+      try {
+        if (vcall(pArray, SLOT.get_Length, [FFIType.ptr], [scratch4.ptr!]) !== S_OK) return [];
+        const length = scratch4.readInt32LE(0);
+        const result: Element[] = [];
+        for (let index = 0; index < length; index += 1) {
+          if (vcall(pArray, SLOT.GetElement, [FFIType.i32, FFIType.ptr], [index, scratch8.ptr!]) !== S_OK) continue;
+          const pointer = scratch8.readBigUInt64LE(0);
+          if (pointer === 0n) continue;
+          if (!needsClientFilter || matches(readCachedProperties(pointer), selector)) result.push(new Element(pointer));
+          else comRelease(pointer);
+        }
+        return result;
+      } finally {
+        comRelease(pArray);
+      }
+    } finally {
+      comRelease(condition);
+    }
+  }
+
+  // --- cached property reads (valid only on elements returned by findAllCached) ---
+
+  get cachedAutomationId(): string {
+    return getBstr(this.ptr, SLOT.get_CachedAutomationId);
+  }
+
+  get cachedBoundingRectangle(): Rect {
+    return getRect(this.ptr, SLOT.get_CachedBoundingRectangle);
+  }
+
+  get cachedClassName(): string {
+    return getBstr(this.ptr, SLOT.get_CachedClassName);
+  }
+
+  get cachedControlType(): number {
+    return getLong(this.ptr, SLOT.get_CachedControlType);
+  }
+
+  get cachedName(): string {
+    return getBstr(this.ptr, SLOT.get_CachedName);
   }
 
   /** Release the underlying COM pointer. */
