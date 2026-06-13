@@ -1,0 +1,56 @@
+{
+  "author": "Stev Peifer <stev.p@outlook.com>",
+  "bugs": {
+    "url": "https://github.com/ObscuritySRL/bun-win32/issues"
+  },
+  "dependencies": {
+    "@bun-win32/netdiag": "workspace:*"
+  },
+  "description": "Syscall-grade network diagnostics for Bun on Windows — routing table, socket→PID map, no-admin ICMP ping/traceroute, ARP, DNS, live throughput, and WiFi — decoded from binary structs, zero native dependencies, no netsh/ping.exe/wmic scraping.",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "exports": {
+    ".": "./index.ts"
+  },
+  "license": "MIT",
+  "module": "index.ts",
+  "name": "bun-netdiag",
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "private": false,
+  "homepage": "https://github.com/ObscuritySRL/bun-win32#readme",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/ObscuritySRL/bun-win32.git",
+    "directory": "packages/bun-netdiag"
+  },
+  "type": "module",
+  "version": "1.0.0",
+  "main": "./index.ts",
+  "keywords": [
+    "bun",
+    "ffi",
+    "win32",
+    "windows",
+    "network",
+    "netstat",
+    "ping",
+    "traceroute",
+    "dns",
+    "wifi",
+    "arp",
+    "routing",
+    "diagnostics",
+    "typescript"
+  ],
+  "files": [
+    "README.md",
+    "index.ts"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}
