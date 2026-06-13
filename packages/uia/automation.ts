@@ -1,6 +1,7 @@
 // The UI Automation root: the COM apartment plus the in-process IUIAutomation client, created once.
 
 import Combase from '@bun-win32/combase';
+import User32 from '@bun-win32/user32';
 
 import { comRelease, guid, hresult } from './com';
 import { CLSCTX_INPROC_SERVER, CLSID_CUIAutomation, COINIT_APARTMENTTHREADED, IID_IUIAutomation, S_FALSE, S_OK } from './constants';
@@ -16,6 +17,8 @@ let comInitialized = false;
 export function initialize(): bigint {
   if (pAutomation !== 0n) return pAutomation;
   if (!comInitialized) {
+    // Physical-pixel coordinates so SendInput clicks match UIA bounding rectangles (best-effort).
+    User32.SetProcessDPIAware();
     const initHr = Combase.CoInitializeEx(null, COINIT_APARTMENTTHREADED);
     if (initHr !== S_OK && initHr !== S_FALSE) throw new Error(`CoInitializeEx failed: ${hresult(initHr)}`);
     comInitialized = true;

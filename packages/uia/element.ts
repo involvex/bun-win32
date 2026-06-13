@@ -3,10 +3,13 @@
 
 import { FFIType } from 'bun:ffi';
 
+import User32 from '@bun-win32/user32';
+
 import { automation } from './automation';
 import { comRelease, hresult, vcall } from './com';
 import { compileCondition, type ElementProperties, matches, type Selector } from './condition';
 import { ControlType, S_OK, SLOT, TreeScope } from './constants';
+import { clickAt, type as inputType } from './input';
 import {
   collapse,
   expand,
@@ -257,6 +260,30 @@ export class Element {
   /** Set a window's visual state (WindowVisualState) via WindowPattern. Throws if unsupported. */
   setVisualState(state: WindowVisualState): void {
     setWindowVisualState(this.ptr, state);
+  }
+
+  // --- synthetic input fallbacks (SendInput) for controls without a usable pattern ---
+
+  /** Give the element keyboard focus (UIA SetFocus). Returns this for chaining. */
+  focus(): this {
+    vcall(this.ptr, SLOT.SetFocus, [], []);
+    return this;
+  }
+
+  /** Focus the element, then type Unicode text into it via SendInput. Returns this for chaining. */
+  type(text: string): this {
+    this.focus();
+    inputType(text);
+    return this;
+  }
+
+  /** Click the element's bounding-rectangle center via SendInput (the no-InvokePattern fallback). */
+  click(): this {
+    const hWnd = this.nativeWindowHandle;
+    if (hWnd !== 0n) User32.SetForegroundWindow(hWnd);
+    const rect = this.boundingRectangle;
+    clickAt(rect.x + Math.floor(rect.width / 2), rect.y + Math.floor(rect.height / 2));
+    return this;
   }
 }
 
