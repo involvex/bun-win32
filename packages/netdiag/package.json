@@ -61,6 +61,7 @@
     "arp.ts",
     "constants.ts",
     "dns.ts",
+    "extras.ts",
     "index.ts",
     "ping.ts",
     "routes.ts",
