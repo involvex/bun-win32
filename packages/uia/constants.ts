@@ -168,6 +168,7 @@ export const SLOT = {
   CreateAndCondition: 25, // PROVEN
   CreateOrCondition: 28,
   CreateNotCondition: 31,
+  get_ControlViewWalker: 14,
   // IUIAutomationElement
   SetFocus: 3,
   GetRuntimeId: 4,
@@ -193,6 +194,8 @@ export const SLOT = {
   // IUIAutomationElementArray
   get_Length: 3, // PROVEN
   GetElement: 4, // PROVEN
+  // IUIAutomationTreeWalker
+  GetParentElement: 3,
   // IUIAutomationInvokePattern
   Invoke: 3, // PROVEN (Calculator 5+3=8)
 } as const;
