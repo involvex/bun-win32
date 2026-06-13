@@ -86,12 +86,12 @@ const optionsBuffer = Buffer.allocUnsafeSlow(8); // IP_OPTION_INFORMATION32 (x64
  * traceroute/PMTU; ttl <= 0 sends with the OS default TTL and no options. The
  * options struct is assembled immediately before the call with no await between.
  */
-export function sendEcho(destination: number, ttl: number, timeoutMs: number, payloadSize: number): EchoResult {
+export function sendEcho(destination: number, ttl: number, timeoutMs: number, payloadSize: number, flags = 0): EchoResult {
   let optionsPointer: Pointer | null = null;
-  if (ttl > 0) {
-    optionsBuffer.writeUInt8(ttl, 0);
+  if (ttl > 0 || flags !== 0) {
+    optionsBuffer.writeUInt8(ttl > 0 ? ttl : 128, 0);
     optionsBuffer.writeUInt8(0, 1); // Tos
-    optionsBuffer.writeUInt8(0, 2); // Flags
+    optionsBuffer.writeUInt8(flags, 2); // Flags (IP_FLAG_DF = 0x02 for path-MTU)
     optionsBuffer.writeUInt8(0, 3); // OptionsSize
     optionsBuffer.writeUInt32LE(0, 4); // OptionsData = NULL
     optionsPointer = optionsBuffer.ptr;
