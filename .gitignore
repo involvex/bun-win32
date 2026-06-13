@@ -64,6 +64,7 @@ packages/all/screenshots/*
 !packages/all/screenshots/taskman.png
 !packages/all/screenshots/sysmon-report.png
 !packages/all/screenshots/voxelscape.png
+!packages/all/screenshots/uia-calculator.png
 packages/all/replay-*.gif
 packages/all/bun-win32-wallpaper.png
 
