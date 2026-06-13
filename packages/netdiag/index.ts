@@ -2,6 +2,7 @@ export * from './adapters';
 export * from './addr';
 export * from './arp';
 export * from './constants';
+export * from './dns';
 export * from './ping';
 export * from './routes';
 export * from './sockets';
