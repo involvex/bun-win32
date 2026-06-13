@@ -1,0 +1,54 @@
+{
+  "author": "Stev Peifer <stev.p@outlook.com>",
+  "bugs": {
+    "url": "https://github.com/ObscuritySRL/bun-win32/issues"
+  },
+  "dependencies": {
+    "@bun-win32/uia": "workspace:*"
+  },
+  "description": "Playwright for Windows desktop apps — drive and test native Windows GUIs from Bun by querying the UI Automation tree, invoking controls by name, typing, and asserting. Zero native dependencies, no node-gyp, no server.",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "exports": {
+    ".": "./index.ts"
+  },
+  "license": "MIT",
+  "module": "index.ts",
+  "name": "bun-uia",
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "private": false,
+  "homepage": "https://github.com/ObscuritySRL/bun-win32#readme",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/ObscuritySRL/bun-win32.git",
+    "directory": "packages/bun-uia"
+  },
+  "type": "module",
+  "version": "1.0.0",
+  "main": "./index.ts",
+  "keywords": [
+    "accessibility",
+    "automation",
+    "bun",
+    "desktop",
+    "e2e",
+    "ffi",
+    "playwright",
+    "testing",
+    "typescript",
+    "uiautomation",
+    "win32",
+    "windows"
+  ],
+  "files": [
+    "README.md",
+    "index.ts"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}
