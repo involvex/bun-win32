@@ -7,6 +7,7 @@
     "@bun-win32/combase": "workspace:*",
     "@bun-win32/core": "workspace:*",
     "@bun-win32/gdi32": "workspace:*",
+    "@bun-win32/kernel32": "workspace:*",
     "@bun-win32/oleacc": "workspace:*",
     "@bun-win32/oleaut32": "workspace:*",
     "@bun-win32/user32": "workspace:*"
@@ -61,6 +62,7 @@
     "agent.ts",
     "automation.ts",
     "cache.ts",
+    "clipboard.ts",
     "com.ts",
     "computer.ts",
     "condition.ts",

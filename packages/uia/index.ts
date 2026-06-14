@@ -1,5 +1,6 @@
 import { execute } from './agent';
 import { initialize, uninitialize } from './automation';
+import { copy, paste, readClipboard, writeClipboard } from './clipboard';
 import { elementAt, postClickAt } from './coords';
 import { diffTrees } from './diff';
 import { attach, focused, fromPoint, launch, root } from './element';
@@ -18,6 +19,7 @@ export const uia = {
   attach,
   captureScreen,
   click: clickAt,
+  copy,
   diff: diffTrees,
   elementAt,
   execute,
@@ -27,8 +29,10 @@ export const uia = {
   launch,
   locateOnScreen,
   msaaTree,
+  paste,
   pixelColor,
   postClick: postClickAt,
+  readClipboard,
   root,
   screenshotScreen,
   sendKeys,
@@ -39,11 +43,13 @@ export const uia = {
   waitForIdle,
   windowTree,
   windows: listWindows,
+  writeClipboard,
 };
 
 export { type AgentAction, type AgentActionResult, AGENT_TOOLS, execute, groundingTree } from './agent';
 export { automation, initialize, uninitialize } from './automation';
 export { AutomationElementMode, CacheRequest, createCacheRequest, DEFAULT_CACHE_PROPERTIES } from './cache';
+export { copy, paste, readClipboard, writeClipboard } from './clipboard';
 export { comRelease, guid, hresult, vcall } from './com';
 export { type ComputerAction, type ComputerResult, dispatch, type DispatchOptions, fromCuaAction, normalizeKey } from './computer';
 export { type ElementProperties, formatNoMatch, matches, selectorToString, type Selector } from './condition';
