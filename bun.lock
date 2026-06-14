@@ -277,7 +277,10 @@
     },
     "packages/bun-uia": {
       "name": "bun-uia",
-      "version": "1.0.0",
+      "version": "1.1.0",
+      "bin": {
+        "bun-uia-mcp": "./mcp.ts",
+      },
       "dependencies": {
         "@bun-win32/uia": "workspace:*",
       },
@@ -1449,7 +1452,10 @@
     },
     "packages/uia": {
       "name": "@bun-win32/uia",
-      "version": "1.0.0",
+      "version": "1.1.0",
+      "bin": {
+        "bun-uia-mcp": "./mcp.ts",
+      },
       "dependencies": {
         "@bun-win32/combase": "workspace:*",
         "@bun-win32/core": "workspace:*",
