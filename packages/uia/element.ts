@@ -21,14 +21,19 @@ import {
   isSelected,
   rangeValue,
   readText,
+  scroll,
+  scrollInfo,
   scrollIntoView,
   select,
   setRangeValue,
+  setScrollPercent,
   setValue,
   setWindowVisualState,
   toggle,
   toggleState,
   windowClose,
+  type ScrollAmount,
+  type ScrollInfo,
   type WindowVisualState,
 } from './patterns';
 import { getBstr, getHandle, getLong, getRect, type Rect } from './reads';
@@ -124,6 +129,15 @@ export class Element {
 
   get nativeWindowHandle(): bigint {
     return getHandle(this.ptr, SLOT.get_CurrentNativeWindowHandle);
+  }
+
+  /** A guaranteed-hittable point inside the element (UIA GetClickablePoint), or null if it has none. */
+  get clickablePoint(): { x: number; y: number } | null {
+    const point = Buffer.alloc(8); // POINT { LONG x, LONG y }
+    const gotClickable = Buffer.alloc(4); // BOOL
+    if (vcall(this.ptr, SLOT.GetClickablePoint, [FFIType.ptr, FFIType.ptr], [point.ptr!, gotClickable.ptr!]) !== S_OK) return null;
+    if (gotClickable.readInt32LE(0) === 0) return null;
+    return { x: point.readInt32LE(0), y: point.readInt32LE(4) };
   }
 
   /** Immediate children (control view) as Elements. The caller owns and should release them. */
@@ -368,6 +382,21 @@ export class Element {
     scrollIntoView(this.ptr);
   }
 
+  /** Scroll a ScrollPattern container by ScrollAmount steps per axis (page/line, cursor-free, works locked). Throws if unsupported. */
+  scroll(horizontalAmount: ScrollAmount, verticalAmount: ScrollAmount): void {
+    scroll(this.ptr, horizontalAmount, verticalAmount);
+  }
+
+  /** Set a ScrollPattern container's position by percent (0-100); NoScroll (-1) leaves an axis. Throws if unsupported. */
+  setScrollPercent(horizontalPercent: number, verticalPercent: number): void {
+    setScrollPercent(this.ptr, horizontalPercent, verticalPercent);
+  }
+
+  /** ScrollPattern scroll state (percent/view-size/scrollable per axis), or null if unsupported. */
+  get scrollInfo(): ScrollInfo | null {
+    return scrollInfo(this.ptr);
+  }
+
   /** RangeValuePattern value (slider), or NaN if unsupported. */
   get rangeValue(): number {
     return rangeValue(this.ptr);
@@ -403,12 +432,16 @@ export class Element {
     return this;
   }
 
-  /** Click the element's bounding-rectangle center via SendInput (the no-InvokePattern fallback). */
+  /** Click the element via SendInput at its GetClickablePoint (bounding-rectangle center fallback). The no-InvokePattern fallback. */
   click(): this {
     const hWnd = this.nativeWindowHandle;
     if (hWnd !== 0n) User32.SetForegroundWindow(hWnd);
-    const rect = this.boundingRectangle;
-    clickAt(rect.x + Math.floor(rect.width / 2), rect.y + Math.floor(rect.height / 2));
+    const clickable = this.clickablePoint;
+    if (clickable !== null) clickAt(clickable.x, clickable.y);
+    else {
+      const rect = this.boundingRectangle;
+      clickAt(rect.x + Math.floor(rect.width / 2), rect.y + Math.floor(rect.height / 2));
+    }
     return this;
   }
 }

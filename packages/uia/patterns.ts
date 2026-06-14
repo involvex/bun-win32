@@ -30,6 +30,28 @@ export enum WindowVisualState {
   Minimized = 2,
 }
 
+/** ScrollPattern.Scroll step per axis (UIA ScrollAmount). */
+export enum ScrollAmount {
+  LargeDecrement = 0,
+  SmallDecrement = 1,
+  NoAmount = 2,
+  LargeIncrement = 3,
+  SmallIncrement = 4,
+}
+
+/** SetScrollPercent sentinel: leave this axis unchanged (UIA_ScrollPatternNoScroll). */
+export const NoScroll = -1;
+
+/** A ScrollPattern container's scroll state. Percent/view-size are 0-100 (or -1 when the axis can't scroll). */
+export interface ScrollInfo {
+  horizontalPercent: number;
+  verticalPercent: number;
+  horizontalViewSize: number;
+  verticalViewSize: number;
+  horizontallyScrollable: boolean;
+  verticallyScrollable: boolean;
+}
+
 /** Acquire a control pattern interface. Returns 0n when the element does not support it. */
 function getPattern(ptr: bigint, patternId: number): bigint {
   const out = Buffer.alloc(8);
@@ -161,6 +183,48 @@ export function scrollIntoView(ptr: bigint): void {
   if (pattern === 0n) throw new Error('element does not support ScrollItemPattern');
   try {
     invokeNoArg(pattern, SLOT.ScrollIntoView, 'ScrollIntoView');
+  } finally {
+    comRelease(pattern);
+  }
+}
+
+/** Scroll a ScrollPattern container by ScrollAmount steps per axis (page/line, increment/decrement). Throws if unsupported. */
+export function scroll(ptr: bigint, horizontalAmount: ScrollAmount, verticalAmount: ScrollAmount): void {
+  const pattern = getPattern(ptr, PatternId.Scroll);
+  if (pattern === 0n) throw new Error('element does not support ScrollPattern — try .scrollIntoView() on a child, or scrollWheel()');
+  try {
+    const hr = vcall(pattern, SLOT.Scroll, [FFIType.i32, FFIType.i32], [horizontalAmount, verticalAmount]);
+    if (hr !== S_OK) throw new Error(`ScrollPattern.Scroll failed: ${hresult(hr)}`);
+  } finally {
+    comRelease(pattern);
+  }
+}
+
+/** Set a ScrollPattern container's position by percent (0-100); pass NoScroll (-1) to leave an axis. Throws if unsupported. */
+export function setScrollPercent(ptr: bigint, horizontalPercent: number, verticalPercent: number): void {
+  const pattern = getPattern(ptr, PatternId.Scroll);
+  if (pattern === 0n) throw new Error('element does not support ScrollPattern');
+  try {
+    const hr = vcall(pattern, SLOT.SetScrollPercent, [FFIType.f64, FFIType.f64], [horizontalPercent, verticalPercent]);
+    if (hr !== S_OK) throw new Error(`ScrollPattern.SetScrollPercent failed: ${hresult(hr)}`);
+  } finally {
+    comRelease(pattern);
+  }
+}
+
+/** Read a ScrollPattern container's scroll state (percent/view-size/scrollable per axis), or null if unsupported. */
+export function scrollInfo(ptr: bigint): ScrollInfo | null {
+  const pattern = getPattern(ptr, PatternId.Scroll);
+  if (pattern === 0n) return null;
+  try {
+    return {
+      horizontalPercent: getDouble(pattern, SLOT.get_CurrentHorizontalScrollPercent),
+      verticalPercent: getDouble(pattern, SLOT.get_CurrentVerticalScrollPercent),
+      horizontalViewSize: getDouble(pattern, SLOT.get_CurrentHorizontalViewSize),
+      verticalViewSize: getDouble(pattern, SLOT.get_CurrentVerticalViewSize),
+      horizontallyScrollable: getLong(pattern, SLOT.get_CurrentHorizontallyScrollable) !== 0,
+      verticallyScrollable: getLong(pattern, SLOT.get_CurrentVerticallyScrollable) !== 0,
+    };
   } finally {
     comRelease(pattern);
   }

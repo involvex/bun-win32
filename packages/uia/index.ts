@@ -1,7 +1,7 @@
 import { execute } from './agent';
 import { initialize, uninitialize } from './automation';
 import { copy, paste, readClipboard, writeClipboard } from './clipboard';
-import { elementAt, postClickAt } from './coords';
+import { elementAt, postClickAt, scrollAt } from './coords';
 import { diffTrees } from './diff';
 import { attach, focused, fromPoint, launch, root } from './element';
 import { waitForIdle } from './idle';
@@ -35,6 +35,7 @@ export const uia = {
   readClipboard,
   root,
   screenshotScreen,
+  scrollAt,
   sendKeys,
   snapshot,
   tree: serialize,
@@ -54,7 +55,7 @@ export { comRelease, guid, hresult, vcall } from './com';
 export { type ComputerAction, type ComputerResult, dispatch, type DispatchOptions, fromCuaAction, normalizeKey } from './computer';
 export { type ElementProperties, formatNoMatch, matches, selectorToString, type Selector } from './condition';
 export { ControlType, PatternId, PropertyConditionFlags, PropertyId, SLOT, TreeScope } from './constants';
-export { elementAt, type PointDescription, postClickAt, virtualScreen, windowAt } from './coords';
+export { elementAt, type PointDescription, postClickAt, scrollAt, virtualScreen, windowAt } from './coords';
 export { diffTrees, type RenameChange, type TreeChange, type TreeDiff } from './diff';
 export { attach, Element, focused, fromHandle, fromPoint, launch, root, Window } from './element';
 export { type IdleOptions, waitForIdle } from './idle';
@@ -82,7 +83,7 @@ export {
 export { drawMarks, type MarkedScreenshot, type PlacedMark, screenshotWithMarks } from './marks';
 export { findImage, locateOnScreen, type Match } from './match';
 export { accessibleFromWindow, type MsaaNode, msaaTree } from './msaa';
-export { ExpandCollapseState, ToggleState, WindowVisualState } from './patterns';
+export { ExpandCollapseState, NoScroll, ScrollAmount, type ScrollInfo, ToggleState, WindowVisualState } from './patterns';
 export { encodePNG } from './png';
 export { decodeBstr, getBstr, getHandle, getLong, getRect, type Rect } from './reads';
 export { type Mark, type RefNode, renderSnapshot, snapshot, Snapshot } from './refmap';

@@ -188,6 +188,7 @@ export const SLOT = {
   get_CurrentClassName: 30, // PROVEN
   get_CurrentNativeWindowHandle: 36, // PROVEN
   get_CurrentBoundingRectangle: 43, // PROVEN (RECT = 4x LONG, 16 bytes; matches GetWindowRect)
+  GetClickablePoint: 84, // PROVEN (returned point lands inside the control's bounds)
   get_CachedControlType: 53,
   get_CachedName: 55,
   get_CachedIsEnabled: 60,
@@ -222,6 +223,15 @@ export const SLOT = {
   get_CurrentIsSelected: 6,
   // IUIAutomationScrollItemPattern
   ScrollIntoView: 3,
+  // IUIAutomationScrollPattern (PROVEN live: File Explorer items view scrolled 0%->100% via slots 3,4; getters 5-10 read clean)
+  Scroll: 3,
+  SetScrollPercent: 4,
+  get_CurrentHorizontalScrollPercent: 5,
+  get_CurrentVerticalScrollPercent: 6,
+  get_CurrentHorizontalViewSize: 7,
+  get_CurrentVerticalViewSize: 8,
+  get_CurrentHorizontallyScrollable: 9,
+  get_CurrentVerticallyScrollable: 10,
   // IUIAutomationWindowPattern
   Close: 3,
   WaitForInputIdle: 4,

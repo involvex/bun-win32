@@ -6,7 +6,7 @@
 // one — erasing the coordinate-hallucination, downscaling click-miss, and scroll-no-op failure modes
 // that the computer-use literature attributes to screenshot-only grounding.
 
-import { postClickAt } from './coords';
+import { postClickAt, scrollAt } from './coords';
 import { fromPoint, type Window } from './element';
 import { clickAt, cursorPosition, doubleClickAt, dragTo, holdKey, middleClickAt, mouseDown, mouseUp, moveTo, rightClickAt, scrollWheel, sendKeys, type as typeText } from './input';
 
@@ -143,10 +143,12 @@ export async function dispatch(window: Window, action: ComputerAction, options: 
         const centerX = action.coordinate !== undefined ? x : Math.round(window.boundingRectangle.x + window.boundingRectangle.width / 2);
         const centerY = action.coordinate !== undefined ? y : Math.round(window.boundingRectangle.y + window.boundingRectangle.height / 2);
         const amount = action.scrollAmount ?? 3;
-        const horizontal = action.scrollDirection === 'left' || action.scrollDirection === 'right';
-        const clicks = action.scrollDirection === 'down' || action.scrollDirection === 'right' ? -amount : amount;
+        const direction = action.scrollDirection ?? 'down';
+        if (cursorless && scrollAt(centerX, centerY, direction, amount)) return { ok: true, output: `scrolled ${direction} ${amount} (cursor-free)` };
+        const horizontal = direction === 'left' || direction === 'right';
+        const clicks = direction === 'down' || direction === 'right' ? -amount : amount;
         scrollWheel(centerX, centerY, clicks, horizontal);
-        return { ok: true, output: `scrolled ${action.scrollDirection ?? 'down'} ${amount}` };
+        return { ok: true, output: `scrolled ${direction} ${amount}` };
       }
       case 'wait':
         await Bun.sleep(Math.round((action.duration ?? 1) * 1000));

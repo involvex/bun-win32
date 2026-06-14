@@ -13,12 +13,13 @@
  * - initialize / uninitialize (COM apartment + IUIAutomation activation)
  * - uia.attach / find / findAll / waitFor (Playwright-for-desktop query + auto-retry)
  * - Element.invoke / setValue / value / text / toggle / expand / select / rangeValue (control patterns)
+ * - Element.scroll / setScrollPercent / scrollInfo (ScrollPattern container scroll — cursor-free, works locked)
  * - createCacheRequest / findAllCached (the cached round-trip), uia.tree (agent grounding)
  * - screenshot (PrintWindow → PNG), msaaTree (oleacc fallback)
  *
  * Run: bun run example/uia.selftest.ts
  */
-import { ControlType, countNodes, createCacheRequest, msaaTree, screenshot, uia } from '@bun-win32/uia';
+import { ControlType, countNodes, createCacheRequest, msaaTree, NoScroll, screenshot, ScrollAmount, uia } from '@bun-win32/uia';
 import User32 from '@bun-win32/user32';
 
 let failures = 0;
@@ -201,6 +202,55 @@ if (!skipWindows) {
     invokeThrew = true;
   }
   check('invoke on a non-invokable element throws', textNode === null || invokeThrew);
+
+  section('13. ScrollPattern — container scroll (cursor-free, works locked)');
+  Bun.spawn(['explorer.exe', 'C:\\Windows\\System32'], { stdout: 'ignore', stderr: 'ignore' });
+  let explorer: ReturnType<typeof uia.attach> | null = null;
+  let scrollList: ReturnType<typeof calc.find> = null;
+  for (let i = 0; i < 25 && scrollList === null; i += 1) {
+    Bun.sleepSync(300);
+    const info = uia.windows().find((window) => window.className === 'CabinetWClass' && /System32/i.test(window.title));
+    if (info === undefined) continue;
+    try {
+      explorer = uia.attach(info.hWnd);
+    } catch {
+      continue;
+    }
+    scrollList = explorer.find({ controlType: ControlType.List, name: 'Items View' }) ?? explorer.find({ controlType: ControlType.List });
+    if (scrollList === null) {
+      explorer.dispose();
+      explorer = null;
+    }
+  }
+  if (scrollList === null || explorer === null) {
+    skip('ScrollPattern container scroll', 'no scrollable File Explorer list found');
+  } else {
+    const initial = scrollList.scrollInfo;
+    check('scrollInfo reports a vertically-scrollable container', initial !== null && initial.verticallyScrollable, initial ? `vView=${initial.verticalViewSize.toFixed(1)}%` : 'null');
+    scrollList.setScrollPercent(NoScroll, 100);
+    Bun.sleepSync(250);
+    const bottom = scrollList.scrollInfo?.verticalPercent ?? -1;
+    check('setScrollPercent(-1,100) scrolls to the bottom', bottom > 90, `vPct=${bottom.toFixed(1)}`);
+    scrollList.scroll(ScrollAmount.NoAmount, ScrollAmount.LargeDecrement);
+    Bun.sleepSync(250);
+    const movedUp = scrollList.scrollInfo?.verticalPercent ?? -1;
+    check('scroll(NoAmount,LargeDecrement) moves up from the bottom', movedUp < bottom, `vPct=${movedUp.toFixed(1)}`);
+    scrollList.setScrollPercent(NoScroll, 0);
+    Bun.sleepSync(150);
+    const top = scrollList.scrollInfo?.verticalPercent ?? -1;
+    check('setScrollPercent(-1,0) returns to the top', top < 5, `vPct=${top.toFixed(1)}`);
+    let scrollThrew = false;
+    const nonScrollable = calc.find({ controlType: ControlType.Text });
+    try {
+      nonScrollable?.scroll(ScrollAmount.NoAmount, ScrollAmount.SmallIncrement);
+    } catch {
+      scrollThrew = true;
+    }
+    check('scroll on a non-ScrollPattern element throws', nonScrollable === null || scrollThrew);
+    nonScrollable?.release();
+    scrollList.release();
+    explorer.dispose();
+  }
   textNode?.release();
 
   five?.release();
@@ -211,7 +261,7 @@ if (!skipWindows) {
   skip('window-dependent sections', 'NO_WINDOW=1');
 }
 
-section('13. cleanup');
+section('14. cleanup');
 uia.uninitialize();
 check('uninitialize is clean', true);
 

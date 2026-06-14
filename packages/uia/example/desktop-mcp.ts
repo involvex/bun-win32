@@ -1,7 +1,7 @@
 /**
  * Desktop MCP — drive Windows through the bun-uia MCP server over real stdio JSON-RPC.
  *
- * Spawns mcp.ts exactly as Claude / Claude Code would (`claude mcp add uia -- bunx bun-uia-mcp`), runs
+ * Spawns mcp.ts exactly as Claude / Claude Code would (`claude mcp add uia -- bunx bun-uia`), runs
  * the initialize handshake, lists the tools, attaches to Calculator, captures a ref-keyed
  * desktop_snapshot, and invokes a button BY REF — the precise loop an MCP client runs. Asserts the
  * round-trip; this example IS the integration test (exits non-zero on failure).

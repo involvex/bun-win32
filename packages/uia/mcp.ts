@@ -7,7 +7,7 @@
 
 import User32 from '@bun-win32/user32';
 
-import { clickAt, doubleClickAt, type Element, middleClickAt, renderSnapshot, rightClickAt, type Selector, type Snapshot, uia, type Window } from './index';
+import { clickAt, doubleClickAt, type Element, middleClickAt, renderSnapshot, rightClickAt, ScrollAmount, scrollAt, type Selector, type Snapshot, uia, type Window } from './index';
 
 type JsonRpcId = string | number | null;
 interface JsonRpcRequest {
@@ -17,10 +17,16 @@ interface JsonRpcRequest {
   params?: unknown;
 }
 type ToolHandler = (args: Record<string, unknown>) => object | Promise<object>;
+interface McpTool {
+  name: string;
+  description: string;
+  inputSchema: object;
+  annotations?: Record<string, boolean>;
+}
 
-const PROTOCOL_VERSION = '2025-06-18';
+const PROTOCOL_VERSION = '2025-11-25';
 const SUPPORTED_VERSIONS = new Set(['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']);
-const SERVER_INFO = { name: 'bun-uia', version: '1.0.0' };
+const SERVER_INFO = { name: 'bun-uia', version: '1.2.0' };
 const INSTRUCTIONS =
   'Drive Windows desktop apps via the UI Automation tree. Call list_windows, then attach to a window. Call desktop_snapshot for a ref-keyed tree (e.g. Button "Five" [ref=e49]); pass that ref (and a human-readable element description) to click/invoke/type/toggle/set_value. Refs are valid ONLY for the most recent snapshot — every action returns a fresh snapshot; re-ground from it. Prefer invoke/set_value (they need no cursor and work on a locked session) over click.';
 
@@ -119,7 +125,7 @@ const SELECTOR_SCHEMA = {
   },
 };
 
-const TOOLS = [
+const TOOLS: McpTool[] = [
   { name: 'list_windows', description: 'List visible top-level desktop windows (title, className, processId, hWnd). Start here.', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } },
   {
     name: 'attach',
@@ -191,10 +197,44 @@ const TOOLS = [
   { name: 'press_key', description: 'Send a key or chord to the focused control, e.g. "Enter", "Control+S", "Control+Shift+Tab", "F4".', inputSchema: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'] } },
   {
     name: 'scroll',
-    description: 'Scroll a control into view via the UIA ScrollItem pattern (targets a ref).',
-    inputSchema: { type: 'object', properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC } }, required: ['element', 'ref'] },
+    description: 'Scroll a control. With a direction, scrolls the nearest ScrollPattern container by `amount` steps (cursor-free, works locked); without a direction, scrolls the ref into view via the ScrollItem pattern.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        element: { type: 'string', description: ELEMENT_DESC },
+        ref: { type: 'string', description: REF_DESC },
+        direction: { type: 'string', enum: ['up', 'down', 'left', 'right'], description: 'Container scroll direction; omit to scroll the ref into view' },
+        amount: { type: 'number', description: 'Scroll steps for a directional scroll (default 3)' },
+      },
+      required: ['element', 'ref'],
+    },
   },
+  {
+    name: 'read_clipboard',
+    description: 'Read the Windows clipboard as text. Pairs with copy (Ctrl+C) to pull selected text from any app, even one with no a11y tree.',
+    inputSchema: { type: 'object', properties: {} },
+    annotations: { readOnlyHint: true },
+  },
+  { name: 'set_clipboard', description: 'Set the Windows clipboard text (does not paste).', inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } },
+  {
+    name: 'paste',
+    description:
+      'Paste text into the focused control via the clipboard + Ctrl+V — the reliable large-text path that avoids per-keystroke SendInput corruption. Optionally focus a ref first; omit text to paste the current clipboard. Prefer set_value (cursor-free, works locked) when the control supports the Value pattern.',
+    inputSchema: {
+      type: 'object',
+      properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC }, text: { type: 'string', description: 'Text to paste (omit to paste the current clipboard)' } },
+    },
+  },
+  { name: 'copy', description: 'Copy the current selection (Ctrl+C) and return it — pull selected text from any app, even one with no a11y tree.', inputSchema: { type: 'object', properties: {} } },
 ];
+
+// Centralized annotation policy: every tool acts only on the LOCAL desktop -> openWorldHint:false; read-only
+// tools keep readOnlyHint, the rest mutate UI state -> destructiveHint:true; setters are idempotent.
+const IDEMPOTENT = new Set(['copy', 'set_clipboard', 'set_value']);
+for (const tool of TOOLS) {
+  const readOnly = tool.annotations?.readOnlyHint === true;
+  tool.annotations = { ...tool.annotations, openWorldHint: false, ...(readOnly ? {} : { destructiveHint: true }), ...(IDEMPOTENT.has(tool.name) ? { idempotentHint: true } : {}) };
+}
 
 const HANDLERS: Record<string, ToolHandler> = {
   list_windows: () => {
@@ -229,9 +269,10 @@ const HANDLERS: Record<string, ToolHandler> = {
   },
   click: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
+    const clickable = element.clickablePoint;
     const bounds = element.boundingRectangle;
-    const centerX = bounds.x + Math.floor(bounds.width / 2);
-    const centerY = bounds.y + Math.floor(bounds.height / 2);
+    const centerX = clickable?.x ?? bounds.x + Math.floor(bounds.width / 2);
+    const centerY = clickable?.y ?? bounds.y + Math.floor(bounds.height / 2);
     const handle = element.nativeWindowHandle;
     if (handle !== 0n) User32.SetForegroundWindow(handle);
     if (args.doubleClick === true) doubleClickAt(centerX, centerY);
@@ -283,9 +324,34 @@ const HANDLERS: Record<string, ToolHandler> = {
     return withSnapshot(`pressed ${JSON.stringify(args.key)}`);
   },
   scroll: (args) => {
-    resolveRef(requireString(args, 'ref')).scrollIntoView();
+    const element = resolveRef(requireString(args, 'ref'));
+    const direction = args.direction;
+    if (direction === 'up' || direction === 'down' || direction === 'left' || direction === 'right') {
+      const amount = typeof args.amount === 'number' ? args.amount : 3;
+      const info = element.scrollInfo;
+      if (info !== null) {
+        const horizontal = direction === 'left' || direction === 'right';
+        const step = direction === 'up' || direction === 'left' ? ScrollAmount.SmallDecrement : ScrollAmount.SmallIncrement;
+        for (let count = 0; count < Math.max(1, amount); count += 1) element.scroll(horizontal ? step : ScrollAmount.NoAmount, horizontal ? ScrollAmount.NoAmount : step);
+        return withSnapshot(`scrolled ${quote(args.element)} ${direction} ${amount}`);
+      }
+      const bounds = element.boundingRectangle;
+      if (scrollAt(bounds.x + Math.floor(bounds.width / 2), bounds.y + Math.floor(bounds.height / 2), direction, amount)) return withSnapshot(`scrolled ${quote(args.element)} ${direction} ${amount}`);
+      return withSnapshot(`no scrollable container at ${quote(args.element)}`);
+    }
+    element.scrollIntoView();
     return withSnapshot(`scrolled ${quote(args.element)} into view`);
   },
+  read_clipboard: () => textResult(uia.readClipboard() || '(clipboard empty or not text)'),
+  set_clipboard: (args) => textResult(uia.writeClipboard(requireString(args, 'text')) ? 'clipboard set' : 'failed to set clipboard'),
+  paste: (args) => {
+    if (typeof args.ref === 'string') resolveRef(args.ref).focus();
+    if (typeof args.text === 'string') uia.paste(args.text);
+    else uia.sendKeys('Control+V');
+    const into = typeof args.ref === 'string' ? ` into ${quote(args.element)}` : '';
+    return withSnapshot(typeof args.text === 'string' ? `pasted ${args.text.length} chars${into}` : `pasted clipboard${into}`);
+  },
+  copy: async () => textResult((await uia.copy()) || '(no selection / clipboard empty)'),
 };
 
 async function dispatch(request: JsonRpcRequest): Promise<void> {

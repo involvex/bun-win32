@@ -40,7 +40,7 @@
     "directory": "packages/uia"
   },
   "type": "module",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "main": "./index.ts",
   "keywords": [
     "accessibility",
@@ -93,6 +93,7 @@
   },
   "scripts": {
     "example:agent-grounding": "bun ./example/agent-grounding.ts",
+    "example:agent-loop": "bun ./example/agent-loop.ts",
     "example:automate-calculator": "bun ./example/automate-calculator.ts",
     "example:benchmark": "bun ./example/benchmark.ts",
     "example:computer-use": "bun ./example/computer-use.ts",

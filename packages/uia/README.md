@@ -5,7 +5,7 @@
 **Two ways to use it:**
 
 - **In your project** — E2E-test and automate Windows GUIs the way Playwright tests the web: `find({ name })` → `waitFor` → `invoke`/`setValue`/`type` → assert `value`/`text()`. Semantic targeting survives the DPI, theme, and layout shifts that break pixel scripts.
-- **As an AI agent's hands** — `claude mcp add uia -- bunx bun-uia-mcp` and Claude (or any MCP client) drives the entire desktop through the a11y tree: by name, **cursor-free**, ~15 ms/step, even on a locked session.
+- **As an AI agent's hands** — `claude mcp add uia -- bunx bun-uia` and Claude (or any MCP client) drives the entire desktop through the a11y tree: by name, **cursor-free**, ~15 ms/step, even on a locked session.
 
 > The unscoped alias [`bun-uia`](https://www.npmjs.com/package/bun-uia) re-exports this package — `bun add bun-uia` is the discoverable front door.
 
@@ -69,10 +69,10 @@ Frontier computer-use agents ground actions in **screenshots** and the literatur
 A zero-dependency **MCP server** ships in the box. Register it with one line and Claude (Desktop, Code, or any MCP client) drives Windows through the accessibility tree:
 
 ```
-claude mcp add uia -- bunx bun-uia-mcp
+claude mcp add uia -- bunx bun-uia
 ```
 
-It exposes 14 snapshot-first tools: `desktop_snapshot` returns a ref-keyed tree — `Button "Five" [ref=e49]` — then `click`/`invoke`/`type`/`set_value` target a ref, and every action returns a fresh snapshot so the model re-grounds. A thrown tool error comes back as `isError` so the loop self-corrects instead of stopping.
+(Windows-hardened, for clients that spawn without a shell: `claude mcp add uia -- cmd /c bunx -y bun-uia`.) It exposes **18 snapshot-first tools** (protocol `2025-11-25`): `desktop_snapshot` returns a ref-keyed tree — `Button "Five" [ref=e49]` — then `click`/`invoke`/`type`/`set_value`/`scroll` (into-view or directional container scroll) target a ref, `read_clipboard`/`set_clipboard`/`paste`/`copy` move text reliably (paste beats per-keystroke typing), and every action returns a fresh snapshot so the model re-grounds. A thrown tool error comes back as `isError` so the loop self-corrects instead of stopping.
 
 `uia.dispatch(window, action)` runs the **literal Anthropic `computer` and OpenAI CUA action sets** against Windows — but **semantic-first and cursor-free**: a coordinate `left_click` resolves the element under the point and `invoke()`s it, so the real mouse never moves, it works on a locked session, and every pixel action becomes a ground-truth semantic one (erasing the coordinate-hallucination and click-miss failure modes of screenshot-only agents). `screenshotWithMarks(app, uia.snapshot(app))` overlays numbered **Set-of-Marks** boxes derived from UIA bounds — the grounding the literature (Set-of-Mark, UFO2, Windows Agent Arena: **+57% from UIA-derived marks**) shows lifts task success, with no vision model. Honest limit: UIA can't see owner-draw/canvas/games, so the pixel layer (`locateOnScreen`) is the fallback there.
 

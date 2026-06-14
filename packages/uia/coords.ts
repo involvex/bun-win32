@@ -8,6 +8,7 @@
 import User32 from '@bun-win32/user32';
 
 import { Element, fromPoint } from './element';
+import { ScrollAmount } from './patterns';
 import type { Rect } from './reads';
 
 const MK_LBUTTON = 0x0001;
@@ -64,6 +65,40 @@ export function elementAt(x: number, y: number): PointDescription | null {
   } finally {
     element.release();
   }
+}
+
+/**
+ * Scroll the nearest ScrollPattern container at a screen point WITHOUT moving the cursor (UIA Scroll) —
+ * works on a locked session, unlike the SendInput wheel. Walks up from the element under the point to
+ * the first ancestor scrollable on the requested axis, then sends `amount` SmallIncrement/Decrement
+ * steps. Returns false if nothing scrollable is found there (caller should fall back to scrollWheel).
+ */
+export function scrollAt(x: number, y: number, direction: 'up' | 'down' | 'left' | 'right', amount = 3): boolean {
+  let element: Element | null;
+  try {
+    element = fromPoint(x, y);
+  } catch {
+    return false;
+  }
+  const horizontal = direction === 'left' || direction === 'right';
+  const step = direction === 'up' || direction === 'left' ? ScrollAmount.SmallDecrement : ScrollAmount.SmallIncrement;
+  for (let depth = 0; element !== null && depth < 16; depth += 1) {
+    const info = element.scrollInfo;
+    if (info !== null && (horizontal ? info.horizontallyScrollable : info.verticallyScrollable)) {
+      try {
+        for (let count = 0; count < Math.max(1, amount); count += 1) element.scroll(horizontal ? step : ScrollAmount.NoAmount, horizontal ? ScrollAmount.NoAmount : step);
+      } catch {
+        // boundary reached mid-scroll — the container still moved
+      }
+      element.release();
+      return true;
+    }
+    const ancestor: Element | null = element.parent;
+    element.release();
+    element = ancestor;
+  }
+  if (element !== null) element.release();
+  return false;
 }
 
 /**
