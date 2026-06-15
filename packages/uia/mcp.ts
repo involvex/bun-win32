@@ -76,7 +76,7 @@ interface McpTool {
 
 const PROTOCOL_VERSION = '2025-11-25';
 const SUPPORTED_VERSIONS = new Set(['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']);
-const SERVER_INFO = { name: 'bun-uia', version: '1.3.0' };
+const SERVER_INFO = { name: 'bun-uia', version: '1.5.0' };
 const INSTRUCTIONS =
   'Drive Windows desktop apps via the UI Automation tree — and beyond it. Call list_windows, then attach. Call desktop_snapshot for a ref-keyed tree (e.g. Button "Five" [ref=e49]); pass that ref to click/invoke/type/toggle/set_value/inspect_element. Refs are valid ONLY for the most recent snapshot — every action returns a fresh one; re-ground from it. To stay cheap, an action that changes little returns just a "Δ" delta (the +/-/~ changes, with refs on appeared/renamed) instead of the full tree — your other refs stay valid; desktop_snapshot {maxDepth} bounds the tree size when a window is large. Prefer invoke/set_value/toggle/scroll (cursor-free — they need no focus and work on a minimized, background, occluded, or locked window) over click. To SEE beyond the attached window (a 2nd monitor, a game/browser, a composited surface, or anything with no window) use screen_capture; to see a SPECIFIC window even when occluded, in the background, or GPU-composited (where a plain screenshot is blank) use capture_window (Windows.Graphics.Capture); turn a pixel into a control with inspect_point. screenshot auto-falls-back PrintWindow → WGC → desktop-region. Read legacy/owner-draw windows with native_tree/msaa_tree. drag/hold_key and real-cursor clicks move the actual mouse and need an unlocked, foregrounded desktop. launch/run/file tools and manage_window may be disabled by the server policy (BUN_UIA_PROFILE).';
 
