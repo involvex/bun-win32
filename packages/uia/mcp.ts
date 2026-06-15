@@ -328,12 +328,30 @@ function withSnapshot(message: string): object {
   return textResult(`${message}\n\n${header}\n${body}${coldTreeNote(current?.marks.length ?? 0)}`);
 }
 
+/** ValuePattern set, falling back to RangeValuePattern for a numeric value on a slider/spinner (ValuePattern
+ *  throws there) — so set_value drives both cursor-free. */
+function setValueSmart(element: Element, value: string): string {
+  try {
+    element.setValue(value);
+    return 'set value';
+  } catch (error) {
+    const number = Number(value);
+    if (value.trim().length > 0 && Number.isFinite(number) && !Number.isNaN(element.rangeValue)) {
+      element.setRangeValue(number);
+      return `set range value ${number}`;
+    }
+    throw error;
+  }
+}
+
 function act(element: Element, action: string, text: string | undefined): string {
   if (action === 'invoke') return element.invoke(), 'invoked';
   if (action === 'click') return clickElement(element, 'left', false, false), 'clicked';
   if (action === 'type') return element.type(text ?? ''), 'typed';
-  if (action === 'set_value') return element.setValue(text ?? ''), 'set value';
+  if (action === 'set_value') return setValueSmart(element, text ?? '');
   if (action === 'toggle') return element.toggle(), `toggled (state ${element.toggleState})`;
+  if (action === 'expand') return element.expand(), 'expanded';
+  if (action === 'collapse') return element.collapse(), 'collapsed';
   if (action === 'read') return `value: ${JSON.stringify(element.value || element.text() || element.name)}`;
   throw new Error(`unknown action: ${action}`);
 }
@@ -495,7 +513,7 @@ const TOOLS: McpTool[] = [
   {
     name: 'find_and_act',
     category: 'input',
-    description: 'Find a control and act in one call. Target by ref (from the latest snapshot) OR selector. Action is invoke|click|type|set_value|toggle|read.',
+    description: 'Find a control and act in one call. Target by ref (from the latest snapshot) OR selector. Action is invoke|click|type|set_value|toggle|expand|collapse|read.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -560,13 +578,25 @@ const TOOLS: McpTool[] = [
   {
     name: 'set_value',
     category: 'input',
-    description: 'Set a control value directly via the UIA Value pattern — no keystrokes, works on a background/locked window.',
+    description: 'Set a control value directly via the UIA Value pattern — no keystrokes, works on a background/locked window. A numeric value on a slider/spinner sets it via the RangeValue pattern.',
     inputSchema: { type: 'object', properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC }, value: { type: 'string' } }, required: ['ref', 'value'] },
   },
   {
     name: 'toggle',
     category: 'input',
     description: 'Toggle a checkbox or toggle button via the UIA Toggle pattern (cursor-free).',
+    inputSchema: { type: 'object', properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC } }, required: ['ref'] },
+  },
+  {
+    name: 'expand',
+    category: 'input',
+    description: 'Expand a control via the UIA ExpandCollapse pattern — a combobox dropdown, tree node, split button, or menu — cursor-free, no focus (Invoke/posted clicks do NOT open these on WinUI/WPF/Chromium). Then desktop_snapshot to read the revealed items.',
+    inputSchema: { type: 'object', properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC } }, required: ['ref'] },
+  },
+  {
+    name: 'collapse',
+    category: 'input',
+    description: 'Collapse a control via the UIA ExpandCollapse pattern (combobox / tree node) — cursor-free.',
     inputSchema: { type: 'object', properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC } }, required: ['ref'] },
   },
   {
@@ -914,13 +944,23 @@ const HANDLERS: Record<string, ToolHandler> = {
     return withSnapshot(`typed into ${quote(args.element)}${args.submit === true ? ' and pressed Enter' : ''}`);
   },
   set_value: (args) => {
-    resolveRef(requireString(args, 'ref')).setValue(requireString(args, 'value'));
-    return withSnapshot(`set ${quote(args.element)} = ${JSON.stringify(args.value)}`);
+    const outcome = setValueSmart(resolveRef(requireString(args, 'ref')), requireString(args, 'value'));
+    return withSnapshot(`${outcome} ${quote(args.element)} = ${JSON.stringify(args.value)}`);
   },
   toggle: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
     element.toggle();
     return withSnapshot(`toggled ${quote(args.element)} (state ${element.toggleState})`);
+  },
+  expand: (args) => {
+    const element = resolveRef(requireString(args, 'ref'));
+    element.expand();
+    return withSnapshot(`expanded ${quote(args.element)} (state ${element.expandCollapseState}) — desktop_snapshot to see revealed items; a dropdown that opens in its own window needs list_windows{includePopups}`);
+  },
+  collapse: (args) => {
+    const element = resolveRef(requireString(args, 'ref'));
+    element.collapse();
+    return withSnapshot(`collapsed ${quote(args.element)}`);
   },
   select: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
