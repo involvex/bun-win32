@@ -62,7 +62,9 @@ try {
       items[1]!.removeFromSelection(); // deselect item 1
       await Bun.sleep(200);
       assert(items[0]!.isSelected && !items[1]!.isSelected, 'removeFromSelection() deselects item 1, keeps item 0');
-      assert(list.getSelection().length === 1, 'the container now reports a single selection');
+      const afterRemove = list.getSelection();
+      assert(afterRemove.length === 1, 'the container now reports a single selection');
+      for (const entry of afterRemove) entry.release();
     }
     for (const item of items) item.release();
     list?.release();

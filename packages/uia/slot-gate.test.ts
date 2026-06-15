@@ -82,9 +82,28 @@ function ifaceMethodSlot(header: string, interfaceName: string, method: string):
 
 const path = sdkHeader('um', 'UIAutomationClient.h');
 
+// A SLOT method name the header declares on MORE THAN ONE interface (e.g. Select is SelectionItem slot 3 AND
+// TextRange slot 16) → its owning interface. The plain name-keyed check unions every interface's slot for a
+// name, so it would PASS a transposition into a colliding interface's index and then segfault (com.ts does an
+// unchecked vtable walk); these MUST be verified against the ONE interface they're actually invoked on. Add an
+// entry here whenever a new SLOT name becomes ambiguous (the test fails loudly until you do).
+const AMBIGUOUS_OWNER: Record<string, string> = {
+  AddToSelection: 'IUIAutomationSelectionItemPattern',
+  GetCurrentSelection: 'IUIAutomationSelectionPattern',
+  RemoveFromSelection: 'IUIAutomationSelectionItemPattern',
+  ScrollIntoView: 'IUIAutomationScrollItemPattern',
+  Select: 'IUIAutomationSelectionItemPattern',
+  SetValue: 'IUIAutomationValuePattern',
+  get_CachedName: 'IUIAutomationElement',
+  get_CurrentName: 'IUIAutomationElement',
+  get_CurrentValue: 'IUIAutomationValuePattern',
+};
+
 describe('SLOT table ↔ UIAutomationClient.h', () => {
   test.skipIf(path === null)('every SLOT entry the SDK header defines matches its declared vtable index', () => {
-    const slots = parseVtableSlots(readFileSync(path!, 'utf8'));
+    const header = readFileSync(path!, 'utf8');
+    const slots = parseVtableSlots(header);
+    const scoped = parseScopedVtableSlots(header); // per-interface, to disambiguate collision-named slots
     const mismatches: string[] = [];
     let verified = 0;
     let notInHeader = 0;
@@ -92,6 +111,18 @@ describe('SLOT table ↔ UIAutomationClient.h', () => {
       const found = slots.get(name);
       if (found === undefined) {
         notInHeader += 1;
+        continue;
+      }
+      if (found.size > 1) {
+        // Ambiguous across interfaces — the union check is vacuous; verify against the owning interface.
+        const owner = AMBIGUOUS_OWNER[name];
+        if (owner === undefined) {
+          mismatches.push(`${name}: AMBIGUOUS (header declares it at {${[...found].join(',')}}) with no AMBIGUOUS_OWNER mapping — add one so it is verified against its owning interface`);
+          continue;
+        }
+        const actual = findInterface(scoped, owner)?.get(name);
+        if (actual === slot) verified += 1;
+        else mismatches.push(`${name}: constants.ts=${slot} but ${owner} declares it at ${actual ?? 'NONE'}`);
         continue;
       }
       if (found.has(slot)) verified += 1;
@@ -196,5 +227,16 @@ describe('WGC + MSAA + D3D11 SLOT coverage (wgc.ts / msaa.ts)', () => {
     const members = findInterface(parseScopedVtableSlots(fake), 'ID3D11Fake')!;
     expect(members.get('Map')).toBe(3); // ground truth: QueryInterface(0) AddRef(1) Release(2) Map(3)
     expect(() => expect(members.get('Map')).toBe(14)).toThrow(); // a transposed expectation IS rejected → the gate has teeth
+  });
+
+  test.skipIf(path === null)('ambiguity guard: a collision-named SLOT is checked against its owning interface, not the union', () => {
+    const scoped = parseScopedVtableSlots(readFileSync(path!, 'utf8'));
+    const union = parseVtableSlots(readFileSync(path!, 'utf8'));
+    // Select is genuinely ambiguous (SelectionItem.Select=3 AND TextRange.Select=16) — the union check is vacuous.
+    expect(union.get('Select')?.size ?? 0).toBeGreaterThan(1);
+    expect(findInterface(scoped, 'IUIAutomationSelectionItemPattern')?.get('Select')).toBe(3);
+    expect(findInterface(scoped, 'IUIAutomationTextRange')?.get('Select')).toBe(16);
+    // So a transposition of SLOT.Select (3) into the colliding 16 would fail the owning-interface check (3 !== 16),
+    // even though the union {3,16} would have accepted it.
   });
 });
