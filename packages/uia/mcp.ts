@@ -39,6 +39,7 @@ import {
   moveWindow,
   type MsaaNode,
   normalizeKey,
+  openPath,
   ownerHwnd,
   postClickAt,
   postClickToHwnd,
@@ -89,7 +90,7 @@ const PROTOCOL_VERSION = '2025-11-25';
 const SUPPORTED_VERSIONS = new Set(['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']);
 const SERVER_INFO = { name: 'bun-uia', version: '1.5.0' };
 const INSTRUCTIONS =
-  'Drive Windows desktop apps via the UI Automation tree — and beyond it. Call list_windows, then attach (by hWnd or exact title — className is reliable only for single-window classes like Shell_TrayWnd, not the Chromium/Electron family) — attach ALREADY returns a ref-keyed tree, so act on those refs directly; call desktop_snapshot only to RE-ground after refs go stale (e.g. Button "Five" [ref=e49#1]); pass that ref VERBATIM (with its #generation tag) to click/invoke/type/toggle/set_value/inspect_element. Refs are valid ONLY for the most recent snapshot — every action returns a fresh one; re-ground from it. A ref from before a re-render is REJECTED (not silently mis-resolved), so always use the refs from the latest snapshot/delta. To stay cheap, an action that changes little returns just a "Δ" delta (the +/-/~ changes, with refs on appeared/renamed) instead of the full tree — your other refs stay valid; desktop_snapshot {maxDepth} bounds the tree size when a window is large. Prefer invoke/set_value/toggle/scroll (cursor-free — they need no focus and work on a minimized, background, occluded, or locked window) over click. To SEE beyond the attached window (a 2nd monitor, a game/browser, a composited surface, or anything with no window) use screen_capture; to see a SPECIFIC window even when occluded, in the background, or GPU-composited (where a plain screenshot is blank) use capture_window (Windows.Graphics.Capture); turn a pixel into a control with inspect_point. screenshot auto-falls-back PrintWindow → WGC → desktop-region. Read legacy/owner-draw windows with native_tree/msaa_tree. drag/hold_key and real-cursor clicks move the actual mouse and need an unlocked, foregrounded desktop. launch/run/file tools and manage_window may be disabled by the server policy (BUN_UIA_PROFILE).';
+  'Drive Windows desktop apps via the UI Automation tree — and beyond it. Call list_windows, then attach (by hWnd or exact title — className is reliable only for single-window classes like Shell_TrayWnd, not the Chromium/Electron family) — attach ALREADY returns a ref-keyed tree, so act on those refs directly; call desktop_snapshot only to RE-ground after refs go stale (e.g. Button "Five" [ref=e49#1]); pass that ref VERBATIM (with its #generation tag) to click/invoke/type/toggle/set_value/inspect_element. Refs are valid ONLY for the most recent snapshot — every action returns a fresh one; re-ground from it. A ref from before a re-render is REJECTED (not silently mis-resolved), so always use the refs from the latest snapshot/delta. To stay cheap, an action that changes little returns just a "Δ" delta (the +/-/~ changes, with refs on appeared/renamed) instead of the full tree — your other refs stay valid; desktop_snapshot {maxDepth} bounds the tree size when a window is large. Prefer invoke/set_value/toggle/scroll (cursor-free — they need no focus and work on a minimized, background, occluded, or locked window) over click. To SEE beyond the attached window (a 2nd monitor, a game/browser, a composited surface, or anything with no window) use screen_capture; to see a SPECIFIC window even when occluded, in the background, or GPU-composited (where a plain screenshot is blank) use capture_window (Windows.Graphics.Capture); turn a pixel into a control with inspect_point. screenshot auto-falls-back PrintWindow → WGC → desktop-region. Read legacy/owner-draw windows with native_tree/msaa_tree. drag and real-cursor clicks move the actual mouse; SendInput-based input (type/sendKeys/press_key without a ref/hold_key/drag) needs an unlocked, foregrounded desktop (the posted cursor-free paths do not). launch/run/file tools and manage_window may be disabled by the server policy (BUN_UIA_PROFILE).';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -195,6 +196,9 @@ function selectorFrom(value: unknown): Selector {
   if (typeof raw.automationId === 'string') selector.automationId = raw.automationId;
   if (typeof raw.className === 'string') selector.className = raw.className;
   if (typeof raw.controlType === 'number') selector.controlType = raw.controlType;
+  else if (typeof raw.controlType === 'string' && /^\d+$/.test(raw.controlType)) selector.controlType = Number(raw.controlType); // honor a numeric-string controlType (a common model slip) instead of silently dropping it
+  // An empty selector would silently match the window ROOT (a wrong target an AI can't self-correct from) — refuse.
+  if (Object.keys(selector).length === 0) throw new Error('empty selector — pass a non-empty selector with name / nameContains / automationId / className / controlType (a NUMBER, e.g. 50000 = Button), or target by ref');
   return selector;
 }
 
@@ -1425,7 +1429,8 @@ const HANDLERS: Record<string, ToolHandler> = {
   },
   open_path: (args) => {
     const path = requireString(args, 'path');
-    Bun.spawn(['cmd', '/c', 'start', '', path], { stdout: 'ignore', stderr: 'ignore' });
+    // ShellExecuteW (no shell, no command-line re-parse) — never `cmd /c start`, which is command-injectable.
+    if (!openPath(path)) return errorResult(`open_path: the shell could not open ${JSON.stringify(path)} (no default handler, or the path does not exist)`);
     return textResult(`opened: ${path}`);
   },
   read_file: async (args) => {

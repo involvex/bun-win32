@@ -71,7 +71,7 @@ The Windows desktop-automation cluster on npm is a field of native-addon pain, p
 - **See a window even when it isn't visible** — `captureWindowLive(hWnd)` reads the live pixels of any window via **Windows.Graphics.Capture**, even occluded / background / GPU-composited, where `PrintWindow` goes blank.
 - **Window & monitor control** — move/min/max/restore/raise/close windows (no foreground), `listMonitors()`, per-window exe + state.
 - **Pixel + clipboard layer** — `captureScreen`/`locateOnScreen`/`pixelColor` for no-a11y surfaces; `readClipboard`/`writeClipboard`/`paste`/`copy`.
-- **Screenshot** any window via PrintWindow (works even on a locked session; auto-falls-back to WGC when blank).
+- **Screenshot** any window via PrintWindow (works even on a locked session); the MCP `screenshot` tool auto-falls-back to Windows.Graphics.Capture when PrintWindow is blank (`captureWindowLive` for the library).
 - **MSAA fallback** (`uia.msaaTree`) and **native HWND introspection** (`uia.windowTree`, Spy++-style) for legacy / owner-draw windows.
 - **MCP server for Claude** — `claude mcp add uia -- bunx bun-uia` exposes the whole surface as 48 policy-gated tools (42 under the default `safe` profile); the agent drives Windows cursor-free, sees the desktop, and (when enabled) launches apps and reads/writes files.
 

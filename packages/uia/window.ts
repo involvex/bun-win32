@@ -7,6 +7,7 @@ import { FFIType, JSCallback } from 'bun:ffi';
 import Advapi32 from '@bun-win32/advapi32';
 import Gdi32 from '@bun-win32/gdi32';
 import Kernel32 from '@bun-win32/kernel32';
+import Shell32 from '@bun-win32/shell32';
 import User32 from '@bun-win32/user32';
 
 import { encodePNG } from './png';
@@ -178,6 +179,14 @@ export function processImagePath(processId: number): string {
   } finally {
     Kernel32.CloseHandle(handle);
   }
+}
+
+/** Open a path / file / URL with its default handler via ShellExecuteW — lpFile is a real string argument, so there
+ *  is NO shell and NO command-line re-parse (unlike `cmd /c start`, which is command-injectable via `&`/`"`/`%VAR%`).
+ *  Returns false if the shell could not open it (ShellExecuteW HINSTANCE <= 32). */
+export function openPath(path: string): boolean {
+  const file = Buffer.from(`${path}\0`, 'utf16le');
+  return Shell32.ShellExecuteW(0n, null, file.ptr!, null, null, 0x0000_0001) > 32n; // SW_SHOWNORMAL
 }
 
 const TOKEN_QUERY = 0x0000_0008;

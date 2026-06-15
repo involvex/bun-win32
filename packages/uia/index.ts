@@ -128,6 +128,7 @@ export {
   maximizeWindow,
   minimizeWindow,
   moveWindow,
+  openPath,
   processImagePath,
   raiseWindow,
   restoreWindow,

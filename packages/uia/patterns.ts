@@ -461,6 +461,11 @@ export function readTable(ptr: bigint, maxRows = 100): TableData | null {
         if (vcall(grid, SLOT.GetItem, [FFIType.i32, FFIType.i32, FFIType.ptr], [row, column, cellOut.ptr!]) !== S_OK) continue;
         const cell = cellOut.readBigUInt64LE(0);
         if (cell === 0n) continue;
+        if (getPropertyValue(cell, PropertyId.IsPassword) === true) {
+          cells[column] = '(password)'; // never surface a secret cell's value (matches snapshot/inspect_element/read/copy)
+          comRelease(cell);
+          continue;
+        }
         const name = getBstr(cell, SLOT.get_CurrentName);
         if (name.length > 0) cells[column] = name;
         else {
