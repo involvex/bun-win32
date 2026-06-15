@@ -274,6 +274,83 @@ export function readText(ptr: bigint): string {
   }
 }
 
+/** A grid/table read as text: optional column headers, a 2D array of cell strings, and the full row count. */
+export interface TableData {
+  headers: string[];
+  rows: string[][];
+  totalRows: number;
+}
+
+/** Read the names of every element in an IUIAutomationElementArray, releasing each. */
+function elementArrayNames(arrayPtr: bigint): string[] {
+  const names: string[] = [];
+  const lengthOut = Buffer.alloc(4);
+  if (vcall(arrayPtr, SLOT.get_Length, [FFIType.ptr], [lengthOut.ptr!]) !== S_OK) return names;
+  const length = lengthOut.readInt32LE(0);
+  const elementOut = Buffer.alloc(8);
+  for (let index = 0; index < length; index += 1) {
+    if (vcall(arrayPtr, SLOT.GetElement, [FFIType.i32, FFIType.ptr], [index, elementOut.ptr!]) !== S_OK) continue;
+    const element = elementOut.readBigUInt64LE(0);
+    if (element === 0n) continue;
+    names.push(getBstr(element, SLOT.get_CurrentName));
+    comRelease(element);
+  }
+  return names;
+}
+
+/** Column header labels via TablePattern (GetCurrentColumnHeaders), or [] when the grid is not a Table. */
+function columnHeaders(ptr: bigint): string[] {
+  const table = getPattern(ptr, PatternId.Table);
+  if (table === 0n) return [];
+  try {
+    const out = Buffer.alloc(8);
+    if (vcall(table, SLOT.GetCurrentColumnHeaders, [FFIType.ptr], [out.ptr!]) !== S_OK) return [];
+    const array = out.readBigUInt64LE(0);
+    if (array === 0n) return [];
+    try {
+      return elementArrayNames(array);
+    } finally {
+      comRelease(array);
+    }
+  } finally {
+    comRelease(table);
+  }
+}
+
+/**
+ * Read a GridPattern container (data grid, details-view list, spreadsheet-like control) as text — one
+ * GetItem(row,col) per cell, cell text from the cell's Name (ValuePattern value when Name is empty), plus
+ * column headers when the element also supports TablePattern. Returns null when there is no GridPattern.
+ * `maxRows` bounds a huge/virtualized grid; `totalRows` always reports the grid's full row count.
+ */
+export function readTable(ptr: bigint, maxRows = 100): TableData | null {
+  const grid = getPattern(ptr, PatternId.Grid);
+  if (grid === 0n) return null;
+  try {
+    const totalRows = getLong(grid, SLOT.get_CurrentRowCount);
+    const columnCount = getLong(grid, SLOT.get_CurrentColumnCount);
+    const limit = Math.min(Math.max(totalRows, 0), Math.max(maxRows, 0));
+    const rows: string[][] = [];
+    const cellOut = Buffer.alloc(8);
+    for (let row = 0; row < limit; row += 1) {
+      const cells: string[] = new Array(columnCount);
+      for (let column = 0; column < columnCount; column += 1) {
+        cells[column] = '';
+        if (vcall(grid, SLOT.GetItem, [FFIType.i32, FFIType.i32, FFIType.ptr], [row, column, cellOut.ptr!]) !== S_OK) continue;
+        const cell = cellOut.readBigUInt64LE(0);
+        if (cell === 0n) continue;
+        const name = getBstr(cell, SLOT.get_CurrentName);
+        cells[column] = name.length > 0 ? name : getValue(cell);
+        comRelease(cell);
+      }
+      rows.push(cells);
+    }
+    return { headers: columnHeaders(ptr), rows, totalRows };
+  } finally {
+    comRelease(grid);
+  }
+}
+
 /** Close a window via WindowPattern. */
 export function windowClose(ptr: bigint): void {
   const pattern = getPattern(ptr, PatternId.Window);

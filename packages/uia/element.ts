@@ -20,6 +20,7 @@ import {
   invoke,
   isSelected,
   rangeValue,
+  readTable,
   readText,
   scroll,
   scrollInfo,
@@ -34,6 +35,7 @@ import {
   windowClose,
   type ScrollAmount,
   type ScrollInfo,
+  type TableData,
   type WindowVisualState,
 } from './patterns';
 import { getBstr, getHandle, getLong, getRect, type Rect } from './reads';
@@ -335,6 +337,11 @@ export class Element {
   /** Read the TextPattern document text, or '' if unsupported. */
   text(): string {
     return readText(this.ptr);
+  }
+
+  /** Read a GridPattern container (data grid / details list / table) as headers + rows of text, or null if unsupported. */
+  readTable(maxRows?: number): TableData | null {
+    return readTable(this.ptr, maxRows);
   }
 
   /** Toggle a checkbox via TogglePattern. Throws if unsupported. */

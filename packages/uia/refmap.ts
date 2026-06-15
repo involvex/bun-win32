@@ -13,12 +13,14 @@ const INTERACTIVE = new Set<number>([
   ControlType.Button,
   ControlType.CheckBox,
   ControlType.ComboBox,
+  ControlType.DataGrid,
   ControlType.DataItem,
   ControlType.Document,
   ControlType.Edit,
   ControlType.Header,
   ControlType.HeaderItem,
   ControlType.Hyperlink,
+  ControlType.List,
   ControlType.ListItem,
   ControlType.MenuItem,
   ControlType.RadioButton,
@@ -27,6 +29,8 @@ const INTERACTIVE = new Set<number>([
   ControlType.SplitButton,
   ControlType.Tab,
   ControlType.TabItem,
+  ControlType.Table,
+  ControlType.Tree,
   ControlType.TreeItem,
 ]);
 

@@ -50,6 +50,7 @@ import {
   scrollAt,
   type Selector,
   type Snapshot,
+  type TableData,
   uia,
   type Window,
 } from './index';
@@ -350,6 +351,18 @@ function formatMsaa(node: MsaaNode, depth = 0): string {
   return out;
 }
 
+/** Render a read table as a compact markdown table, noting any row truncation. */
+function renderTable(table: TableData): string {
+  const width = table.rows.reduce((max, row) => Math.max(max, row.length), table.headers.length);
+  if (width === 0) return '(empty table)';
+  const headers = table.headers.length > 0 ? table.headers : Array.from({ length: width }, (_unused, index) => `col${index + 1}`);
+  const escape = (cell: string): string => cell.replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ');
+  const lines = [`| ${headers.map(escape).join(' | ')} |`, `| ${headers.map(() => '---').join(' | ')} |`];
+  for (const row of table.rows) lines.push(`| ${Array.from({ length: width }, (_unused, index) => escape(row[index] ?? '')).join(' | ')} |`);
+  const hidden = table.totalRows - table.rows.length;
+  return hidden > 0 ? `${lines.join('\n')}\n…(${hidden} more rows — raise maxRows)` : lines.join('\n');
+}
+
 /** Resolve a file-tool path, enforcing the BUN_UIA_FS_ROOT sandbox when one is set. */
 function resolveFsPath(path: string): string {
   if (fsRoot === undefined) return path;
@@ -501,6 +514,13 @@ const TOOLS: McpTool[] = [
     description:
       'Dump the full live state of one ref: role, name, automationId, className, bounds, enabled, value, toggle/expand/selected/range/scroll state, clickable point, native window handle. Read state without round-tripping through the tree.',
     inputSchema: { type: 'object', properties: { ref: { type: 'string', description: REF_DESC } }, required: ['ref'] },
+  },
+  {
+    name: 'read_table',
+    category: 'read',
+    description:
+      'Read a data grid / list / table (Explorer details view, a DataGrid, a spreadsheet-like control) as structured rows — UIA GridPattern cell-by-cell, with column headers when available. Target a ref from the latest snapshot (the List/DataGrid/Table node). Returns a markdown table; far cheaper and more reliable than reading cells from a screenshot.',
+    inputSchema: { type: 'object', properties: { ref: { type: 'string', description: REF_DESC }, maxRows: { type: 'number', description: 'Cap rows read (default 100)' } }, required: ['ref'] },
   },
   {
     name: 'native_tree',
@@ -782,6 +802,10 @@ const HANDLERS: Record<string, ToolHandler> = {
     const handle = element.nativeWindowHandle;
     if (handle !== 0n) lines.push(`nativeWindowHandle: 0x${handle.toString(16)}`);
     return textResult(lines.join('\n'));
+  },
+  read_table: (args) => {
+    const table = resolveRef(requireString(args, 'ref')).readTable(typeof args.maxRows === 'number' ? args.maxRows : undefined);
+    return textResult(table === null ? '(no table at this ref — it does not expose the UIA Grid pattern; try a different ref, e.g. the List/DataGrid node)' : renderTable(table));
   },
   native_tree: (args) => textResult(renderWindowTree(uia.windowTree(resolveHwnd(args), typeof args.maxDepth === 'number' ? args.maxDepth : 12))),
   msaa_tree: (args) => {

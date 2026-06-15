@@ -86,7 +86,7 @@ export {
 export { drawMarks, type MarkedScreenshot, type PlacedMark, screenshotWithMarks } from './marks';
 export { findImage, locateOnScreen, type Match } from './match';
 export { accessibleFromWindow, type MsaaNode, msaaTree } from './msaa';
-export { ExpandCollapseState, NoScroll, ScrollAmount, type ScrollInfo, ToggleState, WindowVisualState } from './patterns';
+export { ExpandCollapseState, NoScroll, ScrollAmount, type ScrollInfo, type TableData, ToggleState, WindowVisualState } from './patterns';
 export { encodePNG } from './png';
 export { decodeBstr, getBstr, getHandle, getLong, getRect, type Rect } from './reads';
 export { capSnapshot, type Mark, pruneRefTree, type RefNode, renderSnapshot, snapshot, Snapshot } from './refmap';

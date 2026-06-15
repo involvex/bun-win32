@@ -240,4 +240,10 @@ export const SLOT = {
   // IUIAutomationTextPattern + IUIAutomationTextRange
   get_DocumentRange: 7,
   GetText: 12,
+  // IUIAutomationGridPattern (GetItem(row,col)->cell; live-proven on File Explorer details view 28x4)
+  GetItem: 3,
+  get_CurrentRowCount: 4,
+  get_CurrentColumnCount: 5,
+  // IUIAutomationTablePattern
+  GetCurrentColumnHeaders: 4,
 } as const;
