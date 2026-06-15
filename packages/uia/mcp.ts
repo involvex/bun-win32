@@ -82,7 +82,7 @@ const PROTOCOL_VERSION = '2025-11-25';
 const SUPPORTED_VERSIONS = new Set(['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']);
 const SERVER_INFO = { name: 'bun-uia', version: '1.5.0' };
 const INSTRUCTIONS =
-  'Drive Windows desktop apps via the UI Automation tree — and beyond it. Call list_windows, then attach. Call desktop_snapshot for a ref-keyed tree (e.g. Button "Five" [ref=e49]); pass that ref to click/invoke/type/toggle/set_value/inspect_element. Refs are valid ONLY for the most recent snapshot — every action returns a fresh one; re-ground from it. To stay cheap, an action that changes little returns just a "Δ" delta (the +/-/~ changes, with refs on appeared/renamed) instead of the full tree — your other refs stay valid; desktop_snapshot {maxDepth} bounds the tree size when a window is large. Prefer invoke/set_value/toggle/scroll (cursor-free — they need no focus and work on a minimized, background, occluded, or locked window) over click. To SEE beyond the attached window (a 2nd monitor, a game/browser, a composited surface, or anything with no window) use screen_capture; to see a SPECIFIC window even when occluded, in the background, or GPU-composited (where a plain screenshot is blank) use capture_window (Windows.Graphics.Capture); turn a pixel into a control with inspect_point. screenshot auto-falls-back PrintWindow → WGC → desktop-region. Read legacy/owner-draw windows with native_tree/msaa_tree. drag/hold_key and real-cursor clicks move the actual mouse and need an unlocked, foregrounded desktop. launch/run/file tools and manage_window may be disabled by the server policy (BUN_UIA_PROFILE).';
+  'Drive Windows desktop apps via the UI Automation tree — and beyond it. Call list_windows, then attach (by hWnd or exact title — className is reliable only for single-window classes like Shell_TrayWnd, not the Chromium/Electron family). Call desktop_snapshot for a ref-keyed tree (e.g. Button "Five" [ref=e49]); pass that ref to click/invoke/type/toggle/set_value/inspect_element. Refs are valid ONLY for the most recent snapshot — every action returns a fresh one; re-ground from it. To stay cheap, an action that changes little returns just a "Δ" delta (the +/-/~ changes, with refs on appeared/renamed) instead of the full tree — your other refs stay valid; desktop_snapshot {maxDepth} bounds the tree size when a window is large. Prefer invoke/set_value/toggle/scroll (cursor-free — they need no focus and work on a minimized, background, occluded, or locked window) over click. To SEE beyond the attached window (a 2nd monitor, a game/browser, a composited surface, or anything with no window) use screen_capture; to see a SPECIFIC window even when occluded, in the background, or GPU-composited (where a plain screenshot is blank) use capture_window (Windows.Graphics.Capture); turn a pixel into a control with inspect_point. screenshot auto-falls-back PrintWindow → WGC → desktop-region. Read legacy/owner-draw windows with native_tree/msaa_tree. drag/hold_key and real-cursor clicks move the actual mouse and need an unlocked, foregrounded desktop. launch/run/file tools and manage_window may be disabled by the server policy (BUN_UIA_PROFILE).';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -177,6 +177,17 @@ function selectorFrom(value: unknown): Selector {
 function requireAttached(): Window {
   if (attached === null) throw new Error('no window attached — call list_windows then attach first');
   return attached;
+}
+
+/** Attach by className the safe way: FindWindowW(class, NULL) returns the first top-level match in Z-order, which for
+ *  the whole Chromium/Electron family (Chrome_WidgetWin_1 — Discord, Slack, VS Code, Teams, Edge, …) is an INVISIBLE
+ *  helper window, leaving the agent snapshotting a dead window. Enumerate VISIBLE windows instead, and refuse or ask
+ *  to disambiguate rather than silently grabbing the wrong one. */
+function attachByClassName(className: string): Window {
+  const matches = uia.windows({ includeUntitled: true }).filter((window) => window.className === className);
+  if (matches.length === 0) throw new Error(`no VISIBLE window has class ${JSON.stringify(className)} — FindWindowW would match an invisible helper. Call list_windows and attach by an exact title or an hWnd.`);
+  if (matches.length > 1) throw new Error(`${matches.length} visible windows have class ${JSON.stringify(className)} — attach by hWnd to pick one:\n${matches.map((window) => `  - ${JSON.stringify(window.title)} [hWnd=0x${window.hWnd.toString(16)}] [pid=${window.processId}]`).join('\n')}`);
+  return uia.attach(matches[0]!.hWnd);
 }
 
 /** The handle a window-scoped tool targets: an explicit hWnd arg, a ref's native window, else the attached window. */
@@ -503,7 +514,7 @@ const TOOLS: McpTool[] = [
   {
     name: 'attach',
     category: 'read',
-    description: 'Attach to a top-level window as the active root for snapshots and actions. Provide a title (exact), a className (e.g. Shell_TrayWnd for the taskbar + system tray, or any title-less window), an hWnd from list_windows, or a processId. Works on a minimized/background window.',
+    description: 'Attach to a top-level window as the active root for snapshots and actions. Prefer an hWnd from list_windows or an exact title. className attaches only to the single VISIBLE window of that class — reliable for single-window classes (e.g. Shell_TrayWnd, the taskbar + system tray) but it refuses or asks you to disambiguate for the Chromium/Electron family (Discord, Slack, VS Code, Teams, Edge — all Chrome_WidgetWin_1), where it would otherwise grab an invisible helper. Provide a title (exact), a className, an hWnd, or a processId. Works on a minimized/background window.',
     inputSchema: { type: 'object', properties: { title: { type: 'string' }, hWnd: { type: 'string', description: 'Handle as a decimal or 0x-hex string' }, processId: { type: 'number' }, className: { type: 'string' } } },
   },
   {
@@ -898,7 +909,8 @@ const HANDLERS: Record<string, ToolHandler> = {
     attached = null;
     lastSnapshotBody = '';
     lastSnapshotTree = null;
-    if (typeof args.title === 'string' || typeof args.className === 'string') attached = uia.attach({ ...(typeof args.title === 'string' ? { title: args.title } : {}), ...(typeof args.className === 'string' ? { className: args.className } : {}) });
+    if (typeof args.title === 'string') attached = uia.attach({ title: args.title, ...(typeof args.className === 'string' ? { className: args.className } : {}) });
+    else if (typeof args.className === 'string') attached = attachByClassName(args.className);
     else if (typeof args.hWnd === 'string') attached = uia.attach(BigInt(args.hWnd));
     else if (typeof args.processId === 'number') attached = uia.attach({ process: args.processId });
     else throw new Error('attach requires one of: title, className, hWnd, processId');
@@ -1096,6 +1108,7 @@ const HANDLERS: Record<string, ToolHandler> = {
   screenshot_marked: () => {
     const window = requireAttached();
     current?.dispose();
+    current = null; // if the rebuild throws (window closing), don't leave `current` pointing at the disposed snapshot
     current = buildWindowSnapshot(window).snapshot; // splice Chromium web roots so web-DOM controls get marks too (consistent with desktop_snapshot)
     epoch += 1;
     lastSnapshotTree = current.tree;

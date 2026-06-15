@@ -199,6 +199,7 @@ export class Snapshot {
 
   /** The live Element for a ref id from this snapshot, or null if the ref is unknown/stale. */
   resolve(ref: string): Element | null {
+    if (this.#disposed) return null; // a dangling-disposed snapshot fails safe rather than vcall-ing freed COM pointers
     return this.#byRef.get(ref) ?? null;
   }
 

@@ -28,7 +28,7 @@
         },
         {
           "name": "BUN_UIA_OS",
-          "description": "Set to '1' to allow OS-level tools (launch_app, run_program, open_path) regardless of profile.",
+          "description": "Set to '1' to allow OS-level tools (launch_app, run_program, open_path) AND filesystem tools (read_file, write_file, list_dir) regardless of profile.",
           "isRequired": false,
           "isSecret": false,
           "format": "string"
@@ -49,7 +49,7 @@
         },
         {
           "name": "BUN_UIA_CURSOR",
-          "description": "Set to '1' to use the real hardware cursor for clicks/drags instead of the default cursor-free (background) input path.",
+          "description": "Set to 'never' to forbid the real-cursor fallback entirely (strictly cursor-free). By default clicks/drags are cursor-free but fall back to the real hardware cursor when no cursor-free path exists.",
           "isRequired": false,
           "isSecret": false,
           "format": "string"
