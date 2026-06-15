@@ -20,6 +20,7 @@ export interface Rect {
 const scratch8 = Buffer.alloc(8);
 const scratch4 = Buffer.alloc(4);
 const scratch16 = Buffer.alloc(16);
+const scratch24 = Buffer.alloc(24); // a full x64 VARIANT out-param, reused across property reads (the snapshot state-walk does ~12/ref'd node)
 
 /** Bulk-copy a BSTR's UTF-16 region into a string in one operation, then free it. No-op on null. */
 export function decodeBstr(bstr: bigint): string {
@@ -62,24 +63,24 @@ export type VariantValue = string | number | boolean | null;
  *  decoding the 24-byte x64 VARIANT by its `vt` tag (NOT condition.ts's 16-byte input VARIANT). Always
  *  VariantClear's it — frees a returned BSTR (copied out first, never freed twice) / releases an interface. */
 function readVariantProperty(ptr: bigint, slot: number, propertyId: number): VariantValue {
-  const variant = Buffer.alloc(24);
-  if (vcall(ptr, slot, [FFIType.i32, FFIType.ptr], [propertyId, variant.ptr!]) !== S_OK) return null;
-  const vt = variant.readUInt16LE(0);
+  scratch24.fill(0, 0, 24); // clear vt + value first — a failed call or a prior VT_BSTR must not leave a stale vt for VariantClear to mis-free
+  if (vcall(ptr, slot, [FFIType.i32, FFIType.ptr], [propertyId, scratch24.ptr!]) !== S_OK) return null;
+  const vt = scratch24.readUInt16LE(0);
   let value: VariantValue = null;
-  if (vt === VT_I4) value = variant.readInt32LE(8);
-  else if (vt === VT_R8) value = variant.readDoubleLE(8);
+  if (vt === VT_I4) value = scratch24.readInt32LE(8);
+  else if (vt === VT_R8) value = scratch24.readDoubleLE(8);
   else if (vt === VT_BOOL)
-    value = variant.readInt16LE(8) !== 0; // VARIANT_BOOL: 0 false, -1 true
+    value = scratch24.readInt16LE(8) !== 0; // VARIANT_BOOL: 0 false, -1 true
   else if (vt === VT_BSTR) {
-    const bstr = variant.readBigUInt64LE(8);
+    const bstr = scratch24.readBigUInt64LE(8);
     if (bstr === 0n) value = '';
     else {
       const pointer = Number(bstr) as Pointer;
       const length = Oleaut32.SysStringLen(pointer);
-      value = length === 0 ? '' : Buffer.from(toArrayBuffer(pointer, 0, length * 2)).toString('utf16le'); // copy, don't free — VariantClear frees the BSTR
+      value = length === 0 ? '' : Buffer.from(toArrayBuffer(pointer, 0, length * 2)).toString('utf16le'); // copy, don't free — VariantClear frees the BSTR (.ptr read inline below survives the copy's possible relocation)
     }
   }
-  Oleaut32.VariantClear(variant.ptr!);
+  Oleaut32.VariantClear(scratch24.ptr!);
   return value;
 }
 
