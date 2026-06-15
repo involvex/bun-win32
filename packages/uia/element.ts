@@ -189,6 +189,12 @@ export class Element {
     return getPropertyValue(this.ptr, PropertyId.IsOffscreen) === true;
   }
 
+  /** Whether this is a password/secret field (UIA IsPassword). Read it before emitting `value` anywhere an agent
+   *  or audit log would see it — a secret cannot be un-leaked once streamed into model context. */
+  get isPassword(): boolean {
+    return getPropertyValue(this.ptr, PropertyId.IsPassword) === true;
+  }
+
   get name(): string {
     return getBstr(this.ptr, SLOT.get_CurrentName);
   }

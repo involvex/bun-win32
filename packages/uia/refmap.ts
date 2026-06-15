@@ -44,6 +44,7 @@ function isActionable(controlType: number, name: string, hasBounds: boolean): bo
 /** Pattern-state property ids the snapshot prefetches so every ref'd node's live state rides the SAME single
  *  BuildUpdatedCache round-trip (each value paired with its Is*PatternAvailable gate). */
 const STATE_PROPERTIES: readonly number[] = [
+  PropertyId.IsPassword,
   PropertyId.IsTogglePatternAvailable,
   PropertyId.ToggleToggleState,
   PropertyId.IsValuePatternAvailable,
@@ -74,7 +75,9 @@ function nodeState(read: PropertyReader, ptr: bigint, name: string): string {
     const state = read(ptr, PropertyId.ToggleToggleState);
     if (typeof state === 'number' && state >= 0 && state <= 2) parts.push(TOGGLE_LABELS[state]!);
   }
-  if (read(ptr, PropertyId.IsValuePatternAvailable) === true) {
+  if (read(ptr, PropertyId.IsPassword) === true) {
+    parts.push('password'); // NEVER emit a password/secret field's value into the snapshot (model context + host audit logs)
+  } else if (read(ptr, PropertyId.IsValuePatternAvailable) === true) {
     const value = read(ptr, PropertyId.ValueValue);
     if (typeof value === 'string' && value.length > 0 && value !== name) parts.push(`value=${JSON.stringify(value.length > 40 ? `${value.slice(0, 40)}…` : value)}`); // skip when value just echoes the name (e.g. nav TreeItems)
   }

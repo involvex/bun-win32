@@ -366,7 +366,7 @@ function act(element: Element, action: string, text: string | undefined): string
   if (action === 'toggle') return element.toggle(), `toggled (state ${element.toggleState})`;
   if (action === 'expand') return element.expand(), 'expanded';
   if (action === 'collapse') return element.collapse(), 'collapsed';
-  if (action === 'read') return `value: ${JSON.stringify(element.value || element.text() || element.name)}`;
+  if (action === 'read') return element.isPassword ? 'value: (password — withheld)' : `value: ${JSON.stringify(element.value || element.text() || element.name)}`;
   throw new Error(`unknown action: ${action}`);
 }
 
@@ -740,7 +740,7 @@ const TOOLS: McpTool[] = [
     name: 'inspect_element',
     category: 'read',
     description:
-      'Dump the full live state of one ref: role, name, automationId, className, bounds, enabled, value, toggle/expand/selected/range/scroll state, clickable point, native window handle. Read state without round-tripping through the tree.',
+      'Dump the full live state of one ref: role, name, automationId, className, bounds, enabled, value, toggle/expand/selected/range/scroll state, clickable point, native window handle, TextPattern body, and a "can:" list of the actions the control actually supports (invoke/set_value/toggle/expand/collapse/select/scroll/read-text/read-table) — pick the verb from that list instead of guessing from the role, since a Button may only expand and invoke can silently no-op. A password field is shown as "(password)" with its value withheld. Read state without round-tripping through the tree.',
     inputSchema: { type: 'object', properties: { ref: { type: 'string', description: REF_DESC } }, required: ['ref'] },
   },
   {
@@ -1137,8 +1137,10 @@ const HANDLERS: Record<string, ToolHandler> = {
     if (element.automationId.length > 0) lines.push(`automationId: ${element.automationId}`);
     if (element.className.length > 0) lines.push(`className: ${element.className}`);
     lines.push(`bounds: {x:${bounds.x},y:${bounds.y} w:${bounds.width} h:${bounds.height}}`, `enabled: ${element.isEnabled}`);
-    const value = element.value;
-    if (value.length > 0) lines.push(`value: ${JSON.stringify(value)}`);
+    const isPassword = element.isPassword; // gate EVERY secret-bearing field (value + TextPattern body) — a leaked password can't be un-streamed
+    const value = isPassword ? '' : element.value;
+    if (isPassword) lines.push('value: (password — withheld)');
+    else if (value.length > 0) lines.push(`value: ${JSON.stringify(value)}`);
     if (element.toggleState >= 0) lines.push(`toggleState: ${element.toggleState} (0=off,1=on,2=indeterminate)`);
     if (element.expandCollapseState >= 0) lines.push(`expandCollapseState: ${element.expandCollapseState} (0=collapsed,1=expanded,2=partial,3=leaf)`);
     if (element.isSelected) lines.push('selected: true');
@@ -1157,11 +1159,25 @@ const HANDLERS: Record<string, ToolHandler> = {
     if (element.getProperty(PropertyId.IsOffscreen) === true) lines.push('offscreen: true');
     const frameworkId = element.getProperty(PropertyId.FrameworkId);
     if (typeof frameworkId === 'string' && frameworkId.length > 0) lines.push(`frameworkId: ${frameworkId}`);
+    // Available actions, from each Is*PatternAvailable — a control's ROLE lies (a 'Button' may only ExpandCollapse, and
+    // invoke() can no-op silently), so report what it actually supports rather than letting the agent guess the verb.
+    const can: string[] = [];
+    if (element.getProperty(PropertyId.IsInvokePatternAvailable) === true) can.push('invoke');
+    if (element.getProperty(PropertyId.IsValuePatternAvailable) === true) can.push('set_value');
+    if (element.getProperty(PropertyId.IsTogglePatternAvailable) === true) can.push('toggle');
+    if (element.getProperty(PropertyId.IsExpandCollapsePatternAvailable) === true) can.push('expand/collapse');
+    if (element.getProperty(PropertyId.IsSelectionItemPatternAvailable) === true) can.push('select');
+    if (element.getProperty(PropertyId.IsRangeValuePatternAvailable) === true) can.push('set_value(numeric)');
+    if (element.getProperty(PropertyId.IsScrollPatternAvailable) === true) can.push('scroll');
+    if (element.getProperty(PropertyId.IsScrollItemPatternAvailable) === true) can.push('scroll-into-view');
+    if (element.getProperty(PropertyId.IsTextPatternAvailable) === true) can.push('read-text');
+    if (element.getProperty(PropertyId.IsGridPatternAvailable) === true) can.push('read-table');
+    if (can.length > 0) lines.push(`can: ${can.join(', ')}`);
     // TextPattern content (terminals, documents, read-only multiline text) — the buffer the ValuePattern `value`
     // does not carry. Prefer the ON-SCREEN text (GetVisibleRanges): bounded + relevant + cheap for a huge
     // scrollback; fall back to the full document for a non-scrollable text control. Capped either way.
-    const visible = element.visibleText();
-    const text = visible.length > 0 ? visible : element.text();
+    const visible = isPassword ? '' : element.visibleText();
+    const text = isPassword ? '' : visible.length > 0 ? visible : element.text();
     if (text.length > 0 && text !== value && text !== element.name) lines.push(`${visible.length > 0 ? 'visible text' : 'text'} (${text.length} chars):\n${text.length > 2000 ? `${text.slice(0, 2000)} …(+${text.length - 2000} more chars)` : text}`);
     return textResult(lines.join('\n'));
   },
