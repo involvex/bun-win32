@@ -398,11 +398,14 @@ function columnHeaders(ptr: bigint): string[] {
   }
 }
 
+const MAX_TABLE_COLUMNS = 4096; // safety bound for readTable's per-row column loop (no real grid is this wide)
+
 /**
  * Read a GridPattern container (data grid, details-view list, spreadsheet-like control) as text — one
  * GetItem(row,col) per cell, cell text from the cell's Name (ValuePattern value when Name is empty), plus
  * column headers when the element also supports TablePattern. Returns null when there is no GridPattern.
- * `maxRows` bounds a huge/virtualized grid; `totalRows` always reports the grid's full row count.
+ * `maxRows` bounds a huge/virtualized grid; `totalRows` always reports the grid's full row count. The column
+ * count is clamped to MAX_TABLE_COLUMNS so a hostile/buggy provider cannot force an unbounded allocation.
  */
 export function readTable(ptr: bigint, maxRows = 100): TableData | null {
   const grid = getPattern(ptr, PatternId.Grid);
@@ -411,11 +414,12 @@ export function readTable(ptr: bigint, maxRows = 100): TableData | null {
     const totalRows = getLong(grid, SLOT.get_CurrentRowCount);
     const columnCount = getLong(grid, SLOT.get_CurrentColumnCount);
     const limit = Math.min(Math.max(totalRows, 0), Math.max(maxRows, 0));
+    const columns = Math.min(Math.max(columnCount, 0), MAX_TABLE_COLUMNS); // clamp a hostile/buggy provider's column count (mirrors the row clamp); no real grid exceeds this, but an unbounded count would mean a multi-GB alloc + billions of GetItem round-trips per row
     const rows: string[][] = [];
     const cellOut = Buffer.alloc(8);
     for (let row = 0; row < limit; row += 1) {
-      const cells: string[] = new Array(columnCount);
-      for (let column = 0; column < columnCount; column += 1) {
+      const cells: string[] = new Array(columns);
+      for (let column = 0; column < columns; column += 1) {
         cells[column] = '';
         if (vcall(grid, SLOT.GetItem, [FFIType.i32, FFIType.i32, FFIType.ptr], [row, column, cellOut.ptr!]) !== S_OK) continue;
         const cell = cellOut.readBigUInt64LE(0);
