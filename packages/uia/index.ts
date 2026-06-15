@@ -9,6 +9,7 @@ import { waitForIdle } from './idle';
 import { clickAt, sendKeys, type } from './input';
 import { locateOnScreen } from './match';
 import { msaaTree } from './msaa';
+import { ocrBitmap, ocrScreen, ocrWindow } from './ocr';
 import { snapshot } from './refmap';
 import { captureScreen, pixelColor, screenshotScreen } from './screen';
 import { windowTree } from './spy';
@@ -34,6 +35,9 @@ export const uia = {
   listProcesses,
   locateOnScreen,
   msaaTree,
+  ocrBitmap,
+  ocrScreen,
+  ocrWindow,
   paste,
   pixelColor,
   postClick: postClickAt,
@@ -92,6 +96,7 @@ export {
 export { drawMarks, type MarkedScreenshot, type PlacedMark, screenshotWithMarks } from './marks';
 export { findImage, locateOnScreen, type Match } from './match';
 export { accessibleFromWindow, type MsaaNode, msaaTree } from './msaa';
+export { disposeOcr, ocrAvailable, ocrBitmap, ocrScreen, type OcrLine, type OcrText, ocrWindow, type OcrWord } from './ocr';
 export { ExpandCollapseState, NoScroll, ScrollAmount, type ScrollInfo, type TableData, ToggleState, WindowVisualState } from './patterns';
 export { encodePNG } from './png';
 export { decodeBstr, getBstr, getCachedPropertyValue, getHandle, getLong, getPropertyValue, getRect, type Rect, type VariantValue } from './reads';

@@ -577,6 +577,30 @@ const TOOLS: McpTool[] = [
     inputSchema: { type: 'object', properties: { filter: { type: 'string', description: 'Case-insensitive image-name substring' } } },
   },
   {
+    name: 'ocr',
+    category: 'read',
+    description:
+      'READ TEXT out of the raw PIXELS of the attached window (or a given hWnd, or a screen region) via Windows OCR — for surfaces with NO accessibility tree: a <canvas>/WebGL app, a game, a video frame, a remote-desktop session, a chart, a scanned document, an image. Captures even occluded/GPU/background windows (WGC). Returns each line with a SCREEN-pixel bounding box; click recognized text with click_point at a box centre.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        hWnd: { type: 'string', description: HWND_DESC },
+        region: { type: 'object', description: 'Screen region {x,y,width,height} to OCR instead of a window', properties: { x: { type: 'number' }, y: { type: 'number' }, width: { type: 'number' }, height: { type: 'number' } } },
+      },
+    },
+  },
+  {
+    name: 'click_point',
+    category: 'input',
+    description:
+      'Click at absolute SCREEN pixel coordinates — cursor-free posted click by default (works on a background window, no real cursor move), or cursor:true for a real SendInput click. Pairs with ocr / inspect_point / screenshot_marked to click something that has no ref (pixel-only UI).',
+    inputSchema: {
+      type: 'object',
+      properties: { x: { type: 'number' }, y: { type: 'number' }, button: { type: 'string', enum: ['left', 'right'] }, cursor: { type: 'boolean', description: 'Force a real SendInput cursor click' } },
+      required: ['x', 'y'],
+    },
+  },
+  {
     name: 'screenshot',
     category: 'read',
     description:
@@ -878,6 +902,39 @@ const HANDLERS: Record<string, ToolHandler> = {
       .filter((process) => filter === null || process.name.toLowerCase().includes(filter))
       .sort((first, second) => first.name.localeCompare(second.name));
     return textResult(`${processes.length} process(es)${filter !== null ? ` matching ${JSON.stringify(filter)}` : ''}:\n${processes.map((process) => `  ${String(process.processId).padStart(6)}  ${process.name}`).join('\n')}`);
+  },
+  ocr: async (args) => {
+    const region = args.region;
+    let result: { text: string; lines: { text: string; bounds: { x: number; y: number; width: number; height: number } }[] };
+    let origin: string;
+    if (region !== null && typeof region === 'object' && !Array.isArray(region)) {
+      const r = region as Record<string, unknown>;
+      result = await uia.ocrScreen({ x: typeof r.x === 'number' ? r.x : undefined, y: typeof r.y === 'number' ? r.y : undefined, width: typeof r.width === 'number' ? r.width : undefined, height: typeof r.height === 'number' ? r.height : undefined });
+      origin = 'screen region';
+    } else {
+      const hWnd = typeof args.hWnd === 'string' ? BigInt(args.hWnd) : (attached?.hWnd ?? 0n);
+      if (hWnd === 0n) throw new Error('ocr: pass hWnd or region, or attach a window first');
+      const windowResult = await uia.ocrWindow(hWnd);
+      if (windowResult === null) throw new Error('ocr: could not capture the window (minimized / protected / no surface)');
+      result = windowResult;
+      origin = `hWnd 0x${hWnd.toString(16)}`;
+    }
+    if (result.lines.length === 0) return textResult(`OCR (${origin}) found no text.`);
+    const body = result.lines.map((line) => `  [${line.bounds.x},${line.bounds.y} ${line.bounds.width}x${line.bounds.height}] ${line.text}`).join('\n');
+    return textResult(`OCR (${origin}) — ${result.lines.length} line(s); click text via click_point at a box centre (x+width/2, y+height/2):\n${body}`);
+  },
+  click_point: (args) => {
+    const x = requireNumber(args, 'x');
+    const y = requireNumber(args, 'y');
+    const button = args.button === 'right' ? 'right' : 'left';
+    if (args.cursor === true) {
+      if (button === 'right') rightClickAt(x, y);
+      else clickAt(x, y);
+      return textResult(`clicked (real cursor) ${button} at ${x},${y}`);
+    }
+    if (postClickAt(x, y, button)) return textResult(`posted ${button} click at ${x},${y} (cursor-free)`);
+    clickAt(x, y);
+    return textResult(`clicked ${button} at ${x},${y} (real cursor fallback)`);
   },
   screenshot: async () => {
     const window = requireAttached();

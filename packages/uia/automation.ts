@@ -13,6 +13,7 @@ let pControlWalker = 0n;
 let pTrueCondition = 0n;
 let comInitialized = false;
 let wgcBundleDisposer: (() => void) | null = null;
+let ocrDisposer: (() => void) | null = null;
 
 /**
  * Register wgc.ts's device-bundle teardown so uninitialize() can free it WITHOUT a static automation→wgc
@@ -21,6 +22,12 @@ let wgcBundleDisposer: (() => void) | null = null;
  */
 export function setWgcBundleDisposer(dispose: () => void): void {
   wgcBundleDisposer = dispose;
+}
+
+/** Register ocr.ts's cached-engine teardown so uninitialize() frees its WinRT factories while the apartment is
+ *  still alive — same lazy-no-static-import pattern as the WGC disposer. */
+export function setOcrDisposer(dispose: () => void): void {
+  ocrDisposer = dispose;
 }
 
 /**
@@ -78,6 +85,10 @@ export function uninitialize(): void {
   if (wgcBundleDisposer !== null) {
     wgcBundleDisposer(); // free the WGC bundle while its apartment is still alive (before CoUninitialize)
     wgcBundleDisposer = null;
+  }
+  if (ocrDisposer !== null) {
+    ocrDisposer(); // free the cached OCR engine/factories before CoUninitialize
+    ocrDisposer = null;
   }
   if (pControlWalker !== 0n) {
     comRelease(pControlWalker);
