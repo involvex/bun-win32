@@ -587,7 +587,7 @@ const TOOLS: McpTool[] = [
   {
     name: 'find_and_act',
     category: 'input',
-    description: 'Find a control and act in one call. Target by ref (from the latest snapshot) OR selector. Action is invoke|click|type|set_value|toggle|expand|collapse|read.',
+    description: 'Find a control and act in one call. Target by ref (from the latest snapshot) OR selector. A selector acts on the FIRST match — if it could be ambiguous, pass a ref or a tighter selector (add automationId/controlType). Action is invoke|click|type|set_value|toggle|expand|collapse|read.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -976,7 +976,10 @@ const HANDLERS: Record<string, ToolHandler> = {
     else if (handle !== undefined) attached = uia.attach(handle);
     else if (typeof args.processId === 'number') attached = uia.attach({ process: args.processId });
     else throw new Error('attach requires one of: title, className, hWnd, processId');
-    return withSnapshot(`attached to ${JSON.stringify(attached.name)}`);
+    // Java Swing/AWT (SunAwt* class) is an architectural blind spot: UIA AND MSAA expose only the window frame, never
+    // the app content — so a near-empty tree here is NOT a cold a11y tree or a pixel-only surface. Tell the agent.
+    const java = /^SunAwt/.test(attached.className) ? '\n\n⚠ This is a Java Swing/AWT window — its controls are invisible to UIA and MSAA (you will see only the frame). Java exposes its tree via the Java Access Bridge: run `jabswitch /enable` and RESTART the app, then re-attach. Until then, screen_capture + ocr / click_text is the only way to read/drive it.' : '';
+    return withSnapshot(`attached to ${JSON.stringify(attached.name)}${java}`);
   },
   desktop_snapshot: (args) => textResult(snapshotText(typeof args.maxDepth === 'number' ? args.maxDepth : undefined, typeof args.root === 'string' ? args.root : undefined)),
   find_and_act: (args) => {
