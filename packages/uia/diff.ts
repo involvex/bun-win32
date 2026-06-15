@@ -70,6 +70,27 @@ export function diffTrees(before: DiffNode, after: DiffNode): TreeDiff {
   return { appeared, disappeared, renamed, restated };
 }
 
+/** True if any ref id now denotes a DIFFERENT structural node than in `before` — the real invariant behind a delta's
+ *  "your other refs are unchanged" promise. Catches what an appeared/disappeared check misses: a node flipping
+ *  ref-eligibility (e.g. a Custom gaining/losing its name) shifts every later ref number while diffTrees reports it as
+ *  a pure rename. Keyed by path + role + automationId (name-independent), so a value/name change alone is NOT churn. */
+export function refsRenumbered(before: DiffNode, after: DiffNode): boolean {
+  const priors = new Map<string, DiffNode>();
+  const nexts = new Map<string, DiffNode>();
+  flatten(before, '0', priors);
+  flatten(after, '0', nexts);
+  const refOf = (nodes: Map<string, DiffNode>): Map<string, string> => {
+    const refs = new Map<string, string>();
+    for (const [key, node] of nodes) if (node.ref !== undefined) refs.set(key, node.ref);
+    return refs;
+  };
+  const a = refOf(priors);
+  const b = refOf(nexts);
+  if (a.size !== b.size) return true;
+  for (const [key, ref] of b) if (a.get(key) !== ref) return true;
+  return false;
+}
+
 /**
  * Render a TreeDiff as compact `+`/`-`/`~` delta lines — the token-cheap per-step observation. Drops
  * ref-less unnamed structural churn (it carries no actionable signal); appeared/renamed lines keep
