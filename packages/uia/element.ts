@@ -8,7 +8,7 @@ import User32 from '@bun-win32/user32';
 import { automation, controlViewWalker } from './automation';
 import type { CacheRequest } from './cache';
 import { comRelease, hresult, vcall } from './com';
-import { compileCondition, type ElementProperties, formatNoMatch, matches, type Selector } from './condition';
+import { type CompiledCondition, compileCondition, type ElementProperties, formatNoMatch, matches, type Selector } from './condition';
 import { ControlType, S_OK, SLOT, TreeScope } from './constants';
 import { clickAt, type as inputType } from './input';
 import { screenshot as windowScreenshot, windowForProcess } from './window';
@@ -67,6 +67,26 @@ function readCachedProperties(ptr: bigint): ElementProperties {
 function findFirstPointer(scopeElement: bigint, scope: number, condition: bigint): bigint {
   if (vcall(scopeElement, SLOT.FindFirst, [FFIType.i32, FFIType.u64, FFIType.ptr], [scope, condition, scratch8.ptr!]) !== S_OK) return 0n;
   return scratch8.readBigUInt64LE(0);
+}
+
+/** First element matching a PRE-COMPILED condition under `scopeElement` (server-side, then the client-side
+ *  `matches` pass for regex/substring) — shared by find() and the waitFor poll loop so the condition is
+ *  compiled once and reused across every poll instead of per-poll. */
+function findFirstMatch(scopeElement: bigint, compiled: CompiledCondition, selector: Selector, scope: number): Element | null {
+  if (!compiled.needsClientFilter) {
+    const pointer = findFirstPointer(scopeElement, scope, compiled.condition);
+    return pointer === 0n ? null : new Element(pointer);
+  }
+  const pointers = findAllPointers(scopeElement, scope, compiled.condition);
+  for (let index = 0; index < pointers.length; index += 1) {
+    const pointer = pointers[index]!;
+    if (matches(readProperties(pointer), selector)) {
+      for (let rest = index + 1; rest < pointers.length; rest += 1) comRelease(pointers[rest]!);
+      return new Element(pointer);
+    }
+    comRelease(pointer);
+  }
+  return null;
 }
 
 function findAllPointers(scopeElement: bigint, scope: number, condition: bigint): bigint[] {
@@ -158,25 +178,11 @@ export class Element {
 
   /** The first descendant (by default) matching the selector, or null. Releases the non-matches. */
   find(selector: Selector, scope: number = TreeScope.TreeScope_Descendants): Element | null {
-    const pAutomation = automation();
-    const { condition, needsClientFilter } = compileCondition(pAutomation, selector);
+    const compiled = compileCondition(automation(), selector);
     try {
-      if (!needsClientFilter) {
-        const pointer = findFirstPointer(this.ptr, scope, condition);
-        return pointer === 0n ? null : new Element(pointer);
-      }
-      const pointers = findAllPointers(this.ptr, scope, condition);
-      for (let index = 0; index < pointers.length; index += 1) {
-        const pointer = pointers[index]!;
-        if (matches(readProperties(pointer), selector)) {
-          for (let rest = index + 1; rest < pointers.length; rest += 1) comRelease(pointers[rest]!);
-          return new Element(pointer);
-        }
-        comRelease(pointer);
-      }
-      return null;
+      return findFirstMatch(this.ptr, compiled, selector, scope);
     } finally {
-      comRelease(condition);
+      if (compiled.owned) comRelease(compiled.condition);
     }
   }
 
@@ -189,11 +195,16 @@ export class Element {
     const timeout = options.timeout ?? 5000;
     const interval = options.interval ?? 100;
     const start = Bun.nanoseconds();
-    for (;;) {
-      const found = this.find(selector);
-      if (found !== null) return found;
-      if ((Bun.nanoseconds() - start) / 1e6 >= timeout) throw new Error(this.describeNoMatch(selector));
-      await Bun.sleep(interval);
+    const compiled = compileCondition(automation(), selector); // compile ONCE — reused across every poll
+    try {
+      for (;;) {
+        const found = findFirstMatch(this.ptr, compiled, selector, TreeScope.TreeScope_Descendants);
+        if (found !== null) return found;
+        if ((Bun.nanoseconds() - start) / 1e6 >= timeout) throw new Error(this.describeNoMatch(selector));
+        await Bun.sleep(interval);
+      }
+    } finally {
+      if (compiled.owned) comRelease(compiled.condition);
     }
   }
 
@@ -207,11 +218,10 @@ export class Element {
 
   /** Every descendant (by default) matching the selector. The caller owns and should release them. */
   findAll(selector: Selector, scope: number = TreeScope.TreeScope_Descendants): Element[] {
-    const pAutomation = automation();
-    const { condition, needsClientFilter } = compileCondition(pAutomation, selector);
+    const compiled = compileCondition(automation(), selector);
     try {
-      const pointers = findAllPointers(this.ptr, scope, condition);
-      if (!needsClientFilter) return pointers.map((pointer) => new Element(pointer));
+      const pointers = findAllPointers(this.ptr, scope, compiled.condition);
+      if (!compiled.needsClientFilter) return pointers.map((pointer) => new Element(pointer));
       const result: Element[] = [];
       for (const pointer of pointers) {
         if (matches(readProperties(pointer), selector)) result.push(new Element(pointer));
@@ -219,7 +229,7 @@ export class Element {
       }
       return result;
     } finally {
-      comRelease(condition);
+      if (compiled.owned) comRelease(compiled.condition);
     }
   }
 
@@ -228,10 +238,9 @@ export class Element {
    * Elements expose their cached* properties with zero further round-trips. The caller owns them.
    */
   findAllCached(selector: Selector, request: CacheRequest, scope: number = TreeScope.TreeScope_Descendants): Element[] {
-    const pAutomation = automation();
-    const { condition, needsClientFilter } = compileCondition(pAutomation, selector);
+    const compiled = compileCondition(automation(), selector);
     try {
-      if (vcall(this.ptr, SLOT.FindAllBuildCache, [FFIType.i32, FFIType.u64, FFIType.u64, FFIType.ptr], [scope, condition, request.ptr, scratch8.ptr!]) !== S_OK) return [];
+      if (vcall(this.ptr, SLOT.FindAllBuildCache, [FFIType.i32, FFIType.u64, FFIType.u64, FFIType.ptr], [scope, compiled.condition, request.ptr, scratch8.ptr!]) !== S_OK) return [];
       const pArray = scratch8.readBigUInt64LE(0);
       if (pArray === 0n) return [];
       try {
@@ -242,7 +251,7 @@ export class Element {
           if (vcall(pArray, SLOT.GetElement, [FFIType.i32, FFIType.ptr], [index, scratch8.ptr!]) !== S_OK) continue;
           const pointer = scratch8.readBigUInt64LE(0);
           if (pointer === 0n) continue;
-          if (!needsClientFilter || matches(readCachedProperties(pointer), selector)) result.push(new Element(pointer));
+          if (!compiled.needsClientFilter || matches(readCachedProperties(pointer), selector)) result.push(new Element(pointer));
           else comRelease(pointer);
         }
         return result;
@@ -250,7 +259,7 @@ export class Element {
         comRelease(pArray);
       }
     } finally {
-      comRelease(condition);
+      if (compiled.owned) comRelease(compiled.condition);
     }
   }
 

@@ -99,6 +99,7 @@
     "example:automate-calculator": "bun ./example/automate-calculator.ts",
     "example:benchmark": "bun ./example/benchmark.ts",
     "example:computer-use": "bun ./example/computer-use.ts",
+    "example:condition-perf": "bun ./example/condition-perf.integration.test.ts",
     "example:desktop-mcp": "bun ./example/desktop-mcp.ts",
     "example:drive-in-the-dark": "bun ./example/drive-in-the-dark.ts",
     "example:get-variant": "bun ./example/get-variant.integration.test.ts",

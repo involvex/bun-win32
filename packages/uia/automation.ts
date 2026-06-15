@@ -10,6 +10,7 @@ import { CLSCTX_INPROC_SERVER, CLSID_CUIAutomation, COINIT_APARTMENTTHREADED, II
 
 let pAutomation = 0n;
 let pControlWalker = 0n;
+let pTrueCondition = 0n;
 let comInitialized = false;
 let wgcBundleDisposer: (() => void) | null = null;
 
@@ -61,6 +62,17 @@ export function controlViewWalker(): bigint {
   return pControlWalker;
 }
 
+/** The cached CreateTrueCondition — a stable client singleton (a true condition is immutable + STA-affine, and
+ *  all calls run serialized on the one STA thread), reused across every find({})/findAll({})/regex selector and
+ *  every waitFor poll instead of a create+release pair (drops two cross-process round-trips per such call). */
+export function trueCondition(): bigint {
+  if (pTrueCondition !== 0n) return pTrueCondition;
+  const out = Buffer.alloc(8);
+  if (vcall(automation(), SLOT.CreateTrueCondition, [FFIType.ptr], [out.ptr!]) !== S_OK) return 0n;
+  pTrueCondition = out.readBigUInt64LE(0);
+  return pTrueCondition;
+}
+
 /** Release the IUIAutomation client and uninitialize COM. Safe to call when never initialized. */
 export function uninitialize(): void {
   if (wgcBundleDisposer !== null) {
@@ -70,6 +82,10 @@ export function uninitialize(): void {
   if (pControlWalker !== 0n) {
     comRelease(pControlWalker);
     pControlWalker = 0n;
+  }
+  if (pTrueCondition !== 0n) {
+    comRelease(pTrueCondition);
+    pTrueCondition = 0n;
   }
   if (pAutomation !== 0n) {
     comRelease(pAutomation);

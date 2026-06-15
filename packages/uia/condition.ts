@@ -7,6 +7,7 @@ import { FFIType } from 'bun:ffi';
 
 import Oleaut32 from '@bun-win32/oleaut32';
 
+import { trueCondition } from './automation';
 import { comRelease, vcall } from './com';
 import { ControlType, PropertyId, S_OK, SLOT, VT_BSTR, VT_I4 } from './constants';
 
@@ -81,24 +82,27 @@ function propertyConditionString(pAutomation: bigint, propertyId: number, value:
   return out.readBigUInt64LE(0);
 }
 
-function trueCondition(pAutomation: bigint): bigint {
-  const out = Buffer.alloc(8);
-  if (vcall(pAutomation, SLOT.CreateTrueCondition, [FFIType.ptr], [out.ptr!]) !== S_OK) return 0n;
-  return out.readBigUInt64LE(0);
-}
-
 function andCondition(pAutomation: bigint, first: bigint, second: bigint): bigint {
   const out = Buffer.alloc(8);
   if (vcall(pAutomation, SLOT.CreateAndCondition, [FFIType.u64, FFIType.u64, FFIType.ptr], [first, second, out.ptr!]) !== S_OK) return 0n;
   return out.readBigUInt64LE(0);
 }
 
+/** A compiled selector: the server-side condition, whether a client-side `matches` pass is still needed, and
+ *  whether the caller owns the condition (must `comRelease` it) — false for the shared TrueCondition singleton. */
+export interface CompiledCondition {
+  condition: bigint;
+  needsClientFilter: boolean;
+  owned: boolean;
+}
+
 /**
- * Compile a selector into a server-side condition (the caller must `comRelease` it) plus whether a
- * client-side `matches` pass is still required. Exact scalars (controlType, name, automationId,
- * className) become a server-side AND of property conditions; regex/substring fall to the client.
+ * Compile a selector into a server-side condition plus whether a client-side `matches` pass is still
+ * required. Exact scalars (controlType, name, automationId, className) become a server-side AND of property
+ * conditions the caller owns; an empty/regex/substring-only selector reuses the shared TrueCondition
+ * singleton (owned=false — do not release it). Release an owned condition with `comRelease`.
  */
-export function compileCondition(pAutomation: bigint, selector: Selector): { condition: bigint; needsClientFilter: boolean } {
+export function compileCondition(pAutomation: bigint, selector: Selector): CompiledCondition {
   const parts: bigint[] = [];
   let needsClientFilter = false;
   if (selector.controlType !== undefined) {
@@ -120,7 +124,7 @@ export function compileCondition(pAutomation: bigint, selector: Selector): { con
     if (part !== 0n) parts.push(part);
   }
   if (selector.nameContains !== undefined) needsClientFilter = true;
-  if (parts.length === 0) return { condition: trueCondition(pAutomation), needsClientFilter: true };
+  if (parts.length === 0) return { condition: trueCondition(), needsClientFilter: true, owned: false };
   let condition = parts[0]!;
   for (let index = 1; index < parts.length; index += 1) {
     const combined = andCondition(pAutomation, condition, parts[index]!);
@@ -128,5 +132,5 @@ export function compileCondition(pAutomation: bigint, selector: Selector): { con
     comRelease(parts[index]!);
     condition = combined;
   }
-  return { condition, needsClientFilter };
+  return { condition, needsClientFilter, owned: true };
 }

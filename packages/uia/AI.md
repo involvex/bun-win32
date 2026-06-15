@@ -121,7 +121,7 @@ Adds `hWnd: bigint`, `activate()`, `screenshot(): Uint8Array`, `dispose()` / `[S
 - **Clipboard** (`clipboard.ts`): `readClipboard(): string`, `writeClipboard(text): boolean`, `paste(text): void` (set the clipboard + Ctrl+V — the reliable large-text path, no per-keystroke SendInput corruption), `await copy(): Promise<string>` (Ctrl+C + read — pull the selected text from any app, even one with no a11y tree). CF_UNICODETEXT via the Global* heap.
 
 ### Windows / input / msaa / low-level
-`findWindow`, `listWindows`, `windowForProcess`, `screenshot`, `captureWindowRGB`, `type WindowInfo`; `sendKeys`, `clickAt`, `virtualKeyCode`, `INPUT_SIZE`, `packKeyboardInput`, `packMouseInput`; `msaaTree`, `accessibleFromWindow`, `type MsaaNode`; `vcall`, `comRelease`, `guid`, `hresult`, `getBstr`, `getLong`, `getRect`, `getHandle`, `decodeBstr`, `encodePNG`, `initialize`, `uninitialize`, `automation`, `type Rect`.
+`findWindow`, `listWindows`, `windowForProcess`, `screenshot`, `captureWindowRGB`, `type WindowInfo`; `sendKeys`, `clickAt`, `virtualKeyCode`, `INPUT_SIZE`, `packKeyboardInput`, `packMouseInput`; `msaaTree`, `accessibleFromWindow`, `type MsaaNode`; `vcall`, `comRelease`, `guid`, `hresult`, `getBstr`, `getLong`, `getRect`, `getHandle`, `getPropertyValue`, `getCachedPropertyValue`, `decodeBstr`, `encodePNG`, `initialize`, `uninitialize`, `automation`, `trueCondition`, `compileCondition` (`type CompiledCondition`), `type Rect`. (`find`/`findAll`/regex selectors + every `waitFor` poll reuse the memoized `trueCondition` singleton — no per-call CreateTrueCondition; `waitFor` compiles its condition once, not per poll.)
 
 ## Recipes
 

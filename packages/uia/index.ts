@@ -51,12 +51,12 @@ export const uia = {
 };
 
 export { type AgentAction, type AgentActionResult, AGENT_TOOLS, execute, groundingTree } from './agent';
-export { automation, initialize, uninitialize } from './automation';
+export { automation, initialize, trueCondition, uninitialize } from './automation';
 export { AutomationElementMode, CacheRequest, createCacheRequest, DEFAULT_CACHE_PROPERTIES } from './cache';
 export { copy, paste, readClipboard, writeClipboard } from './clipboard';
 export { comRelease, guid, hresult, vcall } from './com';
 export { type ComputerAction, type ComputerResult, dispatch, type DispatchOptions, fromCuaAction, normalizeKey } from './computer';
-export { type ElementProperties, formatNoMatch, matches, selectorToString, type Selector } from './condition';
+export { type CompiledCondition, compileCondition, type ElementProperties, formatNoMatch, matches, selectorToString, type Selector } from './condition';
 export { ControlType, PatternId, PropertyConditionFlags, PropertyId, SLOT, TreeScope } from './constants';
 export { elementAt, listMonitors, type MonitorInfo, type PointDescription, postClickAt, scrollAt, virtualScreen, windowAt } from './coords';
 export { type DiffNode, diffTrees, type RenameChange, renderDiff, type TreeChange, type TreeDiff } from './diff';
