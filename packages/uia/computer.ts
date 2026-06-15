@@ -6,7 +6,7 @@
 // one — erasing the coordinate-hallucination, downscaling click-miss, and scroll-no-op failure modes
 // that the computer-use literature attributes to screenshot-only grounding.
 
-import { postClickAt, scrollAt } from './coords';
+import { ownerHwnd, postClickAt, postClickToHwnd, scrollAt } from './coords';
 import { fromPoint, type Window } from './element';
 import { clickAt, cursorPosition, doubleClickAt, dragTo, holdKey, middleClickAt, mouseDown, mouseUp, moveTo, rightClickAt, scrollWheel, sendKeys, type as typeText } from './input';
 
@@ -68,6 +68,7 @@ export function normalizeKey(combo: string): string {
 
 function semanticClick(x: number, y: number, cursorless: boolean): ComputerResult {
   let resolved: { role: string; name: string } | undefined;
+  let owner = 0n;
   try {
     const element = fromPoint(x, y);
     try {
@@ -75,14 +76,14 @@ function semanticClick(x: number, y: number, cursorless: boolean): ComputerResul
       element.invoke();
       return { ok: true, semantic: resolved, output: `invoked ${resolved.role} ${JSON.stringify(resolved.name)} (cursor-free)` };
     } catch {
-      // no element / no Invoke pattern — fall through to a click
+      owner = ownerHwnd(element); // capture the element's own window for the posted fallback before releasing it
     } finally {
       element.release();
     }
   } catch {
     // no element at the point — pure pixel click
   }
-  if (cursorless && postClickAt(x, y, 'left')) return { ok: true, semantic: resolved, output: resolved !== undefined ? `posted click to ${resolved.role} ${JSON.stringify(resolved.name)} (cursor-free)` : 'posted click (cursor-free)' };
+  if (cursorless && (owner !== 0n ? postClickToHwnd(owner, x, y, 'left') : postClickAt(x, y, 'left'))) return { ok: true, semantic: resolved, output: resolved !== undefined ? `posted click to ${resolved.role} ${JSON.stringify(resolved.name)} (cursor-free)` : 'posted click (cursor-free)' };
   clickAt(x, y);
   return { ok: true, semantic: resolved, output: resolved !== undefined ? `clicked ${resolved.role} ${JSON.stringify(resolved.name)}` : 'clicked (coordinate)' };
 }

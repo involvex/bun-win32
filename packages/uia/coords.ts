@@ -140,12 +140,11 @@ export function scrollAt(x: number, y: number, direction: 'up' | 'down' | 'left'
 }
 
 /**
- * Click at a screen point WITHOUT moving the real cursor — posts WM_*BUTTON (client-relative) to the
- * window under the point. Works for most Win32 apps; some (Chromium/Electron, games) ignore posted
- * clicks, so prefer Element.invoke() when a pattern exists. Returns false if no window is under it.
+ * Post a WM_*BUTTON click at a screen point to a SPECIFIC window — the occlusion-correct primitive. The screen
+ * point is converted to THAT window's client coords, so the message reaches `hWnd` regardless of what overlaps the
+ * pixel. Returns false for a 0 handle. (Chromium/Electron/games ignore posted clicks — prefer Element.invoke().)
  */
-export function postClickAt(x: number, y: number, button: 'left' | 'right' = 'left'): boolean {
-  const hWnd = User32.WindowFromPoint(packPoint(x, y));
+export function postClickToHwnd(hWnd: bigint, x: number, y: number, button: 'left' | 'right' = 'left'): boolean {
   if (hWnd === 0n) return false;
   const point = Buffer.alloc(8);
   point.writeInt32LE(x, 0);
@@ -157,4 +156,32 @@ export function postClickAt(x: number, y: number, button: 'left' | 'right' = 'le
   User32.PostMessageW(hWnd, isRight ? WM_RBUTTONDOWN : WM_LBUTTONDOWN, BigInt(isRight ? MK_RBUTTON : MK_LBUTTON), lParam);
   User32.PostMessageW(hWnd, isRight ? WM_RBUTTONUP : WM_LBUTTONUP, 0n, lParam);
   return true;
+}
+
+/** The HWND that owns an element's posted-message input: its own native window, else the nearest ancestor that has
+ *  one. Posting to THIS (not WindowFromPoint) makes a cursor-free click occlusion-correct — it reaches the target's
+ *  own window even when another window overlaps the pixel. 0n if no ancestor has a native window. */
+export function ownerHwnd(element: Element): bigint {
+  if (element.nativeWindowHandle !== 0n) return element.nativeWindowHandle;
+  let current: Element | null = element.parent;
+  for (let depth = 0; current !== null && depth < 24; depth += 1) {
+    const handle = current.nativeWindowHandle;
+    if (handle !== 0n) {
+      current.release();
+      return handle;
+    }
+    const parent: Element | null = current.parent;
+    current.release();
+    current = parent;
+  }
+  return 0n;
+}
+
+/**
+ * Click at a screen point WITHOUT moving the real cursor — posts WM_*BUTTON to whatever window is TOPMOST at the
+ * pixel (WindowFromPoint). For a known control prefer postClickToHwnd(ownerHwnd(element), …) / Element.invoke(),
+ * which target the control's own window even when occluded. Returns false if no window is under the point.
+ */
+export function postClickAt(x: number, y: number, button: 'left' | 'right' = 'left'): boolean {
+  return postClickToHwnd(User32.WindowFromPoint(packPoint(x, y)), x, y, button);
 }

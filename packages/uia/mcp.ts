@@ -39,7 +39,9 @@ import {
   moveWindow,
   type MsaaNode,
   normalizeKey,
+  ownerHwnd,
   postClickAt,
+  postClickToHwnd,
   postKey,
   processImagePath,
   PropertyId,
@@ -454,7 +456,11 @@ function clickElement(element: Element, button: 'left' | 'right' | 'middle', dou
       }
     }
     const point = clickPoint(element);
-    if (postClickAt(point.x, point.y, button === 'right' ? 'right' : 'left')) return `posted ${button} click (cursor-free)`;
+    // Post to the element's OWN owner window, never WindowFromPoint — so the click lands on the target even when
+    // another window occludes the pixel (the 'drive in the dark' doctrine). Falls back to the topmost only if the
+    // element has no native window in its ancestry.
+    const owner = ownerHwnd(element);
+    if (owner !== 0n ? postClickToHwnd(owner, point.x, point.y, button === 'right' ? 'right' : 'left') : postClickAt(point.x, point.y, button === 'right' ? 'right' : 'left')) return `posted ${button} click (cursor-free)`;
   }
   if (cursorDenied) throw new Error('cursor-free click was not possible and the real cursor is disabled (BUN_UIA_CURSOR=never)');
   const point = clickPoint(element);
@@ -744,7 +750,7 @@ const TOOLS: McpTool[] = [
     name: 'click_point',
     category: 'input',
     description:
-      'Click at absolute SCREEN pixel coordinates — cursor-free posted click by default (works on a background window, no real cursor move), or cursor:true for a real SendInput click. Pairs with ocr / inspect_point / screenshot_marked to click something that has no ref (pixel-only UI).',
+      'Click at absolute SCREEN pixel coordinates — a cursor-free posted click by default (no real cursor move), or cursor:true for a real SendInput click. The posted click goes to whatever window is TOPMOST at that pixel, so confirm the pixel belongs to your target (inspect_point / capture_window) when windows overlap; for a known control prefer click/invoke by ref, which targets the control\'s OWN window even when occluded. Pairs with ocr / inspect_point / screenshot_marked to click something that has no ref (pixel-only UI).',
     inputSchema: {
       type: 'object',
       properties: { x: { type: 'number' }, y: { type: 'number' }, button: { type: 'string', enum: ['left', 'right'] }, cursor: { type: 'boolean', description: 'Force a real SendInput cursor click' } },
