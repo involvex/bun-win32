@@ -481,7 +481,7 @@ const TOOLS: McpTool[] = [
   {
     name: 'attach',
     category: 'read',
-    description: 'Attach to a top-level window as the active root for snapshots and actions. Provide a title (exact), an hWnd from list_windows, or a processId. Works on a minimized/background window.',
+    description: 'Attach to a top-level window as the active root for snapshots and actions. Provide a title (exact), a className (e.g. Shell_TrayWnd for the taskbar + system tray, or any title-less window), an hWnd from list_windows, or a processId. Works on a minimized/background window.',
     inputSchema: { type: 'object', properties: { title: { type: 'string' }, hWnd: { type: 'string', description: 'Handle as a decimal or 0x-hex string' }, processId: { type: 'number' }, className: { type: 'string' } } },
   },
   {
@@ -862,10 +862,10 @@ const HANDLERS: Record<string, ToolHandler> = {
     attached = null;
     lastSnapshotBody = '';
     lastSnapshotTree = null;
-    if (typeof args.title === 'string') attached = uia.attach(typeof args.className === 'string' ? { className: args.className, title: args.title } : args.title);
+    if (typeof args.title === 'string' || typeof args.className === 'string') attached = uia.attach({ ...(typeof args.title === 'string' ? { title: args.title } : {}), ...(typeof args.className === 'string' ? { className: args.className } : {}) });
     else if (typeof args.hWnd === 'string') attached = uia.attach(BigInt(args.hWnd));
     else if (typeof args.processId === 'number') attached = uia.attach({ process: args.processId });
-    else throw new Error('attach requires one of: title, hWnd, processId');
+    else throw new Error('attach requires one of: title, className, hWnd, processId');
     return withSnapshot(`attached to ${JSON.stringify(attached.name)}`);
   },
   desktop_snapshot: (args) => textResult(snapshotText(typeof args.maxDepth === 'number' ? args.maxDepth : undefined, typeof args.root === 'string' ? args.root : undefined)),
