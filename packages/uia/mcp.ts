@@ -601,6 +601,17 @@ const TOOLS: McpTool[] = [
     },
   },
   {
+    name: 'click_text',
+    category: 'input',
+    description:
+      'OCR the attached window (or a hWnd) and click the on-screen text matching `text` (case-insensitive substring) at its box centre — cursor-free. The one-call "click what it says" for a PIXEL-ONLY surface with no ref/a11y (game, <canvas>/WebGL, remote desktop, video). Prefer a snapshot ref when one exists; this is the fallback. Returns what was clicked, or the nearest text it did find.',
+    inputSchema: {
+      type: 'object',
+      properties: { text: { type: 'string' }, hWnd: { type: 'string', description: HWND_DESC }, cursor: { type: 'boolean', description: 'Force a real SendInput cursor click' } },
+      required: ['text'],
+    },
+  },
+  {
     name: 'screenshot',
     category: 'read',
     description:
@@ -935,6 +946,31 @@ const HANDLERS: Record<string, ToolHandler> = {
     if (postClickAt(x, y, button)) return textResult(`posted ${button} click at ${x},${y} (cursor-free)`);
     clickAt(x, y);
     return textResult(`clicked ${button} at ${x},${y} (real cursor fallback)`);
+  },
+  click_text: async (args) => {
+    const want = requireString(args, 'text').toLowerCase();
+    const hWnd = typeof args.hWnd === 'string' ? BigInt(args.hWnd) : (attached?.hWnd ?? 0n);
+    if (hWnd === 0n) throw new Error('click_text: attach a window or pass hWnd');
+    const result = await uia.ocrWindow(hWnd);
+    if (result === null) throw new Error('click_text: could not capture the window (minimized / protected / no surface)');
+    const words = result.lines.flatMap((line) => line.words);
+    const hit = words.find((word) => word.text.toLowerCase().includes(want)) ?? result.lines.find((line) => line.text.toLowerCase().includes(want)) ?? null;
+    if (hit === null) {
+      const nearest = words
+        .map((word) => word.text)
+        .filter((text) => text.trim().length > 0)
+        .slice(0, 8);
+      throw new Error(`click_text: no on-screen text matched ${JSON.stringify(args.text)}${nearest.length > 0 ? ` — nearest: ${nearest.map((text) => JSON.stringify(text)).join(', ')}` : ''}`);
+    }
+    const centerX = hit.bounds.x + Math.floor(hit.bounds.width / 2);
+    const centerY = hit.bounds.y + Math.floor(hit.bounds.height / 2);
+    if (args.cursor === true) {
+      clickAt(centerX, centerY);
+      return textResult(`clicked text ${JSON.stringify(hit.text)} (real cursor) at ${centerX},${centerY}`);
+    }
+    if (postClickAt(centerX, centerY, 'left')) return textResult(`clicked text ${JSON.stringify(hit.text)} at ${centerX},${centerY} (cursor-free)`);
+    clickAt(centerX, centerY);
+    return textResult(`clicked text ${JSON.stringify(hit.text)} at ${centerX},${centerY} (real cursor fallback)`);
   },
   screenshot: async () => {
     const window = requireAttached();
