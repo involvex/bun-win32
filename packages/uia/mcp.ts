@@ -1020,6 +1020,17 @@ const BLIND_SPOTS: { test: RegExp; note: string }[] = [
   { test: /^FLUTTER_RUNNER_WIN32_WINDOW$/, note: 'Flutter desktop window — it renders into a child FLUTTERVIEW whose semantics tree is often NOT exposed to generic UIA clients (you may see a single pane / near-empty tree). It MAY populate — re-snapshot once; if it stays near-empty, screen_capture + ocr / click_text is the way to read/drive it.' },
 ];
 
+/** Run a pattern action; on a "not supported" throw, append the recovery hint that points at inspect_element's
+ *  `can:` affordance list — so a toggle/select/expand/collapse on the wrong control steers the agent, like set_value
+ *  (which inherits the ValuePattern hint via setValueSmart) already does. */
+function patternAction<T>(verb: string, run: () => T): T {
+  try {
+    return run();
+  } catch (error) {
+    throw new Error(`${error instanceof Error ? error.message : String(error)} — this control may not support ${verb}; call inspect_element {ref} and pick a verb from its 'can:' list`);
+  }
+}
+
 /** A steering note when the attached window is a known a11y blind spot (class-prefix match), else ''. */
 function blindSpotNote(className: string): string {
   const hit = BLIND_SPOTS.find((entry) => entry.test.test(className));
@@ -1114,25 +1125,23 @@ const HANDLERS: Record<string, ToolHandler> = {
   },
   toggle: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
-    element.toggle();
+    patternAction('toggle', () => element.toggle());
     return withSnapshot(`toggled ${quote(args.element)} (state ${element.toggleState})`);
   },
   expand: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
-    element.expand();
+    patternAction('expand', () => element.expand());
     return withSnapshot(`expanded ${quote(args.element)} (state ${element.expandCollapseState}) — desktop_snapshot to see revealed items; a dropdown that opens in its own window needs list_windows{includePopups}`);
   },
   collapse: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
-    element.collapse();
+    patternAction('collapse', () => element.collapse());
     return withSnapshot(`collapsed ${quote(args.element)}`);
   },
   select: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
     const mode = args.mode === 'add' ? 'add' : args.mode === 'remove' ? 'remove' : 'replace';
-    if (mode === 'add') element.addToSelection();
-    else if (mode === 'remove') element.removeFromSelection();
-    else element.select();
+    patternAction('select', () => (mode === 'add' ? element.addToSelection() : mode === 'remove' ? element.removeFromSelection() : element.select()));
     return withSnapshot(`${mode === 'add' ? 'added to selection' : mode === 'remove' ? 'removed from selection' : 'selected'} ${quote(args.element)}`);
   },
   find_text: (args) => {
