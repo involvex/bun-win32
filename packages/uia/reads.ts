@@ -58,16 +58,12 @@ export function getHandle(ptr: bigint, slot: number): bigint {
 /** A decoded VARIANT scalar — the subset of property-value types worth surfacing (the rest decode to null). */
 export type VariantValue = string | number | boolean | null;
 
-/**
- * Read ANY property by id via GetCurrentPropertyValue (one binding for HelpText, IsOffscreen,
- * HasKeyboardFocus, ItemStatus, FrameworkId, … and pattern-state-via-propertyId), decoding the VARIANT by
- * its `vt` tag. Returns null for empty/unsupported/non-scalar values. The VARIANT out-param is a full
- * 24-byte x64 VARIANT (NOT condition.ts's 16-byte input VARIANT). Always VariantClear's it — that frees a
- * returned BSTR (copied out first, never freed twice) or releases a returned interface, so no leak.
- */
-export function getPropertyValue(ptr: bigint, propertyId: number): VariantValue {
+/** Read a property by id via `slot` (GetCurrentPropertyValue=10 live, GetCachedPropertyValue=12 cached),
+ *  decoding the 24-byte x64 VARIANT by its `vt` tag (NOT condition.ts's 16-byte input VARIANT). Always
+ *  VariantClear's it — frees a returned BSTR (copied out first, never freed twice) / releases an interface. */
+function readVariantProperty(ptr: bigint, slot: number, propertyId: number): VariantValue {
   const variant = Buffer.alloc(24);
-  if (vcall(ptr, SLOT.GetCurrentPropertyValue, [FFIType.i32, FFIType.ptr], [propertyId, variant.ptr!]) !== S_OK) return null;
+  if (vcall(ptr, slot, [FFIType.i32, FFIType.ptr], [propertyId, variant.ptr!]) !== S_OK) return null;
   const vt = variant.readUInt16LE(0);
   let value: VariantValue = null;
   if (vt === VT_I4) value = variant.readInt32LE(8);
@@ -85,6 +81,21 @@ export function getPropertyValue(ptr: bigint, propertyId: number): VariantValue 
   }
   Oleaut32.VariantClear(variant.ptr!);
   return value;
+}
+
+/**
+ * Read ANY property by id via GetCurrentPropertyValue (live) — one binding for HelpText, IsOffscreen,
+ * HasKeyboardFocus, ItemStatus, FrameworkId, … and pattern-state-via-propertyId. Returns null for
+ * empty/unsupported/non-scalar values.
+ */
+export function getPropertyValue(ptr: bigint, propertyId: number): VariantValue {
+  return readVariantProperty(ptr, SLOT.GetCurrentPropertyValue, propertyId);
+}
+
+/** Read a property by id from the element's CACHE (GetCachedPropertyValue) — zero round-trips; the property
+ *  must have been in the CacheRequest. Used to read pattern-state for a whole snapshot in one round-trip. */
+export function getCachedPropertyValue(ptr: bigint, propertyId: number): VariantValue {
+  return readVariantProperty(ptr, SLOT.GetCachedPropertyValue, propertyId);
 }
 
 /** Read a `[propget] RECT*` accessor (4× LONG) into an {x,y,width,height} rectangle. */

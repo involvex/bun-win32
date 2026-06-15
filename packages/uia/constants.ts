@@ -151,6 +151,18 @@ export enum PropertyId {
   IsOffscreen = 30022,
   FrameworkId = 30024,
   ItemStatus = 30026,
+  IsExpandCollapsePatternAvailable = 30028,
+  IsRangeValuePatternAvailable = 30033,
+  IsSelectionItemPatternAvailable = 30036,
+  IsTogglePatternAvailable = 30041,
+  IsValuePatternAvailable = 30043,
+  ValueValue = 30045,
+  RangeValueValue = 30047,
+  RangeValueMinimum = 30049,
+  RangeValueMaximum = 30050,
+  ExpandCollapseExpandCollapseState = 30070,
+  SelectionItemIsSelected = 30079,
+  ToggleToggleState = 30086,
 }
 
 /**
@@ -183,6 +195,7 @@ export const SLOT = {
   FindAllBuildCache: 8,
   BuildUpdatedCache: 9,
   GetCurrentPropertyValue: 10,
+  GetCachedPropertyValue: 12,
   GetCachedParent: 18,
   GetCachedChildren: 19,
   GetCurrentPattern: 16, // PROVEN

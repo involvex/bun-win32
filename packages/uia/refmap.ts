@@ -4,10 +4,10 @@
 // are valid until dispose(); re-snapshot after any action that changes the tree. Every Element
 // materialized by the walk is owned and released on dispose (the source window is NOT touched).
 
-import { AutomationElementMode, createCacheRequest } from './cache';
-import { ControlType, TreeScope } from './constants';
+import { AutomationElementMode, createCacheRequest, DEFAULT_CACHE_PROPERTIES } from './cache';
+import { ControlType, PropertyId, TreeScope } from './constants';
 import { Element } from './element';
-import type { Rect } from './reads';
+import { getCachedPropertyValue, type Rect } from './reads';
 
 const INTERACTIVE = new Set<number>([
   ControlType.Button,
@@ -41,6 +41,56 @@ function isActionable(controlType: number, name: string, hasBounds: boolean): bo
   return INTERACTIVE.has(controlType) || (controlType === ControlType.Custom && name.trim().length > 0);
 }
 
+/** Pattern-state property ids the snapshot prefetches so every ref'd node's live state rides the SAME single
+ *  BuildUpdatedCache round-trip (each value paired with its Is*PatternAvailable gate). */
+const STATE_PROPERTIES: readonly number[] = [
+  PropertyId.IsTogglePatternAvailable,
+  PropertyId.ToggleToggleState,
+  PropertyId.IsValuePatternAvailable,
+  PropertyId.ValueValue,
+  PropertyId.IsExpandCollapsePatternAvailable,
+  PropertyId.ExpandCollapseExpandCollapseState,
+  PropertyId.IsSelectionItemPatternAvailable,
+  PropertyId.SelectionItemIsSelected,
+  PropertyId.IsRangeValuePatternAvailable,
+  PropertyId.RangeValueValue,
+  PropertyId.RangeValueMinimum,
+  PropertyId.RangeValueMaximum,
+];
+
+const TOGGLE_LABELS = ['off', 'on', 'mixed']; // ToggleState 0/1/2
+const EXPAND_LABELS = ['collapsed', 'expanded', 'partial']; // ExpandCollapseState 0/1/2 (3 = leaf → not shown)
+
+/** The inline dynamic-state suffix for a ref'd node, read from its CACHE (zero round-trips): `(on)`/`(off)`,
+ *  `(value="…")`, `(expanded)`/`(collapsed)`, `(selected)`, `(NN%)`. Each is gated on its Is*PatternAvailable
+ *  so a control that does not support a pattern never shows that pattern's default value (unsupported cached
+ *  state returns a default, NOT empty — verified). Returns '' when no state applies. */
+function cachedState(ptr: bigint, name: string): string {
+  const parts: string[] = [];
+  if (getCachedPropertyValue(ptr, PropertyId.IsTogglePatternAvailable) === true) {
+    const state = getCachedPropertyValue(ptr, PropertyId.ToggleToggleState);
+    if (typeof state === 'number' && state >= 0 && state <= 2) parts.push(TOGGLE_LABELS[state]!);
+  }
+  if (getCachedPropertyValue(ptr, PropertyId.IsValuePatternAvailable) === true) {
+    const value = getCachedPropertyValue(ptr, PropertyId.ValueValue);
+    if (typeof value === 'string' && value.length > 0 && value !== name) parts.push(`value=${JSON.stringify(value.length > 40 ? `${value.slice(0, 40)}…` : value)}`); // skip when value just echoes the name (e.g. nav TreeItems)
+  }
+  if (getCachedPropertyValue(ptr, PropertyId.IsExpandCollapsePatternAvailable) === true) {
+    const state = getCachedPropertyValue(ptr, PropertyId.ExpandCollapseExpandCollapseState);
+    if (typeof state === 'number' && state >= 0 && state <= 2) parts.push(EXPAND_LABELS[state]!);
+  }
+  if (getCachedPropertyValue(ptr, PropertyId.IsSelectionItemPatternAvailable) === true && getCachedPropertyValue(ptr, PropertyId.SelectionItemIsSelected) === true) parts.push('selected');
+  if (getCachedPropertyValue(ptr, PropertyId.IsRangeValuePatternAvailable) === true) {
+    const value = getCachedPropertyValue(ptr, PropertyId.RangeValueValue);
+    if (typeof value === 'number') {
+      const min = getCachedPropertyValue(ptr, PropertyId.RangeValueMinimum);
+      const max = getCachedPropertyValue(ptr, PropertyId.RangeValueMaximum);
+      parts.push(typeof min === 'number' && typeof max === 'number' && max > min ? `${Math.round(((value - min) / (max - min)) * 100)}%` : `value=${value}`);
+    }
+  }
+  return parts.length > 0 ? ` (${parts.join(', ')})` : '';
+}
+
 export interface Mark {
   ref: string;
   role: string;
@@ -56,6 +106,8 @@ export interface RefNode {
   automationId?: string;
   bounds?: Rect;
   enabled?: boolean;
+  /** Inline dynamic-state suffix on a ref'd node, e.g. ` (on)` / ` (value="…")` / ` (42%)`. */
+  state?: string;
   children: RefNode[];
 }
 
@@ -76,6 +128,8 @@ function walk(element: Element, depth: number, maxDepth: number, counter: { valu
     node.ref = ref;
     byRef.set(ref, element);
     marks.push({ ref, role: node.role, name, bounds });
+    const state = cachedState(element.ptr, name);
+    if (state.length > 0) node.state = state;
   }
   if (depth < maxDepth) {
     for (const child of element.cachedChildren) node.children.push(walk(child, depth + 1, maxDepth, counter, byRef, owned, marks));
@@ -117,7 +171,7 @@ export class Snapshot {
 /** Build a ref-keyed Snapshot of a window's subtree in one cached round-trip. The caller disposes it. */
 export function snapshot(window: Element, options: { maxDepth?: number } = {}): Snapshot {
   const maxDepth = options.maxDepth ?? 40;
-  const request = createCacheRequest(undefined, TreeScope.TreeScope_Subtree, AutomationElementMode.Full);
+  const request = createCacheRequest([...DEFAULT_CACHE_PROPERTIES, ...STATE_PROPERTIES], TreeScope.TreeScope_Subtree, AutomationElementMode.Full);
   const cached = window.buildUpdatedCache(request);
   const byRef = new Map<string, Element>();
   const owned: Element[] = [];
@@ -141,7 +195,7 @@ export function renderSnapshot(node: RefNode, depth = 0): string {
   const label = node.name.trim().length > 0 ? ` ${JSON.stringify(node.name)}` : '';
   const ref = node.ref !== undefined ? ` [ref=${node.ref}]` : '';
   const id = node.automationId !== undefined ? ` id=${node.automationId}` : '';
-  let out = `${indent}- ${node.role}${label}${ref}${id}`;
+  let out = `${indent}- ${node.role}${label}${ref}${id}${node.state ?? ''}`;
   for (const child of node.children) out += `\n${renderSnapshot(child, depth + 1)}`;
   return out;
 }
@@ -172,6 +226,7 @@ export function pruneRefTree(node: RefNode): RefNode | null {
   if (node.automationId !== undefined) pruned.automationId = node.automationId;
   if (node.bounds !== undefined) pruned.bounds = node.bounds;
   if (node.enabled !== undefined) pruned.enabled = node.enabled;
+  if (node.state !== undefined) pruned.state = node.state;
   return pruned;
 }
 
