@@ -7,7 +7,7 @@
 import { AutomationElementMode, createCacheRequest, DEFAULT_CACHE_PROPERTIES } from './cache';
 import { ControlType, PropertyId, TreeScope } from './constants';
 import { Element } from './element';
-import { getCachedPropertyValue, type Rect } from './reads';
+import { getCachedPropertyValue, getPropertyValue, type Rect, type VariantValue } from './reads';
 
 const INTERACTIVE = new Set<number>([
   ControlType.Button,
@@ -61,34 +61,42 @@ const STATE_PROPERTIES: readonly number[] = [
 const TOGGLE_LABELS = ['off', 'on', 'mixed']; // ToggleState 0/1/2
 const EXPAND_LABELS = ['collapsed', 'expanded', 'partial']; // ExpandCollapseState 0/1/2 (3 = leaf → not shown)
 
-/** The inline dynamic-state suffix for a ref'd node, read from its CACHE (zero round-trips): `(on)`/`(off)`,
- *  `(value="…")`, `(expanded)`/`(collapsed)`, `(selected)`, `(NN%)`. Each is gated on its Is*PatternAvailable
- *  so a control that does not support a pattern never shows that pattern's default value (unsupported cached
- *  state returns a default, NOT empty — verified). Returns '' when no state applies. */
-function cachedState(ptr: bigint, name: string): string {
+type PropertyReader = (ptr: bigint, propertyId: number) => VariantValue;
+
+/** The inline dynamic-state suffix for a ref'd node: `(on)`/`(off)`, `(value="…")`, `(expanded)`/`(collapsed)`,
+ *  `(selected)`, `(NN%)`. Each is gated on its Is*PatternAvailable so a control that does not support a pattern
+ *  never shows that pattern's default value (unsupported state returns a default, NOT empty — verified). `read`
+ *  is getCachedPropertyValue on the cached fast path (zero round-trips) or getPropertyValue on the live fallback.
+ *  Returns '' when no state applies. */
+function nodeState(read: PropertyReader, ptr: bigint, name: string): string {
   const parts: string[] = [];
-  if (getCachedPropertyValue(ptr, PropertyId.IsTogglePatternAvailable) === true) {
-    const state = getCachedPropertyValue(ptr, PropertyId.ToggleToggleState);
+  if (read(ptr, PropertyId.IsTogglePatternAvailable) === true) {
+    const state = read(ptr, PropertyId.ToggleToggleState);
     if (typeof state === 'number' && state >= 0 && state <= 2) parts.push(TOGGLE_LABELS[state]!);
   }
-  if (getCachedPropertyValue(ptr, PropertyId.IsValuePatternAvailable) === true) {
-    const value = getCachedPropertyValue(ptr, PropertyId.ValueValue);
+  if (read(ptr, PropertyId.IsValuePatternAvailable) === true) {
+    const value = read(ptr, PropertyId.ValueValue);
     if (typeof value === 'string' && value.length > 0 && value !== name) parts.push(`value=${JSON.stringify(value.length > 40 ? `${value.slice(0, 40)}…` : value)}`); // skip when value just echoes the name (e.g. nav TreeItems)
   }
-  if (getCachedPropertyValue(ptr, PropertyId.IsExpandCollapsePatternAvailable) === true) {
-    const state = getCachedPropertyValue(ptr, PropertyId.ExpandCollapseExpandCollapseState);
+  if (read(ptr, PropertyId.IsExpandCollapsePatternAvailable) === true) {
+    const state = read(ptr, PropertyId.ExpandCollapseExpandCollapseState);
     if (typeof state === 'number' && state >= 0 && state <= 2) parts.push(EXPAND_LABELS[state]!);
   }
-  if (getCachedPropertyValue(ptr, PropertyId.IsSelectionItemPatternAvailable) === true && getCachedPropertyValue(ptr, PropertyId.SelectionItemIsSelected) === true) parts.push('selected');
-  if (getCachedPropertyValue(ptr, PropertyId.IsRangeValuePatternAvailable) === true) {
-    const value = getCachedPropertyValue(ptr, PropertyId.RangeValueValue);
+  if (read(ptr, PropertyId.IsSelectionItemPatternAvailable) === true && read(ptr, PropertyId.SelectionItemIsSelected) === true) parts.push('selected');
+  if (read(ptr, PropertyId.IsRangeValuePatternAvailable) === true) {
+    const value = read(ptr, PropertyId.RangeValueValue);
     if (typeof value === 'number') {
-      const min = getCachedPropertyValue(ptr, PropertyId.RangeValueMinimum);
-      const max = getCachedPropertyValue(ptr, PropertyId.RangeValueMaximum);
+      const min = read(ptr, PropertyId.RangeValueMinimum);
+      const max = read(ptr, PropertyId.RangeValueMaximum);
       parts.push(typeof min === 'number' && typeof max === 'number' && max > min ? `${Math.round(((value - min) / (max - min)) * 100)}%` : `value=${value}`);
     }
   }
   return parts.length > 0 ? ` (${parts.join(', ')})` : '';
+}
+
+/** Cached-read state suffix (fast path; rides the single BuildUpdatedCache round-trip, zero further reads). */
+function cachedState(ptr: bigint, name: string): string {
+  return nodeState(getCachedPropertyValue, ptr, name);
 }
 
 export interface Mark {
@@ -137,6 +145,39 @@ function walk(element: Element, depth: number, maxDepth: number, counter: { valu
   return node;
 }
 
+/** The LIVE fallback walk for a provider that refuses the one-shot Subtree+Full cache (e.g. Opera and other
+ *  heavy cross-process Chromium top-levels, whose BuildUpdatedCache(Subtree, Full) fails — verified live; the
+ *  cached walk would then drop the entire native tree). It reads each node's properties LIVE (GetCurrent*, a few
+ *  cross-process round-trips per node) and navigates the live control view, recovering that tree with real,
+ *  actionable Element pointers. Slower than walk() (N round-trips, not one), so it is a fallback, not the default.
+ *  `isRoot` is true only for the element the CALLER already owns (the window / an extra root): it is NOT pushed to
+ *  `owned`; every descendant the walk materializes IS, so dispose() releases exactly what the snapshot created. */
+function walkLive(element: Element, depth: number, maxDepth: number, counter: { value: number }, byRef: Map<string, Element>, owned: Element[], marks: Mark[], isRoot: boolean): RefNode {
+  if (!isRoot) owned.push(element);
+  const controlType = element.controlType;
+  const name = element.name;
+  const bounds = element.boundingRectangle;
+  const node: RefNode = { role: ControlType[controlType] ?? `Type(${controlType})`, name, children: [] };
+  const automationId = element.automationId;
+  if (automationId.length > 0) node.automationId = automationId;
+  const hasBounds = bounds.width !== 0 || bounds.height !== 0;
+  if (hasBounds) node.bounds = bounds;
+  node.enabled = element.isEnabled;
+  if (isActionable(controlType, name, hasBounds)) {
+    const ref = `e${counter.value}`;
+    counter.value += 1;
+    node.ref = ref;
+    byRef.set(ref, element);
+    marks.push({ ref, role: node.role, name, bounds });
+    const state = nodeState(getPropertyValue, element.ptr, name);
+    if (state.length > 0) node.state = state;
+  }
+  if (depth < maxDepth) {
+    for (const child of element.children) node.children.push(walkLive(child, depth + 1, maxDepth, counter, byRef, owned, marks, false));
+  }
+  return node;
+}
+
 export class Snapshot {
   readonly tree: RefNode;
   readonly marks: readonly Mark[];
@@ -172,36 +213,39 @@ export class Snapshot {
  * Build a ref-keyed Snapshot of a window's subtree in one cached round-trip. `extraRoots` are additional
  * fragment roots whose subtrees are appended under the main tree's root — used to splice in the web/editor DOM
  * of a Chromium/Electron window (its `Chrome_RenderWidgetHostHWND` children, which the top-level walk does not
- * bridge). Each extra root is cached independently; a transient one (mid-navigation / empty) is skipped. The
- * caller disposes the Snapshot (and owns the `extraRoots` Elements it passed in). */
-export function snapshot(window: Element, options: { maxDepth?: number; extraRoots?: readonly Element[] } = {}): Snapshot {
+ * bridge). Each extra root is cached independently; a transient one (mid-navigation / empty) is skipped. If a
+ * provider refuses the one-shot Subtree+Full cache (heavy cross-process Chromium like Opera — verified live),
+ * the main tree (and any such extra root) is recovered via a LIVE walk instead of dropped, so the native browser
+ * chrome stays visible and actionable; pass `live: true` to force that path for a known cache-hostile provider.
+ * The caller disposes the Snapshot (and owns the `extraRoots` Elements it passed in). */
+export function snapshot(window: Element, options: { maxDepth?: number; extraRoots?: readonly Element[]; live?: boolean } = {}): Snapshot {
   const maxDepth = options.maxDepth ?? 40;
   const request = createCacheRequest([...DEFAULT_CACHE_PROPERTIES, ...STATE_PROPERTIES], TreeScope.TreeScope_Subtree, AutomationElementMode.Full);
-  const cached = window.buildUpdatedCache(request);
-  const mainOk = cached.ptr !== window.ptr;
+  // Heavy cross-process Chromium top-levels (e.g. Opera) deterministically FAIL BuildUpdatedCache(Subtree, Full)
+  // while still serving live reads + navigation. Default: try the one-shot cache; on failure fall back to the
+  // live walk so the native tree (browser chrome: tabs / address bar / URL) is recovered instead of dropped.
+  // `live: true` skips the cache attempt for a provider already known to be cache-hostile.
+  const useLive = options.live === true;
+  const cached = useLive ? window : window.buildUpdatedCache(request);
+  const mainOk = !useLive && cached.ptr !== window.ptr;
   const byRef = new Map<string, Element>();
   const owned: Element[] = [];
   const marks: Mark[] = [];
   const counter = { value: 1 };
   try {
-    // Some Chromium top-levels (e.g. Opera) refuse a subtree cache yet still host reachable web roots — fall
-    // back to a synthetic root so the page DOM below still snapshots instead of failing the whole call.
-    const tree = mainOk ? walk(cached, 0, maxDepth, counter, byRef, owned, marks) : { role: ControlType[window.controlType] ?? 'Window', name: window.name, children: [] };
+    const tree = mainOk ? walk(cached, 0, maxDepth, counter, byRef, owned, marks) : walkLive(window, 0, maxDepth, counter, byRef, owned, marks, true);
     for (const extra of options.extraRoots ?? []) {
       try {
         const cachedExtra = extra.buildUpdatedCache(request);
-        if (cachedExtra.ptr === extra.ptr) continue; // BuildUpdatedCache failed for this root — skip
-        const subtree = walk(cachedExtra, 1, maxDepth, counter, byRef, owned, marks);
+        const subtree = cachedExtra.ptr !== extra.ptr ? walk(cachedExtra, 1, maxDepth, counter, byRef, owned, marks) : walkLive(extra, 1, maxDepth, counter, byRef, owned, marks, true); // a render widget that refuses the cache still walks live
         if (subtree.children.length > 0 || subtree.ref !== undefined) tree.children.push(subtree); // skip an empty render widget
       } catch {
         // a render widget can be mid-navigation — its absence must not fail the whole snapshot
       }
     }
-    if (!mainOk && tree.children.length === 0) throw new Error('snapshot: BuildUpdatedCache failed (no cached clone)');
     return new Snapshot(tree, marks, byRef, owned);
   } catch (error) {
-    for (const element of owned) element.release();
-    if (cached.ptr !== window.ptr) cached.release();
+    for (const element of owned) element.release(); // owned already includes the cached clone (walk pushed it); window / extraRoots stay caller-owned — releasing cached again here would double-free it
     throw error;
   } finally {
     request.release();

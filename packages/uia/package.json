@@ -119,6 +119,7 @@
     "example:selftest": "bun ./example/uia.selftest.ts",
     "example:set-of-marks": "bun ./example/set-of-marks.ts",
     "example:snapshot-economy": "bun ./example/snapshot-economy.integration.test.ts",
+    "example:snapshot-fallback": "bun ./example/snapshot-fallback.integration.test.ts",
     "example:uia-report": "bun ./example/uia-report.ts",
     "example:vcall-safety": "bun ./example/vcall-safety.integration.test.ts",
     "example:web-content": "bun ./example/web-content.integration.test.ts",
