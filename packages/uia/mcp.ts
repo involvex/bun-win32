@@ -463,6 +463,17 @@ const TOOLS: McpTool[] = [
     inputSchema: { type: 'object', properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC } }, required: ['element', 'ref'] },
   },
   {
+    name: 'select',
+    category: 'input',
+    description:
+      'Select a list/grid/tree item via the UIA SelectionItem pattern — cursor-free, works on a background/locked window. mode: replace (default, clears other selections), add (multi-select — keeps the others), remove (deselect). The returned snapshot marks selected refs (selected).',
+    inputSchema: {
+      type: 'object',
+      properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC }, mode: { type: 'string', enum: ['replace', 'add', 'remove'] } },
+      required: ['element', 'ref'],
+    },
+  },
+  {
     name: 'wait_for',
     category: 'read',
     description: 'Wait until a control matching the selector appears in the attached window, then return a fresh snapshot. On timeout, throws quoting the nearest candidates.',
@@ -721,6 +732,14 @@ const HANDLERS: Record<string, ToolHandler> = {
     const element = resolveRef(requireString(args, 'ref'));
     element.toggle();
     return withSnapshot(`toggled ${quote(args.element)} (state ${element.toggleState})`);
+  },
+  select: (args) => {
+    const element = resolveRef(requireString(args, 'ref'));
+    const mode = args.mode === 'add' ? 'add' : args.mode === 'remove' ? 'remove' : 'replace';
+    if (mode === 'add') element.addToSelection();
+    else if (mode === 'remove') element.removeFromSelection();
+    else element.select();
+    return withSnapshot(`${mode === 'add' ? 'added to selection' : mode === 'remove' ? 'removed from selection' : 'selected'} ${quote(args.element)}`);
   },
   wait_for: async (args) => {
     const found = await requireAttached().waitFor(selectorFrom(args.selector), { timeout: typeof args.timeout === 'number' ? args.timeout : 5000 });

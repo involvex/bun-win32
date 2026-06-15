@@ -177,6 +177,58 @@ export function isSelected(ptr: bigint): boolean {
   }
 }
 
+/** Add a SelectionItemPattern control to the current selection (multi-select; keeps the others). Throws if unsupported. */
+export function addToSelection(ptr: bigint): void {
+  const pattern = getPattern(ptr, PatternId.SelectionItem);
+  if (pattern === 0n) throw new Error('element does not support SelectionItemPattern');
+  try {
+    invokeNoArg(pattern, SLOT.AddToSelection, 'AddToSelection');
+  } finally {
+    comRelease(pattern);
+  }
+}
+
+/** Remove a SelectionItemPattern control from the current selection (deselect). Throws if unsupported. */
+export function removeFromSelection(ptr: bigint): void {
+  const pattern = getPattern(ptr, PatternId.SelectionItem);
+  if (pattern === 0n) throw new Error('element does not support SelectionItemPattern');
+  try {
+    invokeNoArg(pattern, SLOT.RemoveFromSelection, 'RemoveFromSelection');
+  } finally {
+    comRelease(pattern);
+  }
+}
+
+/** The selected items of a SelectionPattern container, as element pointers (caller wraps + releases each). */
+export function getSelectionPointers(ptr: bigint): bigint[] {
+  const pattern = getPattern(ptr, PatternId.Selection);
+  if (pattern === 0n) return [];
+  try {
+    const out = Buffer.alloc(8);
+    if (vcall(pattern, SLOT.GetCurrentSelection, [FFIType.ptr], [out.ptr!]) !== S_OK) return [];
+    const array = out.readBigUInt64LE(0);
+    if (array === 0n) return [];
+    try {
+      return elementArrayPointers(array);
+    } finally {
+      comRelease(array);
+    }
+  } finally {
+    comRelease(pattern);
+  }
+}
+
+/** Whether a SelectionPattern container permits multiple simultaneous selections. */
+export function canSelectMultiple(ptr: bigint): boolean {
+  const pattern = getPattern(ptr, PatternId.Selection);
+  if (pattern === 0n) return false;
+  try {
+    return getLong(pattern, SLOT.get_CurrentCanSelectMultiple) !== 0;
+  } finally {
+    comRelease(pattern);
+  }
+}
+
 /** Scroll a ScrollItemPattern control into view within its scrollable container. */
 export function scrollIntoView(ptr: bigint): void {
   const pattern = getPattern(ptr, PatternId.ScrollItem);
@@ -279,6 +331,21 @@ export interface TableData {
   headers: string[];
   rows: string[][];
   totalRows: number;
+}
+
+/** Collect every element pointer in an IUIAutomationElementArray (caller owns + releases each). */
+function elementArrayPointers(arrayPtr: bigint): bigint[] {
+  const pointers: bigint[] = [];
+  const lengthOut = Buffer.alloc(4);
+  if (vcall(arrayPtr, SLOT.get_Length, [FFIType.ptr], [lengthOut.ptr!]) !== S_OK) return pointers;
+  const length = lengthOut.readInt32LE(0);
+  const elementOut = Buffer.alloc(8);
+  for (let index = 0; index < length; index += 1) {
+    if (vcall(arrayPtr, SLOT.GetElement, [FFIType.i32, FFIType.ptr], [index, elementOut.ptr!]) !== S_OK) continue;
+    const element = elementOut.readBigUInt64LE(0);
+    if (element !== 0n) pointers.push(element);
+  }
+  return pointers;
 }
 
 /** Read the names of every element in an IUIAutomationElementArray, releasing each. */

@@ -238,7 +238,12 @@ export const SLOT = {
   get_CurrentExpandCollapseState: 5,
   // IUIAutomationSelectionItemPattern
   Select: 3,
+  AddToSelection: 4,
+  RemoveFromSelection: 5,
   get_CurrentIsSelected: 6,
+  // IUIAutomationSelectionPattern (container)
+  GetCurrentSelection: 3,
+  get_CurrentCanSelectMultiple: 4,
   // IUIAutomationScrollItemPattern
   ScrollIntoView: 3,
   // IUIAutomationScrollPattern (PROVEN live: File Explorer items view scrolled 0%->100% via slots 3,4; getters 5-10 read clean)

@@ -13,15 +13,19 @@ import { ControlType, S_OK, SLOT, TreeScope } from './constants';
 import { clickAt, type as inputType } from './input';
 import { screenshot as windowScreenshot, windowForProcess } from './window';
 import {
+  addToSelection,
+  canSelectMultiple,
   collapse,
   expand,
   expandCollapseState,
+  getSelectionPointers,
   getValue,
   invoke,
   isSelected,
   rangeValue,
   readTable,
   readText,
+  removeFromSelection,
   scroll,
   scrollInfo,
   scrollIntoView,
@@ -389,9 +393,29 @@ export class Element {
     select(this.ptr);
   }
 
+  /** Add to the current selection via SelectionItemPattern (multi-select, keeps the others). Throws if unsupported. */
+  addToSelection(): void {
+    addToSelection(this.ptr);
+  }
+
+  /** Remove from the current selection via SelectionItemPattern (deselect). Throws if unsupported. */
+  removeFromSelection(): void {
+    removeFromSelection(this.ptr);
+  }
+
   /** Whether selected (SelectionItemPattern); false if unsupported. */
   get isSelected(): boolean {
     return isSelected(this.ptr);
+  }
+
+  /** The selected items of this SelectionPattern container (list/grid/tree), as owned Elements. Empty if unsupported. */
+  getSelection(): Element[] {
+    return getSelectionPointers(this.ptr).map((pointer) => new Element(pointer));
+  }
+
+  /** Whether this SelectionPattern container allows multiple simultaneous selections. */
+  get canSelectMultiple(): boolean {
+    return canSelectMultiple(this.ptr);
   }
 
   /** Scroll into view via ScrollItemPattern. Throws if unsupported. */
