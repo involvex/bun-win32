@@ -478,7 +478,7 @@ const SELECTOR_SCHEMA = {
 };
 
 const TOOLS: McpTool[] = [
-  { name: 'list_windows', category: 'read', description: 'List visible top-level windows (title, className, processId, exe, hWnd, minimized/maximized/foreground). Start here.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'list_windows', category: 'read', description: "List visible top-level windows (title, className, processId, exe, hWnd, minimized/maximized/foreground, integrity). Start here. Set includePopups:true to ALSO list untitled popups — a combobox dropdown, classic #32768 context menu, or WPF/WinUI Popup opens in its own untitled window; list it, then attach it by hWnd to see + invoke its items.", inputSchema: { type: 'object', properties: { includePopups: { type: 'boolean', description: 'Also include untitled popup windows (dropdowns / context menus / autocomplete) so you can attach + drive them.' } } } },
   {
     name: 'attach',
     category: 'read',
@@ -848,8 +848,8 @@ for (const tool of TOOLS) {
 }
 
 const HANDLERS: Record<string, ToolHandler> = {
-  list_windows: () => {
-    const lines = uia.windows().map((window) => {
+  list_windows: (args) => {
+    const lines = uia.windows({ includeUntitled: args.includePopups === true }).map((window) => {
       const state = [isMinimized(window.hWnd) ? 'min' : '', isMaximized(window.hWnd) ? 'max' : ''].filter(Boolean).join(',');
       const exe = processImagePath(window.processId).split('\\').pop() ?? '';
       const integrity = integrityLevel(window.processId);

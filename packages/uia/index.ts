@@ -1,6 +1,7 @@
 import { execute } from './agent';
 import { initialize, uninitialize } from './automation';
 import { copy, paste, readClipboard, writeClipboard } from './clipboard';
+import { dispatch } from './computer';
 import { elementAt, listMonitors, postClickAt, scrollAt } from './coords';
 import { diffTrees } from './diff';
 import { attach, focused, fromPoint, launch, root } from './element';
@@ -25,6 +26,7 @@ export const uia = {
   click: clickAt,
   copy,
   diff: diffTrees,
+  dispatch,
   elementAt,
   execute,
   focused,

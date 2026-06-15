@@ -43,14 +43,22 @@ export function findWindow(target: { className?: string; title?: string }): bigi
   return User32.FindWindowW(classBuffer, titleBuffer);
 }
 
-/** Enumerate visible, titled top-level windows with their class and owning process id. */
-export function listWindows(): WindowInfo[] {
+/** Enumerate visible top-level windows with their class and owning process id. Titled windows always; with
+ *  `includeUntitled`, also visible non-zero-size UNTITLED top-levels — the popups (combobox dropdowns, classic
+ *  #32768 context menus, WPF/WinUI Popups, autocomplete lists) that open in their own window and would otherwise
+ *  be invisible: enumerate them, then `attach` the popup by hWnd to see + invoke its items. */
+export function listWindows(options: { includeUntitled?: boolean } = {}): WindowInfo[] {
   const windows: WindowInfo[] = [];
+  const includeUntitled = options.includeUntitled === true;
   const callback = new JSCallback(
     (hWnd: bigint) => {
       if (User32.IsWindowVisible(hWnd) !== 0) {
         const title = readWindowText(hWnd);
         if (title.length > 0) windows.push({ hWnd, title, className: readClassName(hWnd), processId: readProcessId(hWnd) });
+        else if (includeUntitled) {
+          const rect = Buffer.alloc(16); // per-call so .ptr can't be stale from a sibling alloc
+          if (User32.GetWindowRect(hWnd, rect.ptr!) !== 0 && rect.readInt32LE(8) > rect.readInt32LE(0) && rect.readInt32LE(12) > rect.readInt32LE(4)) windows.push({ hWnd, title, className: readClassName(hWnd), processId: readProcessId(hWnd) });
+        }
       }
       return 1;
     },
