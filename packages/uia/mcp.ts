@@ -324,7 +324,7 @@ function withSnapshot(message: string): object {
     }
   }
   lastSnapshotBody = body;
-  return textResult(`${message}\n\n${header}\n${body}`);
+  return textResult(`${message}\n\n${header}\n${body}${coldTreeNote(current?.marks.length ?? 0)}`);
 }
 
 function act(element: Element, action: string, text: string | undefined): string {

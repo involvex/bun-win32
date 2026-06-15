@@ -122,6 +122,7 @@
     "example:set-of-marks": "bun ./example/set-of-marks.ts",
     "example:snapshot-economy": "bun ./example/snapshot-economy.integration.test.ts",
     "example:snapshot-fallback": "bun ./example/snapshot-fallback.integration.test.ts",
+    "example:snapshot-leak": "bun ./example/snapshot-leak.integration.test.ts",
     "example:snapshot-scope": "bun ./example/snapshot-scope.integration.test.ts",
     "example:text-content": "bun ./example/text-content.integration.test.ts",
     "example:uia-report": "bun ./example/uia-report.ts",

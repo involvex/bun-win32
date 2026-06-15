@@ -120,7 +120,7 @@ export interface RefNode {
 }
 
 function walk(element: Element, depth: number, maxDepth: number, counter: { value: number }, byRef: Map<string, Element>, owned: Element[], marks: Mark[]): RefNode {
-  owned.push(element);
+  // The caller owns `element` (snapshot pushed the root clone; a parent frame pushed each child before recursing).
   const controlType = element.cachedControlType;
   const name = element.cachedName;
   const bounds = element.cachedBoundingRectangle;
@@ -140,7 +140,9 @@ function walk(element: Element, depth: number, maxDepth: number, counter: { valu
     if (state.length > 0) node.state = state;
   }
   if (depth < maxDepth) {
-    for (const child of element.cachedChildren) node.children.push(walk(child, depth + 1, maxDepth, counter, byRef, owned, marks));
+    const children = element.cachedChildren;
+    for (const child of children) owned.push(child); // own EVERY child up front so a fault mid-recursion cannot leak the not-yet-walked siblings
+    for (const child of children) node.children.push(walk(child, depth + 1, maxDepth, counter, byRef, owned, marks));
   }
   return node;
 }
@@ -150,10 +152,11 @@ function walk(element: Element, depth: number, maxDepth: number, counter: { valu
  *  cached walk would then drop the entire native tree). It reads each node's properties LIVE (GetCurrent*, a few
  *  cross-process round-trips per node) and navigates the live control view, recovering that tree with real,
  *  actionable Element pointers. Slower than walk() (N round-trips, not one), so it is a fallback, not the default.
- *  `isRoot` is true only for the element the CALLER already owns (the window / an extra root): it is NOT pushed to
- *  `owned`; every descendant the walk materializes IS, so dispose() releases exactly what the snapshot created. */
-function walkLive(element: Element, depth: number, maxDepth: number, counter: { value: number }, byRef: Map<string, Element>, owned: Element[], marks: Mark[], isRoot: boolean): RefNode {
-  if (!isRoot) owned.push(element);
+ *  The CALLER owns `element` (the window / an extra root — not pushed to `owned`); every descendant this walk
+ *  materializes is pushed to `owned` BEFORE recursing, so dispose() releases exactly what the snapshot created
+ *  and a fault mid-recursion cannot orphan the not-yet-walked siblings. */
+function walkLive(element: Element, depth: number, maxDepth: number, counter: { value: number }, byRef: Map<string, Element>, owned: Element[], marks: Mark[]): RefNode {
+  // The caller owns `element` (the window / extra root, or a child a parent frame pushed before recursing).
   const controlType = element.controlType;
   const name = element.name;
   const bounds = element.boundingRectangle;
@@ -173,7 +176,9 @@ function walkLive(element: Element, depth: number, maxDepth: number, counter: { 
     if (state.length > 0) node.state = state;
   }
   if (depth < maxDepth) {
-    for (const child of element.children) node.children.push(walkLive(child, depth + 1, maxDepth, counter, byRef, owned, marks, false));
+    const children = element.children;
+    for (const child of children) owned.push(child); // own EVERY child up front so a fault mid-recursion cannot leak the not-yet-walked siblings
+    for (const child of children) node.children.push(walkLive(child, depth + 1, maxDepth, counter, byRef, owned, marks));
   }
   return node;
 }
@@ -233,11 +238,13 @@ export function snapshot(window: Element, options: { maxDepth?: number; extraRoo
   const marks: Mark[] = [];
   const counter = { value: 1 };
   try {
-    const tree = mainOk ? walk(cached, 0, maxDepth, counter, byRef, owned, marks) : walkLive(window, 0, maxDepth, counter, byRef, owned, marks, true);
+    if (mainOk) owned.push(cached); // snapshot owns the cached clone; walkLive's root is the caller's window (not owned)
+    const tree = mainOk ? walk(cached, 0, maxDepth, counter, byRef, owned, marks) : walkLive(window, 0, maxDepth, counter, byRef, owned, marks);
     for (const extra of options.extraRoots ?? []) {
       try {
         const cachedExtra = extra.buildUpdatedCache(request);
-        const subtree = cachedExtra.ptr !== extra.ptr ? walk(cachedExtra, 1, maxDepth, counter, byRef, owned, marks) : walkLive(extra, 1, maxDepth, counter, byRef, owned, marks, true); // a render widget that refuses the cache still walks live
+        if (cachedExtra.ptr !== extra.ptr) owned.push(cachedExtra); // snapshot owns the cached clone; the live path's root is the caller's extra (not owned)
+        const subtree = cachedExtra.ptr !== extra.ptr ? walk(cachedExtra, 1, maxDepth, counter, byRef, owned, marks) : walkLive(extra, 1, maxDepth, counter, byRef, owned, marks); // a render widget that refuses the cache still walks live
         if (subtree.children.length > 0 || subtree.ref !== undefined) tree.children.push(subtree); // skip an empty render widget
       } catch {
         // a render widget can be mid-navigation — its absence must not fail the whole snapshot
@@ -245,7 +252,7 @@ export function snapshot(window: Element, options: { maxDepth?: number; extraRoo
     }
     return new Snapshot(tree, marks, byRef, owned);
   } catch (error) {
-    for (const element of owned) element.release(); // owned already includes the cached clone (walk pushed it); window / extraRoots stay caller-owned — releasing cached again here would double-free it
+    for (const element of owned) element.release(); // owned = every node snapshot materialized (the cached clones it pushed + all children pushed before recursion); window / extraRoots stay caller-owned
     throw error;
   } finally {
     request.release();
