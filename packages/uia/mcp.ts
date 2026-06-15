@@ -958,6 +958,20 @@ for (const tool of TOOLS) {
   tool.annotations = { openWorldHint: tool.category === 'os', ...(readOnly ? { readOnlyHint: true } : { destructiveHint: true }), ...(IDEMPOTENT.has(tool.name) ? { idempotentHint: true } : {}) };
 }
 
+// Window-class prefixes whose app content is an architectural a11y blind spot — UIA AND MSAA expose only the frame,
+// so a near-empty tree is NOT a cold tree or a pixel-only surface. Steer the agent to the pixel/OCR path (and, for
+// Java, to the Access Bridge) instead of letting it stall on an empty tree.
+const BLIND_SPOTS: { test: RegExp; note: string }[] = [
+  { test: /^SunAwt/, note: 'Java Swing/AWT window — its controls are invisible to UIA and MSAA (you will see only the frame). Java exposes its tree via the Java Access Bridge: run `jabswitch /enable` and RESTART the app, then re-attach. Until then, screen_capture + ocr / click_text is the only way to read/drive it.' },
+  { test: /^Tk/, note: 'Tk/Tkinter window — its widgets are custom-drawn with no a11y bridge, invisible to UIA and MSAA (you will see only anonymous panes). screen_capture + ocr / click_text is the only way to read/drive it.' },
+];
+
+/** A steering note when the attached window is a known a11y blind spot (class-prefix match), else ''. */
+function blindSpotNote(className: string): string {
+  const hit = BLIND_SPOTS.find((entry) => entry.test.test(className));
+  return hit !== undefined ? `\n\n⚠ This is a ${hit.note}` : '';
+}
+
 const HANDLERS: Record<string, ToolHandler> = {
   list_windows: (args) => {
     const fg = foregroundWindow();
@@ -983,10 +997,7 @@ const HANDLERS: Record<string, ToolHandler> = {
     else if (handle !== undefined) attached = uia.attach(handle);
     else if (typeof args.processId === 'number') attached = uia.attach({ process: args.processId });
     else throw new Error('attach requires one of: title, className, hWnd, processId');
-    // Java Swing/AWT (SunAwt* class) is an architectural blind spot: UIA AND MSAA expose only the window frame, never
-    // the app content — so a near-empty tree here is NOT a cold a11y tree or a pixel-only surface. Tell the agent.
-    const java = /^SunAwt/.test(attached.className) ? '\n\n⚠ This is a Java Swing/AWT window — its controls are invisible to UIA and MSAA (you will see only the frame). Java exposes its tree via the Java Access Bridge: run `jabswitch /enable` and RESTART the app, then re-attach. Until then, screen_capture + ocr / click_text is the only way to read/drive it.' : '';
-    return withSnapshot(`attached to ${JSON.stringify(attached.name)}${java}`);
+    return withSnapshot(`attached to ${JSON.stringify(attached.name)}${blindSpotNote(attached.className)}`);
   },
   desktop_snapshot: (args) => textResult(snapshotText(typeof args.maxDepth === 'number' ? args.maxDepth : undefined, typeof args.root === 'string' ? args.root : undefined)),
   find_and_act: (args) => {

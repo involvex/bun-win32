@@ -106,7 +106,9 @@ export async function dispatch(window: Window, action: ComputerAction, options: 
       case 'left_click':
         return semanticClick(x, y, cursorless);
       case 'right_click':
-        if (cursorless && postClickAt(x, y, 'right')) return { ok: true, output: 'posted right-click (cursor-free)' };
+        // A posted right-click delivers the WM_RBUTTON messages cursor-free, but it does NOT raise a context MENU
+        // (TrackPopupMenu needs real input-thread state — verified) — say so, so the caller retries with a real cursor.
+        if (cursorless && postClickAt(x, y, 'right')) return { ok: true, output: 'posted right-click (cursor-free); note: a context menu will NOT appear from a posted right-click — re-issue with cursorless:false (real cursor, foreground) if you need the menu' };
         rightClickAt(x, y);
         return { ok: true };
       case 'middle_click':
