@@ -1097,6 +1097,10 @@ const HANDLERS: Record<string, ToolHandler> = {
     if (element.getProperty(PropertyId.IsOffscreen) === true) lines.push('offscreen: true');
     const frameworkId = element.getProperty(PropertyId.FrameworkId);
     if (typeof frameworkId === 'string' && frameworkId.length > 0) lines.push(`frameworkId: ${frameworkId}`);
+    // TextPattern content (terminals, documents, read-only multiline text) — the buffer the ValuePattern `value`
+    // does not carry. Capped so a long scrollback can't dump unbounded tokens.
+    const text = element.text();
+    if (text.length > 0 && text !== value && text !== element.name) lines.push(`text (${text.length} chars):\n${text.length > 2000 ? `${text.slice(0, 2000)} …(+${text.length - 2000} more chars)` : text}`);
     return textResult(lines.join('\n'));
   },
   read_table: (args) => {
