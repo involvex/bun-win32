@@ -4,6 +4,7 @@
 
 import { FFIType, JSCallback } from 'bun:ffi';
 
+import Advapi32 from '@bun-win32/advapi32';
 import Gdi32 from '@bun-win32/gdi32';
 import Kernel32 from '@bun-win32/kernel32';
 import User32 from '@bun-win32/user32';
@@ -166,6 +167,44 @@ export function processImagePath(processId: number): string {
     size.writeUInt32LE(512, 0); // in: capacity in chars; out: chars written (excl. null)
     if (Kernel32.QueryFullProcessImageNameW(handle, 0, buffer.ptr!, size.ptr!) === 0) return '';
     return buffer.subarray(0, size.readUInt32LE(0) * 2).toString('utf16le');
+  } finally {
+    Kernel32.CloseHandle(handle);
+  }
+}
+
+const TOKEN_QUERY = 0x0000_0008;
+const TOKEN_INTEGRITY_LEVEL = 0x0000_0019; // TokenInformationClass.TokenIntegrityLevel (25)
+
+/** The Windows integrity level of a process — 'system' | 'high' | 'medium' | 'low' | 'untrusted', or '' if the
+ *  token is inaccessible (a protected / higher-integrity process). A window whose integrity EXCEEDS the agent's
+ *  own cannot be DRIVEN: UIPI blocks posted messages AND SendInput across integrity levels (a true OS wall, not
+ *  a binding gap). Surface it so the agent diagnoses the wall (relaunch its host elevated) instead of retrying a
+ *  silent failure. Reads the token's TokenIntegrityLevel SID and maps its RID. */
+export function integrityLevel(processId: number): '' | 'untrusted' | 'low' | 'medium' | 'high' | 'system' {
+  const handle = Kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, processId);
+  if (handle === 0n) return '';
+  const tokenOut = Buffer.alloc(8);
+  try {
+    if (Advapi32.OpenProcessToken(handle, TOKEN_QUERY, tokenOut.ptr!) === 0) return '';
+    const token = tokenOut.readBigUInt64LE(0);
+    try {
+      const sizeOut = Buffer.alloc(4);
+      Advapi32.GetTokenInformation(token, TOKEN_INTEGRITY_LEVEL, null, 0, sizeOut.ptr!); // size query
+      const size = sizeOut.readUInt32LE(0);
+      if (size === 0) return '';
+      const info = Buffer.alloc(size);
+      if (Advapi32.GetTokenInformation(token, TOKEN_INTEGRITY_LEVEL, info.ptr!, size, sizeOut.ptr!) === 0) return '';
+      // TOKEN_MANDATORY_LABEL = SID_AND_ATTRIBUTES (16 B on x64) then the SID { Revision, SubAuthorityCount, 6-B authority, DWORD[] }.
+      const subAuthorityCount = info.readUInt8(0x11); // 0x10 (SID start) + 1 (the SubAuthorityCount byte)
+      const rid = info.readUInt32LE(0x18 + (subAuthorityCount - 1) * 4); // 0x10 + 8 (sub-authorities start) + the last one (the integrity RID)
+      if (rid >= 0x4000) return 'system';
+      if (rid >= 0x3000) return 'high';
+      if (rid >= 0x2000) return 'medium';
+      if (rid >= 0x1000) return 'low';
+      return 'untrusted';
+    } finally {
+      Kernel32.CloseHandle(token);
+    }
   } finally {
     Kernel32.CloseHandle(handle);
   }

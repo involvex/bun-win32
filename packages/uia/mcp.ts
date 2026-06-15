@@ -27,6 +27,7 @@ import {
   type Element,
   encodePNG,
   holdKey,
+  integrityLevel,
   isMaximized,
   isMinimized,
   listMonitors,
@@ -851,7 +852,9 @@ const HANDLERS: Record<string, ToolHandler> = {
     const lines = uia.windows().map((window) => {
       const state = [isMinimized(window.hWnd) ? 'min' : '', isMaximized(window.hWnd) ? 'max' : ''].filter(Boolean).join(',');
       const exe = processImagePath(window.processId).split('\\').pop() ?? '';
-      return `- ${JSON.stringify(window.title)} [class=${window.className}] [pid=${window.processId}${exe ? ` ${exe}` : ''}] [hWnd=0x${window.hWnd.toString(16)}]${state ? ` (${state})` : ''}`;
+      const integrity = integrityLevel(window.processId);
+      const wall = integrity === 'high' || integrity === 'system' ? ` [${integrity}-integrity — UIPI wall: drivable only if YOUR host runs elevated too]` : integrity === 'low' || integrity === 'untrusted' ? ` [${integrity}-integrity]` : '';
+      return `- ${JSON.stringify(window.title)} [class=${window.className}] [pid=${window.processId}${exe ? ` ${exe}` : ''}] [hWnd=0x${window.hWnd.toString(16)}]${state ? ` (${state})` : ''}${wall}`;
     });
     return textResult(lines.length > 0 ? lines.join('\n') : '(no visible top-level windows)');
   },

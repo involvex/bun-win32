@@ -111,6 +111,7 @@ export {
   closeWindow,
   findWindow,
   foregroundWindow,
+  integrityLevel,
   isMaximized,
   isMinimized,
   listWindows,

@@ -1458,6 +1458,7 @@
         "bun-uia-mcp": "./mcp.ts",
       },
       "dependencies": {
+        "@bun-win32/advapi32": "workspace:*",
         "@bun-win32/combase": "workspace:*",
         "@bun-win32/core": "workspace:*",
         "@bun-win32/d3d11": "workspace:*",
