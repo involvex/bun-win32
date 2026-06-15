@@ -13,7 +13,7 @@
 
 import { realpathSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
-import { resolve, sep } from 'node:path';
+import { relative, resolve, sep } from 'node:path';
 
 import {
   capSnapshot,
@@ -564,7 +564,10 @@ function resolveFsPath(path: string): string {
   for (;;) {
     try {
       const real = realpathSync.native(ancestor);
-      const candidate = ancestor === resolved ? real : resolve(real, resolved.slice(ancestor.length + 1));
+      // relative() (not a manual slice) so a drive-root ancestor like `C:\` — which already ends in a separator —
+      // does not drop the first char of the remainder (the off-by-one that wrongly blocked a not-yet-created child
+      // of a bare drive root).
+      const candidate = ancestor === resolved ? real : resolve(real, relative(ancestor, resolved));
       if (candidate !== root && !candidate.startsWith(root + sep)) throw new Error(`path escaped the allowed root ${fsRoot} via a reparse point`);
       return resolved;
     } catch (error) {
