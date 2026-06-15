@@ -305,5 +305,5 @@ export function capSnapshot(text: string, maxChars: number): string {
     kept.push(line);
     length += line.length + 1;
   }
-  return `${kept.join('\n')}\n…(${lines.length - kept.length} more nodes — narrow with desktop_snapshot {maxDepth} or a selector)`;
+  return `${kept.join('\n')}\n…(${lines.length - kept.length} more nodes — narrow with desktop_snapshot {maxDepth} or {root:"<a node name above>"})`;
 }

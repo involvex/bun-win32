@@ -188,27 +188,35 @@ function resolveHwnd(args: Record<string, unknown>): bigint {
 /** Rebuild the ref-keyed snapshot of the attached window, releasing the prior generation. Retries once after a
  *  short settle: BuildUpdatedCache can transiently fail while the view is mid-render. Leaves `current` null (not
  *  a dangling disposed snapshot) and rethrows if it cannot rebuild. */
-function rebuildSnapshot(maxDepth?: number): { header: string; tree: RefNode } {
+function rebuildSnapshot(maxDepth?: number, root?: Element): { header: string; tree: RefNode } {
   const window = requireAttached();
   current?.dispose();
   current = null;
-  let snapshot: Snapshot | null = null;
-  for (let attempt = 0; ; attempt += 1) {
-    // Chromium/Electron host their web/editor DOM in a child fragment the top-level walk misses — splice it in.
-    const webRoots = window.webRoots();
-    try {
-      snapshot = uia.snapshot(window, { ...(maxDepth !== undefined ? { maxDepth } : {}), extraRoots: webRoots });
-      break;
-    } catch (error) {
-      if (attempt >= 1) throw error;
-      Bun.sleepSync(150);
-    } finally {
-      for (const root of webRoots) root.release();
+  let snapshot: Snapshot;
+  if (root !== undefined) {
+    // Scoped re-grounding on a sub-element: just that subtree, no window-level web-root splice.
+    snapshot = uia.snapshot(root, maxDepth !== undefined ? { maxDepth } : {});
+  } else {
+    let built: Snapshot | null = null;
+    for (let attempt = 0; ; attempt += 1) {
+      // Chromium/Electron host their web/editor DOM in a child fragment the top-level walk misses — splice it in.
+      const webRoots = window.webRoots();
+      try {
+        built = uia.snapshot(window, { ...(maxDepth !== undefined ? { maxDepth } : {}), extraRoots: webRoots });
+        break;
+      } catch (error) {
+        if (attempt >= 1) throw error;
+        Bun.sleepSync(150);
+      } finally {
+        for (const webRoot of webRoots) webRoot.release();
+      }
     }
+    snapshot = built;
   }
   current = snapshot;
   epoch += 1;
-  return { header: `### Snapshot (epoch ${epoch}): ${JSON.stringify(window.name)}`, tree: snapshot.tree };
+  const scope = root !== undefined ? ` scoped to ${JSON.stringify(root.name)}` : '';
+  return { header: `### Snapshot (epoch ${epoch})${scope}: ${JSON.stringify(window.name)}`, tree: snapshot.tree };
 }
 
 /** Render a snapshot tree to the token-economical body an agent reads: pruned of ref-less noise, size-capped. */
@@ -216,12 +224,22 @@ function renderTree(tree: RefNode): string {
   return capSnapshot(renderSnapshot(pruneRefTree(tree) ?? tree), SNAPSHOT_MAX_CHARS);
 }
 
-function snapshotText(maxDepth?: number): string {
-  const { header, tree } = rebuildSnapshot(maxDepth);
-  const body = renderTree(tree);
-  lastSnapshotTree = tree;
-  lastSnapshotBody = body;
-  return `${header}\n${body}`;
+function snapshotText(maxDepth?: number, rootName?: string): string {
+  const window = requireAttached();
+  let root: Element | undefined;
+  if (rootName !== undefined && rootName.length > 0) {
+    root = window.find({ name: rootName }) ?? window.find({ automationId: rootName }) ?? undefined;
+    if (root === undefined) throw new Error(`desktop_snapshot: no element named or automationId ${JSON.stringify(rootName)} under the attached window — omit root, or pick a name/id from a full snapshot`);
+  }
+  try {
+    const { header, tree } = rebuildSnapshot(maxDepth, root);
+    const body = renderTree(tree);
+    lastSnapshotTree = tree;
+    lastSnapshotBody = body;
+    return `${header}\n${body}`;
+  } finally {
+    root?.release();
+  }
 }
 
 function resolveRef(ref: string): Element {
@@ -443,7 +461,7 @@ const TOOLS: McpTool[] = [
     category: 'read',
     description:
       'Capture the attached window as a compact ref-keyed UIA tree (e.g. Button "Five" [ref=e49]). Better than a screenshot for acting; every interactable node carries a [ref=eN] you pass to action tools. Refs are valid ONLY until the next snapshot.',
-    inputSchema: { type: 'object', properties: { maxDepth: { type: 'number', description: 'Cap tree depth (default 40)' } } },
+    inputSchema: { type: 'object', properties: { maxDepth: { type: 'number', description: 'Cap tree depth (default 40)' }, root: { type: 'string', description: "Re-ground on just one element's subtree (zoom into a large window): the name or automationId of a node from a prior snapshot. Combine with maxDepth." } } },
   },
   {
     name: 'find_and_act',
@@ -822,7 +840,7 @@ const HANDLERS: Record<string, ToolHandler> = {
     else throw new Error('attach requires one of: title, hWnd, processId');
     return withSnapshot(`attached to ${JSON.stringify(attached.name)}`);
   },
-  desktop_snapshot: (args) => textResult(snapshotText(typeof args.maxDepth === 'number' ? args.maxDepth : undefined)),
+  desktop_snapshot: (args) => textResult(snapshotText(typeof args.maxDepth === 'number' ? args.maxDepth : undefined, typeof args.root === 'string' ? args.root : undefined)),
   find_and_act: (args) => {
     const action = requireString(args, 'do');
     if (typeof args.ref === 'string') return withSnapshot(act(resolveRef(args.ref), action, typeof args.text === 'string' ? args.text : undefined));
