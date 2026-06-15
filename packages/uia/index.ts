@@ -59,7 +59,7 @@ export { type ComputerAction, type ComputerResult, dispatch, type DispatchOption
 export { type ElementProperties, formatNoMatch, matches, selectorToString, type Selector } from './condition';
 export { ControlType, PatternId, PropertyConditionFlags, PropertyId, SLOT, TreeScope } from './constants';
 export { elementAt, listMonitors, type MonitorInfo, type PointDescription, postClickAt, scrollAt, virtualScreen, windowAt } from './coords';
-export { diffTrees, type RenameChange, type TreeChange, type TreeDiff } from './diff';
+export { type DiffNode, diffTrees, type RenameChange, renderDiff, type TreeChange, type TreeDiff } from './diff';
 export { attach, Element, focused, fromHandle, fromPoint, launch, root, Window } from './element';
 export { type IdleOptions, waitForIdle } from './idle';
 export {
@@ -89,7 +89,7 @@ export { accessibleFromWindow, type MsaaNode, msaaTree } from './msaa';
 export { ExpandCollapseState, NoScroll, ScrollAmount, type ScrollInfo, ToggleState, WindowVisualState } from './patterns';
 export { encodePNG } from './png';
 export { decodeBstr, getBstr, getHandle, getLong, getRect, type Rect } from './reads';
-export { type Mark, type RefNode, renderSnapshot, snapshot, Snapshot } from './refmap';
+export { capSnapshot, type Mark, pruneRefTree, type RefNode, renderSnapshot, snapshot, Snapshot } from './refmap';
 export { type AuditRecord, redactTree, safeExecute, type SafeOptions, toToolResult } from './safety';
 export { type Bitmap, captureScreen, pixelColor, screenshotScreen } from './screen';
 export { type NativeWindow, renderWindowTree, windowStyles, windowTree } from './spy';

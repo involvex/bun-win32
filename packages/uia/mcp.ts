@@ -15,10 +15,12 @@ import { readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import {
+  capSnapshot,
   captureWindowLive,
   captureWindowRGB,
   clickAt,
   closeWindow,
+  diffTrees,
   doubleClickAt,
   dragTo,
   type Element,
@@ -35,7 +37,10 @@ import {
   normalizeKey,
   postClickAt,
   processImagePath,
+  pruneRefTree,
   raiseWindow,
+  type RefNode,
+  renderDiff,
   renderSnapshot,
   renderWindowTree,
   restoreWindow,
@@ -70,7 +75,7 @@ const PROTOCOL_VERSION = '2025-11-25';
 const SUPPORTED_VERSIONS = new Set(['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']);
 const SERVER_INFO = { name: 'bun-uia', version: '1.3.0' };
 const INSTRUCTIONS =
-  'Drive Windows desktop apps via the UI Automation tree — and beyond it. Call list_windows, then attach. Call desktop_snapshot for a ref-keyed tree (e.g. Button "Five" [ref=e49]); pass that ref to click/invoke/type/toggle/set_value/inspect_element. Refs are valid ONLY for the most recent snapshot — every action returns a fresh one; re-ground from it. Prefer invoke/set_value/toggle/scroll (cursor-free — they need no focus and work on a minimized, background, occluded, or locked window) over click. To SEE beyond the attached window (a 2nd monitor, a game/browser, a composited surface, or anything with no window) use screen_capture; to see a SPECIFIC window even when occluded, in the background, or GPU-composited (where a plain screenshot is blank) use capture_window (Windows.Graphics.Capture); turn a pixel into a control with inspect_point. screenshot auto-falls-back PrintWindow → WGC → desktop-region. Read legacy/owner-draw windows with native_tree/msaa_tree. drag/hold_key and real-cursor clicks move the actual mouse and need an unlocked, foregrounded desktop. launch/run/file tools and manage_window may be disabled by the server policy (BUN_UIA_PROFILE).';
+  'Drive Windows desktop apps via the UI Automation tree — and beyond it. Call list_windows, then attach. Call desktop_snapshot for a ref-keyed tree (e.g. Button "Five" [ref=e49]); pass that ref to click/invoke/type/toggle/set_value/inspect_element. Refs are valid ONLY for the most recent snapshot — every action returns a fresh one; re-ground from it. To stay cheap, an action that changes little returns just a "Δ" delta (the +/-/~ changes, with refs on appeared/renamed) instead of the full tree — your other refs stay valid; desktop_snapshot {maxDepth} bounds the tree size when a window is large. Prefer invoke/set_value/toggle/scroll (cursor-free — they need no focus and work on a minimized, background, occluded, or locked window) over click. To SEE beyond the attached window (a 2nd monitor, a game/browser, a composited surface, or anything with no window) use screen_capture; to see a SPECIFIC window even when occluded, in the background, or GPU-composited (where a plain screenshot is blank) use capture_window (Windows.Graphics.Capture); turn a pixel into a control with inspect_point. screenshot auto-falls-back PrintWindow → WGC → desktop-region. Read legacy/owner-draw windows with native_tree/msaa_tree. drag/hold_key and real-cursor clicks move the actual mouse and need an unlocked, foregrounded desktop. launch/run/file tools and manage_window may be disabled by the server policy (BUN_UIA_PROFILE).';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -79,6 +84,12 @@ let attached: Window | null = null;
 let current: Snapshot | null = null;
 let epoch = 0;
 let lastSnapshotBody = '';
+let lastSnapshotTree: RefNode | null = null;
+
+/** Hard char budget for an auto-appended snapshot body (~2k tokens) — bounds a heavy window per step. */
+const SNAPSHOT_MAX_CHARS = 8_000;
+/** Above this many delta lines an action returns the full pruned tree instead of the change list. */
+const DIFF_MAX_CHANGES = 8;
 
 console.log = console.error; // hard guard: nothing but JSON-RPC ever reaches stdout
 
@@ -172,18 +183,25 @@ function resolveHwnd(args: Record<string, unknown>): bigint {
 }
 
 /** Rebuild the ref-keyed snapshot of the attached window, releasing the prior generation. */
-function rebuildSnapshot(): { header: string; body: string } {
+function rebuildSnapshot(maxDepth?: number): { header: string; tree: RefNode } {
   const window = requireAttached();
   current?.dispose();
-  current = uia.snapshot(window);
+  current = uia.snapshot(window, maxDepth !== undefined ? { maxDepth } : {});
   epoch += 1;
-  return { header: `### Snapshot (epoch ${epoch}): ${JSON.stringify(window.name)}`, body: renderSnapshot(current.tree) };
+  return { header: `### Snapshot (epoch ${epoch}): ${JSON.stringify(window.name)}`, tree: current.tree };
 }
 
-function snapshotText(): string {
-  const snapshot = rebuildSnapshot();
-  lastSnapshotBody = snapshot.body;
-  return `${snapshot.header}\n${snapshot.body}`;
+/** Render a snapshot tree to the token-economical body an agent reads: pruned of ref-less noise, size-capped. */
+function renderTree(tree: RefNode): string {
+  return capSnapshot(renderSnapshot(pruneRefTree(tree) ?? tree), SNAPSHOT_MAX_CHARS);
+}
+
+function snapshotText(maxDepth?: number): string {
+  const { header, tree } = rebuildSnapshot(maxDepth);
+  const body = renderTree(tree);
+  lastSnapshotTree = tree;
+  lastSnapshotBody = body;
+  return `${header}\n${body}`;
 }
 
 function resolveRef(ref: string): Element {
@@ -205,12 +223,33 @@ function imageResult(png: Uint8Array, note?: string): object {
   return { content: note !== undefined ? [image, { type: 'text', text: note }] : [image] };
 }
 
-/** An action result: the message plus a fresh snapshot so the model re-grounds — diff-elided when nothing changed. */
+/**
+ * An action result: the message plus a fresh re-grounding. To stay token-cheap on the agent's hottest
+ * path, the appended observation is the SMALLEST faithful form: nothing when the tree is byte-identical,
+ * a compact `+/-/~` delta when only a few things changed AND no actionable ref was renumbered, else the
+ * full pruned+capped tree. The delta path is safe only without ref churn — a snapshot rebuild reassigns
+ * ref ids in traversal order, so an appeared/disappeared actionable node shifts them and forces a full
+ * re-dump; renames keep the order (and thus the agent's existing refs) stable.
+ */
 function withSnapshot(message: string): object {
-  const snapshot = rebuildSnapshot();
-  if (snapshot.body === lastSnapshotBody) return textResult(`${message}\n\n${snapshot.header}\n(no UI change since the last snapshot — refs unchanged)`);
-  lastSnapshotBody = snapshot.body;
-  return textResult(`${message}\n\n${snapshot.header}\n${snapshot.body}`);
+  const prior = lastSnapshotTree;
+  const { header, tree } = rebuildSnapshot();
+  const body = renderTree(tree);
+  lastSnapshotTree = tree;
+  if (body === lastSnapshotBody) return textResult(`${message}\n\n${header}\n(no UI change since the last snapshot — refs unchanged)`);
+  if (prior !== null) {
+    const diff = diffTrees(prior, tree);
+    const refChurn = diff.appeared.some((change) => change.ref !== undefined) || diff.disappeared.some((change) => change.ref !== undefined);
+    if (!refChurn) {
+      const delta = renderDiff(diff);
+      if (delta.count > 0 && delta.count <= DIFF_MAX_CHANGES) {
+        lastSnapshotBody = body;
+        return textResult(`${message}\n\n${header} — Δ ${delta.count} change${delta.count === 1 ? '' : 's'} (other refs unchanged)\n${delta.text}`);
+      }
+    }
+  }
+  lastSnapshotBody = body;
+  return textResult(`${message}\n\n${header}\n${body}`);
 }
 
 function act(element: Element, action: string, text: string | undefined): string {
@@ -617,13 +656,14 @@ const HANDLERS: Record<string, ToolHandler> = {
     attached?.dispose();
     attached = null;
     lastSnapshotBody = '';
+    lastSnapshotTree = null;
     if (typeof args.title === 'string') attached = uia.attach(typeof args.className === 'string' ? { className: args.className, title: args.title } : args.title);
     else if (typeof args.hWnd === 'string') attached = uia.attach(BigInt(args.hWnd));
     else if (typeof args.processId === 'number') attached = uia.attach({ process: args.processId });
     else throw new Error('attach requires one of: title, hWnd, processId');
     return withSnapshot(`attached to ${JSON.stringify(attached.name)}`);
   },
-  desktop_snapshot: () => textResult(snapshotText()),
+  desktop_snapshot: (args) => textResult(snapshotText(typeof args.maxDepth === 'number' ? args.maxDepth : undefined)),
   find_and_act: (args) => {
     const action = requireString(args, 'do');
     if (typeof args.ref === 'string') return withSnapshot(act(resolveRef(args.ref), action, typeof args.text === 'string' ? args.text : undefined));
@@ -703,7 +743,8 @@ const HANDLERS: Record<string, ToolHandler> = {
     current?.dispose();
     current = uia.snapshot(window);
     epoch += 1;
-    lastSnapshotBody = renderSnapshot(current.tree);
+    lastSnapshotTree = current.tree;
+    lastSnapshotBody = renderTree(current.tree);
     const marked = screenshotWithMarks(window, current);
     if (marked.png.length === 0) return errorResult('screenshot_marked was blank (locked session / PrintWindow); use screen_capture for the visible pixels and desktop_snapshot for the refs');
     const legend = marked.marks.map((mark) => `[${mark.label}] ${mark.role} ${JSON.stringify(mark.name)} → ${mark.ref}`).join('\n');
@@ -843,6 +884,7 @@ const HANDLERS: Record<string, ToolHandler> = {
       current = null;
       attached?.dispose();
       lastSnapshotBody = '';
+      lastSnapshotTree = null;
       attached = window;
       return withSnapshot(`launched and attached to ${JSON.stringify(window.name)}`);
     }

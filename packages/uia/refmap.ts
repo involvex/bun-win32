@@ -141,3 +141,47 @@ export function renderSnapshot(node: RefNode, depth = 0): string {
   for (const child of node.children) out += `\n${renderSnapshot(child, depth + 1)}`;
   return out;
 }
+
+// Interactive control roles (by name) — the keep-set for pruning, derived from the ref-assigning set so
+// the two never drift. An interactive node is kept even when unnamed/ref-less (e.g. an icon-only Button).
+const INTERACTIVE_ROLES = new Set<string>([...INTERACTIVE].map((controlType) => ControlType[controlType]).filter((role): role is string => role !== undefined));
+
+/**
+ * Prune ref-less structural noise from a snapshot tree before rendering — the single highest-leverage
+ * token win, since the rendered tree is auto-appended after every MCP action. Bottom-up: drop a node
+ * that has no ref, an empty name, no surviving children, and a non-interactive role; collapse an
+ * unnamed ref-less single-child Pane/Group/Custom into that child. EVERY `[ref]` node and EVERY named
+ * node is kept, so no actionable target is ever lost (the ref→Element map is untouched regardless).
+ * Returns null when the whole node prunes away.
+ */
+export function pruneRefTree(node: RefNode): RefNode | null {
+  const children: RefNode[] = [];
+  for (const child of node.children) {
+    const kept = pruneRefTree(child);
+    if (kept !== null) children.push(kept);
+  }
+  const unlabeled = node.ref === undefined && node.name.trim().length === 0;
+  if (unlabeled && children.length === 0 && !INTERACTIVE_ROLES.has(node.role)) return null;
+  if (unlabeled && children.length === 1 && (node.role === 'Custom' || node.role === 'Group' || node.role === 'Pane')) return children[0]!;
+  const pruned: RefNode = { role: node.role, name: node.name, children };
+  if (node.ref !== undefined) pruned.ref = node.ref;
+  if (node.automationId !== undefined) pruned.automationId = node.automationId;
+  if (node.bounds !== undefined) pruned.bounds = node.bounds;
+  if (node.enabled !== undefined) pruned.enabled = node.enabled;
+  return pruned;
+}
+
+/** Cap a rendered snapshot to `maxChars` on line boundaries, appending a "…(K more nodes)" trailer — the
+ *  hard size budget so a heavy window (IDE/browser/file-manager) cannot dump unbounded tokens per step. */
+export function capSnapshot(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const lines = text.split('\n');
+  const kept: string[] = [];
+  let length = 0;
+  for (const line of lines) {
+    if (length + line.length + 1 > maxChars) break;
+    kept.push(line);
+    length += line.length + 1;
+  }
+  return `${kept.join('\n')}\n…(${lines.length - kept.length} more nodes — narrow with desktop_snapshot {maxDepth} or a selector)`;
+}
