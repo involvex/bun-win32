@@ -474,6 +474,17 @@ const TOOLS: McpTool[] = [
     },
   },
   {
+    name: 'find_text',
+    category: 'input',
+    description:
+      'Find a substring inside a text/document control and SELECT it — cursor-free, the desktop analog of getByText. Target the Document/Edit ref; the match becomes the active text selection so you can then copy it, replace it (set_value/type), or read it. Returns the matched text, or "not found".',
+    inputSchema: {
+      type: 'object',
+      properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC }, text: { type: 'string' }, ignoreCase: { type: 'boolean' } },
+      required: ['ref', 'text'],
+    },
+  },
+  {
     name: 'wait_for',
     category: 'read',
     description: 'Wait until a control matching the selector appears in the attached window, then return a fresh snapshot. On timeout, throws quoting the nearest candidates.',
@@ -740,6 +751,10 @@ const HANDLERS: Record<string, ToolHandler> = {
     else if (mode === 'remove') element.removeFromSelection();
     else element.select();
     return withSnapshot(`${mode === 'add' ? 'added to selection' : mode === 'remove' ? 'removed from selection' : 'selected'} ${quote(args.element)}`);
+  },
+  find_text: (args) => {
+    const matched = resolveRef(requireString(args, 'ref')).selectText(requireString(args, 'text'), { ignoreCase: args.ignoreCase === true });
+    return textResult(matched === null ? `text not found (or the control has no TextPattern): ${JSON.stringify(args.text)}` : `found and selected ${JSON.stringify(matched)} — now the active text selection (copy / set_value / read it)`);
   },
   wait_for: async (args) => {
     const found = await requireAttached().waitFor(selectorFrom(args.selector), { timeout: typeof args.timeout === 'number' ? args.timeout : 5000 });

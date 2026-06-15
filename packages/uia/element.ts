@@ -18,6 +18,7 @@ import {
   collapse,
   expand,
   expandCollapseState,
+  getSelectedText,
   getSelectionPointers,
   getValue,
   invoke,
@@ -30,6 +31,7 @@ import {
   scrollInfo,
   scrollIntoView,
   select,
+  selectText,
   setRangeValue,
   setScrollPercent,
   setValue,
@@ -350,6 +352,16 @@ export class Element {
   /** Read the TextPattern document text, or '' if unsupported. */
   text(): string {
     return readText(this.ptr);
+  }
+
+  /** Find a substring in this text/document control and SELECT it cursor-free (the desktop getByText). Returns the matched text, or null if unsupported / not found. */
+  selectText(text: string, options?: { backward?: boolean; ignoreCase?: boolean }): string | null {
+    return selectText(this.ptr, text, options);
+  }
+
+  /** The current text selection of this TextPattern control (selected ranges concatenated), or '' if none/unsupported. */
+  getSelectedText(): string {
+    return getSelectedText(this.ptr);
   }
 
   /** Read a GridPattern container (data grid / details list / table) as headers + rows of text, or null if unsupported. */

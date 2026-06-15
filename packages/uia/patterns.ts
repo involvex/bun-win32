@@ -418,6 +418,78 @@ export function readTable(ptr: bigint, maxRows = 100): TableData | null {
   }
 }
 
+// IUIAutomationTextRange::Select — slot 16. Kept local (not in SLOT) because the name collides with
+// IUIAutomationSelectionItemPattern::Select=3; verified against the header by slot-gate's scoped block.
+const TEXTRANGE_SELECT = 16;
+
+/**
+ * Find `text` in the element's TextPattern document, SELECT it (cursor-free), and return the matched text —
+ * the desktop analog of Playwright's getByText. Returns null if the element has no TextPattern or the text
+ * is not found. The selection can then be copied (Ctrl+C), replaced (setValue/type), or read.
+ */
+export function selectText(ptr: bigint, text: string, options: { backward?: boolean; ignoreCase?: boolean } = {}): string | null {
+  const pattern = getPattern(ptr, PatternId.Text);
+  if (pattern === 0n) return null;
+  try {
+    const rangeOut = Buffer.alloc(8);
+    if (vcall(pattern, SLOT.get_DocumentRange, [FFIType.ptr], [rangeOut.ptr!]) !== S_OK) return null;
+    const docRange = rangeOut.readBigUInt64LE(0);
+    if (docRange === 0n) return null;
+    const bstr = Oleaut32.SysAllocString(Buffer.from(`${text}\0`, 'utf16le').ptr!);
+    try {
+      const foundOut = Buffer.alloc(8);
+      if (vcall(docRange, SLOT.FindText, [FFIType.ptr, FFIType.i32, FFIType.i32, FFIType.ptr], [bstr, options.backward ? 1 : 0, options.ignoreCase ? 1 : 0, foundOut.ptr!]) !== S_OK) return null;
+      const found = foundOut.readBigUInt64LE(0);
+      if (found === 0n) return null;
+      try {
+        vcall(found, TEXTRANGE_SELECT, [], []); // select the found range — cursor-free, no keyboard/mouse
+        const textOut = Buffer.alloc(8);
+        if (vcall(found, SLOT.GetText, [FFIType.i32, FFIType.ptr], [-1, textOut.ptr!]) !== S_OK) return text;
+        return decodeBstr(textOut.readBigUInt64LE(0));
+      } finally {
+        comRelease(found);
+      }
+    } finally {
+      Oleaut32.SysFreeString(bstr);
+      comRelease(docRange);
+    }
+  } finally {
+    comRelease(pattern);
+  }
+}
+
+/** Read the element's current text selection via TextPattern (selected ranges concatenated), or '' if none/unsupported. */
+export function getSelectedText(ptr: bigint): string {
+  const pattern = getPattern(ptr, PatternId.Text);
+  if (pattern === 0n) return '';
+  try {
+    const arrayOut = Buffer.alloc(8);
+    if (vcall(pattern, SLOT.GetSelection, [FFIType.ptr], [arrayOut.ptr!]) !== S_OK) return '';
+    const array = arrayOut.readBigUInt64LE(0);
+    if (array === 0n) return '';
+    try {
+      const lengthOut = Buffer.alloc(4);
+      if (vcall(array, SLOT.get_Length, [FFIType.ptr], [lengthOut.ptr!]) !== S_OK) return '';
+      const length = lengthOut.readInt32LE(0);
+      const parts: string[] = [];
+      const rangeOut = Buffer.alloc(8);
+      const textOut = Buffer.alloc(8);
+      for (let index = 0; index < length; index += 1) {
+        if (vcall(array, SLOT.GetElement, [FFIType.i32, FFIType.ptr], [index, rangeOut.ptr!]) !== S_OK) continue;
+        const range = rangeOut.readBigUInt64LE(0);
+        if (range === 0n) continue;
+        if (vcall(range, SLOT.GetText, [FFIType.i32, FFIType.ptr], [-1, textOut.ptr!]) === S_OK) parts.push(decodeBstr(textOut.readBigUInt64LE(0)));
+        comRelease(range);
+      }
+      return parts.join('');
+    } finally {
+      comRelease(array);
+    }
+  } finally {
+    comRelease(pattern);
+  }
+}
+
 /** Close a window via WindowPattern. */
 export function windowClose(ptr: bigint): void {
   const pattern = getPattern(ptr, PatternId.Window);

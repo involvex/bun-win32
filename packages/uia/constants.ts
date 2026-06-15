@@ -260,8 +260,11 @@ export const SLOT = {
   WaitForInputIdle: 4,
   SetWindowVisualState: 5,
   get_CurrentWindowVisualState: 10,
-  // IUIAutomationTextPattern + IUIAutomationTextRange
+  // IUIAutomationTextPattern + IUIAutomationTextRange (TextRange.Select=16 collides by name with
+  // SelectionItem.Select=3 — it lives as a local const in patterns.ts, verified by slot-gate's scoped block)
+  GetSelection: 5,
   get_DocumentRange: 7,
+  FindText: 8,
   GetText: 12,
   // IUIAutomationGridPattern (GetItem(row,col)->cell; live-proven on File Explorer details view 28x4)
   GetItem: 3,
