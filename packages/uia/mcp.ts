@@ -655,6 +655,13 @@ const TOOLS: McpTool[] = [
     },
   },
   {
+    name: 'context_menu',
+    category: 'input',
+    description:
+      "Open a control's right-click context menu CURSOR-FREE via UIA (IUIAutomationElement3::ShowContextMenu — no real mouse). Provider-dependent: when it works, the menu opens as an untitled popup whose hWnd is returned — attach it (attach {hWnd}) to read/invoke its items. If no menu appears (the provider does not support it), it says so — fall back to a real-cursor right-click: click {ref, button:'right', cursor:true}.",
+    inputSchema: { type: 'object', properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC } }, required: ['ref'] },
+  },
+  {
     name: 'invoke',
     category: 'input',
     description: 'Invoke a control via the UIA Invoke pattern (buttons, links) — cursor-free, works on a background/locked window.',
@@ -1045,6 +1052,19 @@ const HANDLERS: Record<string, ToolHandler> = {
     const button = args.button === 'right' ? 'right' : args.button === 'middle' ? 'middle' : 'left';
     const outcome = clickElement(element, button, args.doubleClick === true, args.cursor === true);
     return withSnapshot(`${outcome} ${quote(args.element)}`);
+  },
+  context_menu: async (args) => {
+    const element = resolveRef(requireString(args, 'ref'));
+    const before = new Set(uia.windows({ includeUntitled: true }).map((window) => window.hWnd));
+    if (!element.showContextMenu()) return errorResult("this control does not support UIA ShowContextMenu (no IUIAutomationElement3) — open its menu with a real-cursor right-click: click {ref, button:'right', cursor:true}");
+    // Outcome-verified: ShowContextMenu returns S_OK even when no menu appears, so poll for the actual popup.
+    let popup: { hWnd: bigint; className: string } | undefined;
+    for (let attempt = 0; attempt < 12 && popup === undefined; attempt += 1) {
+      await Bun.sleep(80);
+      popup = uia.windows({ includeUntitled: true }).find((window) => !before.has(window.hWnd) && (window.className === '#32768' || /Popup|Menu|Flyout|DropDown/i.test(window.className)));
+    }
+    if (popup === undefined) return errorResult("ShowContextMenu returned OK but no menu popup appeared — this provider does not raise one via UIA. Use a real-cursor right-click instead: click {ref, button:'right', cursor:true} (needs an unlocked foreground desktop).");
+    return textResult(`context menu opened: [hWnd=0x${popup.hWnd.toString(16)}] [class=${popup.className}] — attach it (attach {hWnd}) to read + invoke its items (a WinUI flyout's items may need a re-snapshot).`);
   },
   invoke: (args) => {
     resolveRef(requireString(args, 'ref')).invoke();

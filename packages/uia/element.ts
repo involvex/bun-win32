@@ -41,6 +41,7 @@ import {
   setScrollPercent,
   setValue,
   setWindowVisualState,
+  showContextMenu,
   toggle,
   toggleState,
   windowClose,
@@ -453,6 +454,13 @@ export class Element {
    *  right read for a huge terminal / editor (text() pulls the whole scrollback). '' if unsupported / nothing visible. */
   visibleText(): string {
     return readVisibleText(this.ptr);
+  }
+
+  /** Open this control's context menu CURSOR-FREE (IUIAutomationElement3::ShowContextMenu) — the provider raises its
+   *  own menu, no real right-click, works on a background window. The menu opens as an untitled top-level popup;
+   *  find it with listWindows({includeUntitled}) and attach it. Returns false if the provider lacks Element3. */
+  showContextMenu(): boolean {
+    return showContextMenu(this.ptr);
   }
 
   /** Find a substring in this text/document control and SELECT it cursor-free (the desktop getByText). Returns the matched text, or null if unsupported / not found. */

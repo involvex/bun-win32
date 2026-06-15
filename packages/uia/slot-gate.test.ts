@@ -93,6 +93,7 @@ const AMBIGUOUS_OWNER: Record<string, string> = {
   RemoveFromSelection: 'IUIAutomationSelectionItemPattern',
   ScrollIntoView: 'IUIAutomationScrollItemPattern',
   Select: 'IUIAutomationSelectionItemPattern',
+  ShowContextMenu: 'IUIAutomationElement3',
   SetValue: 'IUIAutomationValuePattern',
   get_CachedName: 'IUIAutomationElement',
   get_CurrentName: 'IUIAutomationElement',

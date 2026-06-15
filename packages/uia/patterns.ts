@@ -7,8 +7,8 @@ import { FFIType, type Pointer } from 'bun:ffi';
 
 import Oleaut32 from '@bun-win32/oleaut32';
 
-import { comRelease, hresult, vcall } from './com';
-import { PatternId, PropertyId, S_OK, SLOT } from './constants';
+import { comRelease, guid, hresult, vcall } from './com';
+import { IID_IUIAutomationElement3, PatternId, PropertyId, S_OK, SLOT } from './constants';
 import { decodeBstr, getBstr, getDouble, getLong, getPropertyValue } from './reads';
 
 export enum ToggleState {
@@ -494,6 +494,24 @@ export function getCell(ptr: bigint, row: number, column: number): bigint {
     return out.readBigUInt64LE(0);
   } finally {
     comRelease(grid);
+  }
+}
+
+const IID_ELEMENT3 = guid(IID_IUIAutomationElement3);
+
+/** Open the element's context menu CURSOR-FREE via IUIAutomationElement3::ShowContextMenu — the UIA provider raises
+ *  its own menu (no real right-click, works on a background window; distinct from posted WM_CONTEXTMENU, which does
+ *  not). The menu appears as an untitled top-level popup (list it via listWindows({includeUntitled}) and attach it).
+ *  Returns false if the provider does not implement IUIAutomationElement3 (QueryInterface fails) or the call fails. */
+export function showContextMenu(ptr: bigint): boolean {
+  const out = Buffer.alloc(8);
+  if (vcall(ptr, SLOT.QueryInterface, [FFIType.ptr, FFIType.ptr], [IID_ELEMENT3.ptr!, out.ptr!]) !== S_OK) return false;
+  const element3 = out.readBigUInt64LE(0);
+  if (element3 === 0n) return false;
+  try {
+    return vcall(element3, SLOT.ShowContextMenu, [], []) === S_OK;
+  } finally {
+    comRelease(element3);
   }
 }
 

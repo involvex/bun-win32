@@ -23,6 +23,7 @@ export const COINIT_APARTMENTTHREADED = 0x0000_0002;
 
 export const CLSID_CUIAutomation = '{FF48DBA4-60EF-4201-AA87-54103EEF594E}';
 export const IID_IUIAutomation = '{30CBE57D-D9D0-452A-AB13-7AC5AC4825EE}';
+export const IID_IUIAutomationElement3 = '{8471DF34-AEE0-4A01-A7DE-7DB9AF12C296}';
 
 /** VARIANT discriminants used to build property conditions (value at byte offset 8). */
 export const VT_I4 = 0x0003;
@@ -178,6 +179,8 @@ export enum PropertyId {
  * header-derived and verified by running before first use in their phase.
  */
 export const SLOT = {
+  // IUnknown (every interface)
+  QueryInterface: 0,
   // IUIAutomation
   GetRootElement: 5, // PROVEN
   ElementFromHandle: 6, // PROVEN (NativeWindowHandle round-trip; NOT slot 7 = ElementFromPoint)
@@ -211,6 +214,8 @@ export const SLOT = {
   get_CurrentAutomationId: 29, // PROVEN
   get_CurrentClassName: 30, // PROVEN
   get_CurrentNativeWindowHandle: 36, // PROVEN
+  ShowContextMenu: 91, // IUIAutomationElement3 (extends Element) — verified vs UIAutomationClient.h IUIAutomationElement3Vtbl
+
   get_CurrentBoundingRectangle: 43, // PROVEN (RECT = 4x LONG, 16 bytes; matches GetWindowRect)
   GetClickablePoint: 84, // PROVEN (returned point lands inside the control's bounds)
   get_CachedControlType: 53,
