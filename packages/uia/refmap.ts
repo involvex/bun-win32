@@ -64,6 +64,8 @@ const STATE_PROPERTIES: readonly number[] = [
   PropertyId.IsScrollPatternAvailable,
   PropertyId.ScrollVerticallyScrollable,
   PropertyId.ScrollVerticalScrollPercent,
+  PropertyId.ScrollHorizontallyScrollable,
+  PropertyId.ScrollHorizontalScrollPercent,
 ];
 
 const TOGGLE_LABELS = ['off', 'on', 'mixed']; // ToggleState 0/1/2
@@ -101,11 +103,17 @@ function nodeState(read: PropertyReader, ptr: bigint, name: string): string {
       parts.push(typeof min === 'number' && typeof max === 'number' && max > min ? `${Math.round(((value - min) / (max - min)) * 100)}%` : `value=${value}`);
     }
   }
-  // Scroll position so the agent knows when content is below the fold (and to reach for reveal/scroll). Gated on
-  // IsScrollPatternAvailable — one extra cached read for a non-container, the rest only for a vertical-scroll container.
-  if (read(ptr, PropertyId.IsScrollPatternAvailable) === true && read(ptr, PropertyId.ScrollVerticallyScrollable) === true) {
-    const percent = read(ptr, PropertyId.ScrollVerticalScrollPercent);
-    if (typeof percent === 'number' && percent >= 0) parts.push(percent < 99.5 ? `scroll ${Math.round(percent)}% — more below` : 'scroll 100% (end)');
+  // Scroll position so the agent knows when content is off the fold (and to reach for reveal/scroll). Gated on
+  // IsScrollPatternAvailable — one extra cached read for a non-container, the axis reads only for a scroll container.
+  if (read(ptr, PropertyId.IsScrollPatternAvailable) === true) {
+    if (read(ptr, PropertyId.ScrollVerticallyScrollable) === true) {
+      const percent = read(ptr, PropertyId.ScrollVerticalScrollPercent);
+      if (typeof percent === 'number' && percent >= 0) parts.push(percent < 99.5 ? `scroll ${Math.round(percent)}% — more below` : 'scroll 100% (end)');
+    }
+    if (read(ptr, PropertyId.ScrollHorizontallyScrollable) === true) {
+      const percent = read(ptr, PropertyId.ScrollHorizontalScrollPercent);
+      if (typeof percent === 'number' && percent >= 0) parts.push(percent < 99.5 ? `scroll-x ${Math.round(percent)}% — more right` : 'scroll-x 100% (right end)');
+    }
   }
   return parts.length > 0 ? ` (${parts.join(', ')})` : '';
 }
