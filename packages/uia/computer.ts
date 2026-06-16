@@ -53,6 +53,7 @@ const KEY_ALIASES: Record<string, string> = {
   pagedown: 'PageDown',
   pageup: 'PageUp',
   return: 'Enter',
+  spacebar: 'Space',
   super: 'Win',
 };
 
@@ -83,7 +84,8 @@ function semanticClick(x: number, y: number, cursorless: boolean): ComputerResul
   } catch {
     // no element at the point — pure pixel click
   }
-  if (cursorless && (owner !== 0n ? postClickToHwnd(owner, x, y, 'left') : postClickAt(x, y, 'left'))) return { ok: true, semantic: resolved, output: resolved !== undefined ? `posted click to ${resolved.role} ${JSON.stringify(resolved.name)} (cursor-free)` : 'posted click (cursor-free)' };
+  if (cursorless && (owner !== 0n ? postClickToHwnd(owner, x, y, 'left') : postClickAt(x, y, 'left')))
+    return { ok: true, semantic: resolved, output: resolved !== undefined ? `posted click to ${resolved.role} ${JSON.stringify(resolved.name)} (cursor-free)` : 'posted click (cursor-free)' };
   clickAt(x, y);
   return { ok: true, semantic: resolved, output: resolved !== undefined ? `clicked ${resolved.role} ${JSON.stringify(resolved.name)}` : 'clicked (coordinate)' };
 }
@@ -108,7 +110,8 @@ export async function dispatch(window: Window, action: ComputerAction, options: 
       case 'right_click':
         // A posted right-click delivers the WM_RBUTTON messages cursor-free, but it does NOT raise a context MENU
         // (TrackPopupMenu needs real input-thread state — verified) — say so, so the caller retries with a real cursor.
-        if (cursorless && postClickAt(x, y, 'right')) return { ok: true, output: 'posted right-click (cursor-free); note: a context menu will NOT appear from a posted right-click — re-issue with cursorless:false (real cursor, foreground) if you need the menu' };
+        if (cursorless && postClickAt(x, y, 'right'))
+          return { ok: true, output: 'posted right-click (cursor-free); note: a context menu will NOT appear from a posted right-click — re-issue with cursorless:false (real cursor, foreground) if you need the menu' };
         rightClickAt(x, y);
         return { ok: true };
       case 'middle_click':

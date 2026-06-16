@@ -82,7 +82,11 @@ export function virtualKeyCode(name: string): number {
     const code = name.toUpperCase().charCodeAt(0);
     if ((code >= 0x41 && code <= 0x5a) || (code >= 0x30 && code <= 0x39)) return code;
   }
-  throw new Error(`unknown key: ${JSON.stringify(name)}`);
+  // Enumerate the accepted vocabulary so an unresolved name yields a self-correction path (matching the MCP's other
+  // enum errors). xdotool/CUA spellings (ArrowDown, Page_Down, super, spacebar, …) are mapped by normalizeKey first.
+  throw new Error(
+    `unknown key: ${JSON.stringify(name)} — use a single letter/digit, or one of: Enter Escape Tab Space Backspace Delete Insert Home End PageUp PageDown Up Down Left Right F1-F12 (modifiers Control/Ctrl Alt Shift Win/Meta). A chord joins parts with '+', e.g. Control+S or Control+Shift+Tab.`,
+  );
 }
 
 /** Pack a KEYBDINPUT-bearing INPUT at `offset` (the buffer must be zero-filled first). */

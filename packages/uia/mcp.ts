@@ -2046,7 +2046,7 @@ const HANDLERS: Record<string, ToolHandler> = {
     }
   },
   press_key: (args) => {
-    const key = requireString(args, 'key');
+    const key = normalizeKey(requireString(args, 'key')); // fold xdotool/CUA names (ArrowDown, Page_Down, super, spacebar) onto the canonical vocabulary so the cursor-free posted paths resolve them too
     // Ctrl+Z → cursor-free EM_UNDO on a classic Edit with its own HWND (the one undo-key the WM_COPY/CUT/PASTE/SETSEL
     // cursor-free cluster was missing); falls through to the gated SendInput chord path for a no-own-HWND control.
     if (typeof args.ref === 'string' && key.toLowerCase().replace(/\s/g, '').replace('ctrl', 'control') === 'control+z') {
@@ -2195,7 +2195,7 @@ const HANDLERS: Record<string, ToolHandler> = {
     return withSnapshot(`dragged ${fromX},${fromY} → ${toX},${toY} (real cursor)`);
   },
   hold_key: async (args) => {
-    const key = requireString(args, 'key');
+    const key = normalizeKey(requireString(args, 'key')); // fold xdotool/CUA names so the cursor-free postHoldKey path resolves them too (the SendInput fallback already normalized)
     const durationMs = typeof args.durationMs === 'number' ? args.durationMs : 1000;
     if (typeof args.ref === 'string') {
       // Own-HWND control → hold it cursor-free (posted WM_KEYDOWN autorepeat); no focus, background/locked OK.
@@ -2209,7 +2209,7 @@ const HANDLERS: Record<string, ToolHandler> = {
         return errorResult(`hold_key on this ref needs SendInput (the control has no native window handle for the cursor-free WM_KEYDOWN path) — disabled by BUN_UIA_CURSOR=never; target a control with its own window handle`);
     }
     if (cursorDenied) return errorResult('hold_key holds a key down with synthetic input (SendInput) — disabled by BUN_UIA_CURSOR=never; pass a {ref} to an own-HWND control to hold it cursor-free');
-    await holdKey(normalizeKey(key), durationMs);
+    await holdKey(key, durationMs);
     return withSnapshot(`held ${JSON.stringify(key)} for ${durationMs}ms`);
   },
   manage_window: (args) => {
