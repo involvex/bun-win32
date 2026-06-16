@@ -50,7 +50,7 @@ The Windows desktop-automation cluster on npm is a field of native-addon pain, p
 - **`waitFor`** — Playwright-class auto-retry for flaky native UIs. No other Windows-desktop npm tool has it. Timeouts quote the selector, the window, and the nearest candidates.
 - **Read & assert** — `value`, `text()`, `isEnabled`, `boundingRectangle`, `toggleState`. Read state back through the tree to assert — pixel tools can't.
 - **Serialize the tree to JSON** for an LLM agent (`uia.tree`), with a token-svelte agent profile.
-- **Screenshot** any window via PrintWindow (works even on a locked session).
+- **Screenshot** any window via PrintWindow (auto-falls back to Windows.Graphics.Capture; the PNG can come back blank on a locked / secure-desktop session — UIA reads + `invoke`/`setValue` still work there).
 - **MSAA fallback** (`uia.msaaTree`) for legacy / owner-draw windows.
 - **Crash-safe input observation** via `GetAsyncKeyState` polling — no foreign-thread hook, no message-pump assert.
 - **Drive in the dark** — `invoke()`/`setValue()`/`toggle()`/`scroll()` and `postClick(x, y)` move no real cursor and work on a window that is **minimized, in the background, occluded, or on a locked session** — no focus theft, the human-transcending default. SendInput is the opt-in "a human is watching" path.
@@ -96,7 +96,7 @@ Measured on Windows 11, Bun 1.4, by `bun run example/benchmark.ts` (run it to re
 
 - **Windows 10/11, Bun ≥ 1.1.** Windows-only and Bun-only — the owned trade-off (nut.js/robotjs/uiohook are genuinely cross-platform; this is not).
 - **UIA-tree first, pixels where there's no tree.** Apps with no accessibility tree (games, canvas/WebGL, custom-draw) fall back to the built-in pixel layer — full-screen capture + `locateOnScreen` template matching + coordinate `click()` — plus MSAA. (Chromium/Edge/Electron in-page DOM is NOT a no-tree case — `webRoots()` reads it as UIA; the pixel layer is only for genuinely tree-less surfaces.) Those GPU/composited surfaces, even occluded or in the background, are still **seen** via `captureWindowLive` (Windows.Graphics.Capture) where `PrintWindow` goes blank. UIA-native where there's a tree, pixels where there isn't.
-- **Synthetic input (`type`/`sendKeys`/`click`) needs an unlocked, interactive desktop.** UIA queries, `invoke`, `setValue`, and `screenshot` work on a locked session; prefer them.
+- **Synthetic input (`type`/`sendKeys`/`click`) needs an unlocked, interactive desktop.** UIA queries, `invoke`, and `setValue` work on a locked session; prefer them. (`screenshot`/PrintWindow can be blank when locked.)
 - **Selectors are client-side for regex/substring** (exact scalars are server-side). **Window/process lifecycle events ship** (`waitForWindow` via `SetWinEventHook`; `waitForProcess` polls a toolhelp32 snapshot); UIA property/structure event subscription is still roadmap — poll with `waitFor` / `waitForIdle`.
 
 Read [`AI.md`](./AI.md) — it is the complete surface; an agent should not need the source.

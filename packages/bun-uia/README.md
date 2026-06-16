@@ -71,7 +71,7 @@ The Windows desktop-automation cluster on npm is a field of native-addon pain, p
 - **See a window even when it isn't visible** — `captureWindowLive(hWnd)` reads the live pixels of any window via **Windows.Graphics.Capture**, even occluded / background / GPU-composited, where `PrintWindow` goes blank.
 - **Window & monitor control** — move/min/max/restore/raise/close windows (no foreground), `listMonitors()`, per-window exe + state.
 - **Pixel + clipboard layer** — `captureScreen`/`locateOnScreen`/`pixelColor` for no-a11y surfaces; `readClipboard`/`writeClipboard`/`paste`/`copy`.
-- **Screenshot** any window via PrintWindow (works even on a locked session); the MCP `screenshot` tool auto-falls-back to Windows.Graphics.Capture when PrintWindow is blank (`captureWindowLive` for the library).
+- **Screenshot** any window via PrintWindow; the MCP `screenshot` tool auto-falls-back to Windows.Graphics.Capture when PrintWindow is blank (`captureWindowLive` for the library). Both can come back blank on a locked / secure-desktop session (DWM stops compositing) — rely on UIA reads + `invoke`/`setValue` there.
 - **MSAA fallback** (`uia.msaaTree`) and **native HWND introspection** (`uia.windowTree`, Spy++-style) for legacy / owner-draw windows.
 - **MCP server for Claude** — `claude mcp add uia -- bunx bun-uia` exposes the whole surface as 51 policy-gated tools (45 under the default `safe` profile); the agent drives Windows cursor-free, sees the desktop, and (when enabled) launches apps and reads/writes files.
 
@@ -97,7 +97,7 @@ Measured on Windows 11, Bun 1.4, by `bun run example/benchmark.ts` (run it to re
 
 - **Windows 10/11, Bun ≥ 1.1.** Windows-only and Bun-only — the owned trade-off (nut.js/robotjs/uiohook are genuinely cross-platform; this is not).
 - **UIA-tree based.** Apps with no accessibility tree (games, canvas/WebGL, custom-draw) get MSAA + screenshots + coordinate `click()`, not vision matching — a complement to screenshot tools, not a replacement.
-- **Synthetic input (`type`/`sendKeys`/`click`) needs an unlocked, interactive desktop.** UIA queries, `invoke`, `setValue`, and `screenshot` work on a locked session; prefer them.
+- **Synthetic input (`type`/`sendKeys`/`click`) needs an unlocked, interactive desktop.** UIA queries, `invoke`, and `setValue` work on a locked session; prefer them. (`screenshot`/PrintWindow can be blank when locked.)
 - **Selectors are client-side for regex/substring** (exact scalars are server-side). **Window/process lifecycle events ship** (`waitForWindow` via `SetWinEventHook`; `waitForProcess` polls a toolhelp32 snapshot); UIA property/structure event subscription is still roadmap — poll with `waitFor` / `waitForIdle`.
 
 Read [`AI.md`](https://github.com/ObscuritySRL/bun-win32/blob/main/packages/uia/AI.md) — it is the complete surface; an agent should not need the source.
