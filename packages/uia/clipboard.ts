@@ -13,6 +13,13 @@ import { sendKeys } from './input';
 const CF_UNICODETEXT = 13;
 const GMEM_MOVEABLE = 0x0002;
 
+/** The clipboard's change counter (User32.GetClipboardSequenceNumber) — bumps on every clipboard write. Compare it
+ *  before/after a posted WM_COPY/WM_CUT to tell whether the control actually copied (the counter changed) or the
+ *  clipboard is STALE (empty selection / a control that ignored the message), so a stale value is never returned. */
+export function clipboardSequence(): number {
+  return User32.GetClipboardSequenceNumber();
+}
+
 /** Read the clipboard's Unicode text, or '' if it is empty or not text. */
 export function readClipboard(): string {
   if (User32.OpenClipboard(0n) === 0) return '';

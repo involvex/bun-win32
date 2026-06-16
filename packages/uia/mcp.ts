@@ -20,6 +20,7 @@ import {
   captureWindowLive,
   captureWindowRGB,
   clickAt,
+  clipboardSequence,
   closeWindow,
   coldTreeNote,
   ControlType,
@@ -1731,10 +1732,15 @@ const HANDLERS: Record<string, ToolHandler> = {
       // works minimized/background/locked), the path TextPattern-less Win32 Edits need.
       const handle = element.nativeWindowHandle;
       if (handle !== 0n) {
+        const before = clipboardSequence();
         selectAllInControl(handle);
         copyFromControl(handle);
-        const text = uia.readClipboard();
-        if (text.length > 0) return textResult(text);
+        // Only trust the clipboard if WM_COPY actually CHANGED it — else it is the prior (possibly secret) clipboard,
+        // not this control's content; fall through to the honest "select first" message rather than leak a stale value.
+        if (clipboardSequence() !== before) {
+          const text = uia.readClipboard();
+          if (text.length > 0) return textResult(text);
+        }
       }
       // No selection and no own-HWND Edit — do NOT silently Ctrl+C the FOCUSED control and pass its clipboard off as
       // THIS ref's content (a target-confusion lie). Tell the agent to select first; never reach the SendInput path.
@@ -1751,7 +1757,11 @@ const HANDLERS: Record<string, ToolHandler> = {
     if (handle !== 0n) {
       // Cursor-free: select the control's text (when nothing is selected) then WM_CUT to its OWN HWND — no focus, works minimized/background/locked.
       if (element.getSelectedText().length === 0) selectAllInControl(handle);
+      const before = clipboardSequence();
       cutFromControl(handle);
+      // WM_CUT is synchronous; if the clipboard counter did not move the control ignored it (not a classic Edit / nothing to cut) — do not report a stale clipboard as the cut text.
+      if (clipboardSequence() === before)
+        return errorResult(`nothing was cut from ${target} — it did not honor WM_CUT (not a classic Edit, or nothing selected). Select text first (find_text {ref, text}), or target a classic Edit control.`);
       return withSnapshot(`cut ${target} to the clipboard cursor-free — ${JSON.stringify(uia.readClipboard())}`);
     }
     // WinUI/WPF/Chromium sub-control with no own HWND — only SendInput Ctrl+X reaches it.

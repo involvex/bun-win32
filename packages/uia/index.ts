@@ -68,7 +68,7 @@ export const uia = {
 export { type AgentAction, type AgentActionResult, AGENT_TOOLS, execute, groundingTree } from './agent';
 export { automation, initialize, trueCondition, uninitialize } from './automation';
 export { AutomationElementMode, CacheRequest, createCacheRequest, DEFAULT_CACHE_PROPERTIES } from './cache';
-export { copy, paste, readClipboard, writeClipboard } from './clipboard';
+export { clipboardSequence, copy, paste, readClipboard, writeClipboard } from './clipboard';
 export { comRelease, guid, hresult, vcall } from './com';
 export { type ComputerAction, type ComputerResult, dispatch, type DispatchOptions, fromCuaAction, normalizeKey } from './computer';
 export { type CompiledCondition, compileCondition, type ElementProperties, formatNoMatch, matches, selectorToString, type Selector } from './condition';

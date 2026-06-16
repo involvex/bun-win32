@@ -86,6 +86,12 @@ try {
     await Bun.sleep(150);
     const after = editor!.value || editor!.text();
     assert(!after.includes('CLIP-7421'), `cut emptied the control (no SendInput, minimized) — control now ${JSON.stringify(after.slice(0, 20))}`);
+
+    // Stale-clipboard guard: the control is now EMPTY (just cut). Set a sentinel, then copy {ref} — WM_COPY copies
+    // nothing, the clipboard counter does not move, so copy must NOT pass the stale sentinel off as this ref's content.
+    await call('tools/call', { name: 'set_clipboard', arguments: { text: 'STALE-SENTINEL-9999' } });
+    const stale = await call('tools/call', { name: 'copy', arguments: { ref: await editRef() } });
+    assert(!/STALE-SENTINEL-9999/.test(textOf(stale)), `copy on an empty control does NOT return the stale clipboard as its content (got: ${JSON.stringify(textOf(stale).slice(0, 50))})`);
   }
 } finally {
   if (editHwnd !== 0n) User32.SendMessageW(editHwnd, EM_SETMODIFY, 0n, 0n);
