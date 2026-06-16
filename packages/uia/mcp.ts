@@ -47,6 +47,7 @@ import {
   moveWindow,
   type MsaaNode,
   normalizeKey,
+  NoScroll,
   openPath,
   ownedForegroundDialog,
   ownedModalDialog,
@@ -298,8 +299,24 @@ function selectorFrom(value: unknown): Selector {
   return selector;
 }
 
+/** Drop a DEAD attached window (closed by the user, or the app exited) and throw a re-attach steer — one IsWindow call
+ *  guards every snapshot/ref action against a confident FALSE success on a destroyed window (a stale Element would
+ *  silently no-op and the rebuilt tree would read "Type(0)" / empty). No-op while the window is alive or none attached. */
+function assertAttachedAlive(): void {
+  if (attached === null || isWindow(attached.hWnd)) return;
+  const dead = attached.hWnd;
+  current?.dispose();
+  current = null;
+  attached.dispose();
+  attached = null;
+  lastSnapshotBody = '';
+  lastSnapshotTree = null;
+  throw new Error(`the attached window (hWnd 0x${dead.toString(16)}) no longer exists — it was closed or the app exited; call list_windows then attach a live window`);
+}
+
 function requireAttached(): Window {
   if (attached === null) throw new Error('no window attached — call list_windows then attach first');
+  assertAttachedAlive();
   return attached;
 }
 
@@ -539,6 +556,7 @@ function snapshotText(maxDepth?: number, rootName?: string): string {
 }
 
 function resolveRef(ref: string): Element {
+  assertAttachedAlive(); // a ref action on a since-closed window must fail loud, not resolve a stale Element to a phantom success
   const hash = ref.indexOf('#');
   const id = hash >= 0 ? ref.slice(0, hash) : ref;
   // No snapshot exists yet (fresh server, a failed attach, or a ref copied from a different session) — there is no
@@ -759,10 +777,11 @@ function trayFlyoutWindow(): { hWnd: bigint; label: string } | undefined {
 }
 
 /** A guaranteed-hittable screen point for an element (UIA clickable point, else bounds center). */
-function clickPoint(element: Element): { x: number; y: number } {
+function clickPoint(element: Element): { x: number; y: number } | null {
   const clickable = element.clickablePoint;
   if (clickable !== null) return clickable;
   const bounds = element.boundingRectangle;
+  if (bounds.width === 0 && bounds.height === 0) return null; // 0×0 + no clickable point → no on-screen location; a coordinate click would misfire to the screen corner
   return { x: bounds.x + Math.floor(bounds.width / 2), y: bounds.y + Math.floor(bounds.height / 2) };
 }
 
@@ -799,6 +818,10 @@ function clickElement(element: Element, button: 'left' | 'right' | 'middle', dou
       }
     }
     const point = clickPoint(element);
+    if (point === null)
+      throw new Error(
+        `cannot click ${named(element)} — it has no on-screen location (0×0 bounds, no clickable point), so a coordinate click would misfire to the screen corner. Drive it cursor-free with a pattern verb: toggle / invoke / set_value / select (see inspect_element {ref} can:).`,
+      );
     // Post to the element's OWN owner window, never WindowFromPoint — so the click lands on the target even when
     // another window occludes the pixel (the 'drive in the dark' doctrine). Falls back to the topmost-at-pixel
     // (*At) only if the element has no native window in its ancestry. Double + middle get a cursor-free path too.
@@ -820,6 +843,8 @@ function clickElement(element: Element, button: 'left' | 'right' | 'middle', dou
   }
   if (cursorDenied) throw new Error('cursor-free click was not possible and the real cursor is disabled (BUN_UIA_CURSOR=never)');
   const point = clickPoint(element);
+  if (point === null)
+    throw new Error(`cannot click ${named(element)} — it has no on-screen location (0×0 bounds, no clickable point). Drive it cursor-free with a pattern verb: toggle / invoke / set_value / select (see inspect_element {ref} can:).`);
   if (doubleClick) doubleClickAt(point.x, point.y);
   else if (button === 'right') rightClickAt(point.x, point.y);
   else if (button === 'middle') middleClickAt(point.x, point.y);
@@ -1291,14 +1316,15 @@ const TOOLS: McpTool[] = [
     name: 'scroll',
     category: 'input',
     description:
-      'Scroll a control. With a direction, scrolls the nearest ScrollPattern container by `amount` steps; if the control has no ScrollPattern but its own window handle, a posted wheel scrolls it (WM_MOUSEWHEEL up/down, WM_MOUSEHWHEEL left/right) — both cursor-free, working on a locked/background/minimized window; only then does it fall to a ScrollPattern ancestor. Without a direction, scrolls the ref into view via the ScrollItem pattern.',
+      'Scroll a control (cursor-free; works on a locked/background/minimized window). direction up/down/left/right scrolls the nearest ScrollPattern container by `amount` small steps (or a posted wheel on a ScrollPattern-less own-HWND control). direction top/bottom jumps to the start/end, page-up/page-down/page-left/page-right move one page (×`amount`) — these need a ScrollPattern. `to` (0-100) jumps to that percent (vertical unless direction is left/right). Without a direction or `to`, scrolls the ref into view via the ScrollItem pattern.',
     inputSchema: {
       type: 'object',
       properties: {
         element: { type: 'string', description: ELEMENT_DESC },
         ref: { type: 'string', description: REF_DESC },
-        direction: { type: 'string', enum: ['up', 'down', 'left', 'right'] },
-        amount: { type: 'number', description: 'Scroll steps (default 3)' },
+        direction: { type: 'string', enum: ['up', 'down', 'left', 'right', 'top', 'bottom', 'page-up', 'page-down', 'page-left', 'page-right'] },
+        amount: { type: 'number', description: 'Scroll steps / pages (default 3 for small steps, 1 for pages)' },
+        to: { type: 'number', description: 'Scroll to this percent (0-100); vertical unless direction is left/right' },
       },
       required: ['ref'],
     },
@@ -1577,7 +1603,7 @@ const HANDLERS: Record<string, ToolHandler> = {
     if (owner !== 0n) {
       const before = popupSnapshot();
       const point = clickPoint(element);
-      if (postClickToHwnd(owner, point.x, point.y, 'right')) {
+      if (point !== null && postClickToHwnd(owner, point.x, point.y, 'right')) {
         const popup = await pollForNewPopup(before, 12);
         if (popup !== undefined) return opened(popup);
       }
@@ -2041,6 +2067,28 @@ const HANDLERS: Record<string, ToolHandler> = {
     const element = resolveRef(requireString(args, 'ref'));
     const target = named(element);
     const direction = args.direction;
+    // Scroll-to-position (cursor-free UIA ScrollPattern): jump to top/bottom, page by a LargeIncrement, or to an explicit
+    // percent — the one-call "go to the top/bottom of this long list/log/doc" an incremental small-step loop can't give.
+    if (typeof args.to === 'number' || direction === 'top' || direction === 'bottom' || direction === 'page-up' || direction === 'page-down' || direction === 'page-left' || direction === 'page-right') {
+      if (element.scrollInfo === null)
+        return withSnapshot(
+          `${target} has no ScrollPattern, so it cannot scroll-to-position — use a directional scroll {direction:up|down|left|right} (which also posts a wheel to a classic own-HWND control), or scroll {ref} alone to bring a ref into view`,
+        );
+      const horizontal = direction === 'left' || direction === 'right' || direction === 'page-left' || direction === 'page-right';
+      if (typeof args.to === 'number') {
+        const percent = Math.max(0, Math.min(100, args.to));
+        element.setScrollPercent(horizontal ? percent : NoScroll, horizontal ? NoScroll : percent);
+        return withSnapshot(`scrolled ${target} to ${percent}%${horizontal ? ' (horizontal)' : ''}`);
+      }
+      if (direction === 'top' || direction === 'bottom') {
+        element.setScrollPercent(NoScroll, direction === 'top' ? 0 : 100);
+        return withSnapshot(`scrolled ${target} to ${direction}`);
+      }
+      const pages = typeof args.amount === 'number' ? Math.max(1, args.amount) : 1;
+      const step = direction === 'page-up' || direction === 'page-left' ? ScrollAmount.LargeDecrement : ScrollAmount.LargeIncrement;
+      for (let count = 0; count < pages; count += 1) element.scroll(horizontal ? step : ScrollAmount.NoAmount, horizontal ? ScrollAmount.NoAmount : step);
+      return withSnapshot(`scrolled ${target} ${direction}${pages > 1 ? ` ×${pages}` : ''}`);
+    }
     if (direction === 'up' || direction === 'down' || direction === 'left' || direction === 'right') {
       const amount = typeof args.amount === 'number' ? args.amount : 3;
       const info = element.scrollInfo;
@@ -2074,7 +2122,9 @@ const HANDLERS: Record<string, ToolHandler> = {
     let fromX: number;
     let fromY: number;
     if (typeof args.ref === 'string') {
-      const point = clickPoint(resolveRef(args.ref));
+      const element = resolveRef(args.ref);
+      const point = clickPoint(element);
+      if (point === null) return errorResult(`cannot drag from ${named(element)} — it has no on-screen location (0×0 bounds, no clickable point). Pass explicit fromX/fromY, or target a control with a visible rectangle.`);
       fromX = point.x;
       fromY = point.y;
     } else {

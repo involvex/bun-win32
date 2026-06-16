@@ -37,8 +37,12 @@ const INTERACTIVE = new Set<number>([
 /** Whether a control should get an actionable [ref] — the interactive set plus a named Custom (WPF/WinUI
  *  custom-draw invokables surface as Custom; gate on a name + bounds so non-interactive Customs stay unlabeled). */
 function isActionable(controlType: number, name: string, hasBounds: boolean): boolean {
-  if (!hasBounds) return false;
-  return INTERACTIVE.has(controlType) || (controlType === ControlType.Custom && name.trim().length > 0);
+  // A curated interactive-role control is actionable via its UIA pattern with NO coordinate, so it earns a ref even at
+  // 0×0 bounds — e.g. a WinUI Settings ToggleSwitch in a collapsed card reads boundingRectangle {0,0,0,0} yet
+  // TogglePattern.Toggle drives it cursor-free; the old `if (!hasBounds) return false` dropped it before this check,
+  // making a whole class of switches unreachable by ref. The bounds gate now constrains ONLY the Custom heuristic.
+  if (INTERACTIVE.has(controlType)) return true;
+  return hasBounds && controlType === ControlType.Custom && name.trim().length > 0;
 }
 
 /** Pattern-state property ids the snapshot prefetches so every ref'd node's live state rides the SAME single
@@ -281,7 +285,10 @@ export function renderSnapshot(node: RefNode, depth = 0): string {
   // Surface greyed-out actionable controls — a disabled Next/OK/Submit reads identically to an enabled one otherwise,
   // hiding the gate state of every wizard/form. Only ref'd (actionable) nodes, so the token cost is near-zero.
   const disabled = node.ref !== undefined && node.enabled === false ? ' (disabled)' : '';
-  let out = `${indent}- ${node.role}${label}${ref}${id}${node.state ?? ''}${disabled}`;
+  // A ref'd node with NO bounds has no on-screen rectangle (0×0) — it has no clickable point, so click/click_point
+  // would misfire; flag it so the agent drives it cursor-free via a pattern verb (toggle/invoke/set_value/select).
+  const offscreen = node.ref !== undefined && node.bounds === undefined ? ' (off-screen — no click point; use a pattern verb)' : '';
+  let out = `${indent}- ${node.role}${label}${ref}${id}${node.state ?? ''}${disabled}${offscreen}`;
   for (const child of node.children) out += `\n${renderSnapshot(child, depth + 1)}`;
   return out;
 }
