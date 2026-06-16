@@ -618,12 +618,23 @@ function setValueSmart(element: Element, value: string): string {
   }
 }
 
+/** Run an invoke/expand inside act() (find_and_act / reveal / grid_cell) and, if it opened a flyout/menu/dropdown in its
+ *  OWN window, append that popup's hWnd — the same auto-return the dedicated invoke/expand tools give, so the one-call
+ *  selector idiom does not leave the agent hand-hunting the popup. Synchronous check (these popups are created in the
+ *  action's own call, as the combobox case shows); no sleep. */
+function withPopupNote(run: () => string): string {
+  const before = popupSnapshot();
+  const message = run();
+  const popup = newPopup(before);
+  return popup !== undefined ? `${message} — it opened a flyout/menu in its OWN window: [hWnd=0x${popup.hWnd.toString(16)}] [class=${popup.className}] — attach it (attach {hWnd}) to drive its items.` : message;
+}
+
 function act(element: Element, action: string, text: string | undefined): string {
   if (action === 'read') return element.isPassword ? 'value: (password — withheld)' : `value: ${JSON.stringify(capText(element.value || element.text() || element.name))}`;
   // Name the RESOLVED control in every result so an LLM gets target confirmation on an ambiguous selector match
   // (the named-result contract computer.ts:77/88 + AI.md:181 already document). One name/role read per action.
   const target = `${element.controlTypeName} ${JSON.stringify(element.name)}`;
-  if (action === 'invoke') return patternAction('invoke', () => (element.invoke(), `invoked ${target}`));
+  if (action === 'invoke') return withPopupNote(() => patternAction('invoke', () => (element.invoke(), `invoked ${target}`)));
   if (action === 'click') return clickElement(element, 'left', false, false), `clicked ${target}`;
   if (action === 'focus') return element.focus(), `focused ${target}`; // UIA SetFocus — cursor-free, no SendInput, so never gated
   if (action === 'type') {
@@ -635,7 +646,7 @@ function act(element: Element, action: string, text: string | undefined): string
   }
   if (action === 'set_value') return patternAction('set_value', () => `${setValueSmart(element, text ?? '')} ${target}`);
   if (action === 'toggle') return patternAction('toggle', () => (element.toggle(), `toggled ${target} (state ${element.toggleState})`));
-  if (action === 'expand') return patternAction('expand', () => (element.expand(), `expanded ${target}`));
+  if (action === 'expand') return withPopupNote(() => patternAction('expand', () => (element.expand(), `expanded ${target}`)));
   if (action === 'collapse') return patternAction('collapse', () => (element.collapse(), `collapsed ${target}`));
   throw new Error(`unknown action: ${action}`);
 }
