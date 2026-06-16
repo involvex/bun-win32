@@ -300,6 +300,14 @@ function selectorFrom(value: unknown): Selector {
   return selector;
 }
 
+/** `element` is a permission-prompt LABEL, never a target (no handler reads it). An LLM that passes only `element`
+ *  (no ref, no selector) would otherwise hit the generic "empty selector"/"missing ref" error and loop on the wrong
+ *  field — name the trap so it self-corrects to ref/selector. */
+function rejectElementOnlyTarget(args: Record<string, unknown>): void {
+  if (typeof args.element === 'string' && args.ref === undefined && Object.keys(record(args.selector)).length === 0)
+    throw new Error('`element` is a label for the permission prompt only — it does NOT select a control. Target by `ref` (from the latest snapshot) or `selector` {name / nameContains / automationId / controlType}.');
+}
+
 /** Drop a DEAD attached window (closed by the user, or the app exited) and throw a re-attach steer — one IsWindow call
  *  guards every snapshot/ref action against a confident FALSE success on a destroyed window (a stale Element would
  *  silently no-op and the rebuilt tree would read "Type(0)" / empty). No-op while the window is alive or none attached. */
@@ -978,7 +986,7 @@ function resolveFsPath(path: string): string {
   }
 }
 
-const ELEMENT_DESC = 'Human-readable element description, used for the permission prompt and intent.';
+const ELEMENT_DESC = 'A human-readable LABEL for the permission prompt + intent ONLY — it does NOT select the control. You must still target with `ref` (from the latest snapshot) or `selector`.';
 const REF_DESC =
   'Exact target element reference from the LATEST snapshot, passed verbatim including its #generation tag (e.g. e49#3). A ref from before a re-render is rejected (so you never act on the wrong control) — re-read the latest snapshot and use its refs.';
 const HWND_DESC = 'Target window handle — a decimal/0x-hex string or a JSON number; omit to use the attached window.';
@@ -1597,6 +1605,7 @@ const HANDLERS: Record<string, ToolHandler> = {
     const baseline = current?.marks.length ?? 0; // captured before the action so an expand can settle for its revealed in-process items
     const observe = (message: string): object => (action === 'read' ? textResult(message) : withActSnapshot(action, message, baseline)); // a pure read owes no full re-grounding snapshot; an expand settles for revealed items
     if (typeof args.ref === 'string') return observe(act(resolveRef(args.ref), action, typeof args.text === 'string' ? args.text : undefined, args.submit === true));
+    rejectElementOnlyTarget(args);
     const window = requireAttached();
     const selector = selectorFrom(args.selector);
     const matches = window.findAll(selector); // findAll, not find — so an AMBIGUOUS selector is caught, not silently acted on
@@ -1618,6 +1627,7 @@ const HANDLERS: Record<string, ToolHandler> = {
     }
   },
   reveal: (args) => {
+    rejectElementOnlyTarget(args);
     const window = requireAttached();
     const selector = selectorFrom(args.selector);
     const element = window.reveal(selector);
