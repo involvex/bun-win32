@@ -103,6 +103,10 @@ const SUPPORTED_VERSIONS = new Set(['2025-11-25', '2025-06-18', '2025-03-26', '2
 const SERVER_INFO = { name: 'bun-uia', version: '1.5.0' };
 const INSTRUCTIONS =
   'Drive Windows desktop apps via the UI Automation tree — and beyond it. Call list_windows, then attach (by hWnd or exact title — className is reliable only for single-window classes like Shell_TrayWnd, not the Chromium/Electron family) — attach ALREADY returns a ref-keyed tree, so act on those refs directly; call desktop_snapshot only to RE-ground after refs go stale (e.g. Button "Five" [ref=e49#1]); pass that ref VERBATIM (with its #generation tag) to click/invoke/type/toggle/set_value/inspect_element. Refs are valid ONLY for the most recent snapshot — every action returns a fresh one; re-ground from it. A ref from before a re-render is REJECTED (not silently mis-resolved), so always use the refs from the latest snapshot/delta. To stay cheap, an action that changes little returns just a "Δ" delta (the +/-/~ changes, with refs on appeared/renamed) instead of the full tree — your other refs stay valid; desktop_snapshot {maxDepth} bounds the tree size when a window is large. Prefer invoke/set_value/toggle/scroll (cursor-free — they need no focus and work on a minimized, background, occluded, or locked window) over click. To SEE beyond the attached window (a 2nd monitor, a game/browser, a composited surface, or anything with no window) use screen_capture; to see a SPECIFIC window even when occluded, in the background, or GPU-composited (where a plain screenshot is blank) use capture_window (Windows.Graphics.Capture); turn a pixel into a control with inspect_point. screenshot auto-falls-back PrintWindow → WGC → desktop-region. Read legacy/owner-draw windows with native_tree/msaa_tree. drag and real-cursor clicks move the actual mouse; SendInput-based input (sendKeys, press_key chord, hold_key, drag, and the type/paste fallback for a control with no own HWND) needs an unlocked, foregrounded desktop — the posted cursor-free paths do not: type (WM_CHAR) / paste (WM_PASTE) / press_key {ref} on an own-HWND control, plus set_value/invoke/toggle. launch/run/file tools and manage_window may be disabled by the server policy (BUN_UIA_PROFILE).';
+// Shown instead of INSTRUCTIONS when the policy enables no 'input' category — so the system-prompt guidance never
+// describes action tools that tools/list does not expose (a readonly/restricted profile).
+const INSTRUCTIONS_READONLY =
+  'INSPECT Windows desktop apps via the UI Automation tree — READ-ONLY under the current server policy: only inspection/capture tools are exposed, NO action/input tools (set BUN_UIA_PROFILE=safe or full to enable acting). Call list_windows, then attach (by hWnd or exact title — className is reliable only for single-window classes like Shell_TrayWnd), then desktop_snapshot for a ref-keyed tree (e.g. Button "Five" [ref=e49#1]); inspect_element {ref} reads a control\'s full live state, read_table reads a data grid, list_views its view modes, find_text finds text. To SEE: screen_capture (any monitor/region), capture_window (a specific occluded/GPU window via Windows.Graphics.Capture), inspect_point (pixel → control), screenshot (PrintWindow → WGC → desktop-region). Read legacy/owner-draw windows with native_tree/msaa_tree; list monitors/processes.';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -1920,7 +1924,7 @@ async function dispatch(request: JsonRpcRequest): Promise<void> {
       const protocolVersion = typeof requested === 'string' && SUPPORTED_VERSIONS.has(requested) ? requested : PROTOCOL_VERSION;
       uia.initialize();
       log(`profile: ${(Bun.env.BUN_UIA_PROFILE ?? 'safe').toLowerCase()} → categories {${[...enabledCategories].join(',')}}; ${TOOLS.filter(toolAllowed).length}/${TOOLS.length} tools enabled`);
-      return reply({ protocolVersion, capabilities: { tools: {} }, serverInfo: SERVER_INFO, instructions: INSTRUCTIONS });
+      return reply({ protocolVersion, capabilities: { tools: {} }, serverInfo: SERVER_INFO, instructions: enabledCategories.has('input') ? INSTRUCTIONS : INSTRUCTIONS_READONLY });
     }
     case 'notifications/initialized':
       return;
@@ -1934,7 +1938,11 @@ async function dispatch(request: JsonRpcRequest): Promise<void> {
       if (typeof name !== 'string') return fail(-32602, 'missing tool name');
       const tool = TOOLS.find((entry) => entry.name === name);
       if (tool === undefined) return fail(-32602, `unknown tool: ${name}`);
-      if (!toolAllowed(tool)) return reply(errorResult(`tool "${name}" is disabled by the server policy (category "${tool.category}"). Enable it with BUN_UIA_PROFILE=full, BUN_UIA_OS=1, or BUN_UIA_ALLOW=${name}.`));
+      if (!toolAllowed(tool)) {
+        // Category-accurate remedy: BUN_UIA_OS=1 enables only os/fs; input/window need a profile bump or an allow-list entry.
+        const remedy = tool.category === 'os' || tool.category === 'fs' ? `BUN_UIA_OS=1 (or BUN_UIA_PROFILE=full), or BUN_UIA_ALLOW=${name}` : `BUN_UIA_PROFILE=safe or full, or BUN_UIA_ALLOW=${name}`;
+        return reply(errorResult(`tool "${name}" is disabled by the server policy (category "${tool.category}"). Enable it with ${remedy}.`));
+      }
       try {
         return reply(await HANDLERS[name]!(record(callParams.arguments)));
       } catch (error) {
