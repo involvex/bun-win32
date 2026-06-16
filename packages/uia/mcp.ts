@@ -712,7 +712,7 @@ function act(element: Element, action: string, text: string | undefined, submit 
       if (submit) postKey(handle, 'Enter');
       return `typed into ${target} cursor-free${submit ? ' and pressed Enter' : ''}`;
     }
-    if (cursorDenied) throw new Error('this control has no native window handle for the cursor-free WM_CHAR path, so type would need SendInput — disabled by BUN_UIA_CURSOR=never; use set_value (ValuePattern), or focus it then press_key');
+    if (cursorDenied) throw new Error('this control has no native window handle for the cursor-free WM_CHAR path, so type would need SendInput — disabled by BUN_UIA_CURSOR=never; use set_value (ValuePattern) to write it cursor-free');
     element.type(text ?? '');
     if (submit) uia.sendKeys('Enter');
     return `typed into ${target}${submit ? ' and pressed Enter' : ''}`;
@@ -1064,7 +1064,7 @@ const TOOLS: McpTool[] = [
     name: 'focus',
     category: 'input',
     description:
-      'Move keyboard focus to a control by ref (UIA SetFocus) — CURSOR-FREE (no SendInput), works under BUN_UIA_CURSOR=never and on a WinUI/WPF/Electron sub-control with NO own window handle. This is the prerequisite for driving such a control with the keyboard: focus it, then press_key (a chord like Ctrl+A / Ctrl+S, or Tab / arrow navigation) lands on it. Prefer invoke/set_value/toggle when a pattern exists.',
+      'Move keyboard focus to a control by ref (UIA SetFocus) — CURSOR-FREE (no SendInput), works under BUN_UIA_CURSOR=never and on a WinUI/WPF/Electron sub-control with NO own window handle. A subsequent press_key chord / Tab / arrow then lands on the focused control via SendInput, so that step needs an unlocked, foregrounded desktop (under BUN_UIA_CURSOR=never a no-own-HWND control has NO key path — drive it by intent: invoke / select / set_value instead). Prefer invoke/set_value/toggle when a pattern exists.',
     inputSchema: { type: 'object', properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC } }, required: ['ref'] },
   },
   {
@@ -1151,8 +1151,17 @@ const TOOLS: McpTool[] = [
     name: 'wait_for_window',
     category: 'read',
     description:
-      'Wait until a top-level window matching title (substring) / className / process appears ANYWHERE on the desktop — driven by a SetWinEventHook event hook, not polling — then return its title/className/processId/hWnd. Resolves immediately if one is already open. Use to gate on a dialog, a just-launched app, or a page finishing navigation. Omit all fields to wait for any new window.',
-    inputSchema: { type: 'object', properties: { title: { type: 'string' }, className: { type: 'string' }, process: { type: 'number' }, timeout: { type: 'number', description: 'Milliseconds (default 30000)' } } },
+      'Wait until a top-level window matching title (substring) / className / process appears ANYWHERE on the desktop — driven by a SetWinEventHook event hook, not polling — then return its title/className/processId/hWnd. Resolves immediately if one is already open. Use to gate on a dialog, a just-launched app, or a page finishing navigation. Omit all fields to wait for any new window. Pass {gone:true} to instead wait until a matching window CLOSES/disappears (a dialog dismissed, a splash/progress window finishing, an app exiting) — resolves immediately if none is open.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        className: { type: 'string' },
+        process: { type: 'number' },
+        gone: { type: 'boolean', description: 'Wait for a matching window to CLOSE/disappear instead of appear' },
+        timeout: { type: 'number', description: 'Milliseconds (default 30000)' },
+      },
+    },
   },
   {
     name: 'wait_for_process',
@@ -1731,7 +1740,12 @@ const HANDLERS: Record<string, ToolHandler> = {
     if (typeof args.title === 'string') match.title = args.title;
     if (typeof args.className === 'string') match.className = args.className;
     if (typeof args.process === 'number') match.process = args.process;
-    const info = await uia.waitForWindow(match, { timeout: typeof args.timeout === 'number' ? args.timeout : 30000 });
+    const timeout = typeof args.timeout === 'number' ? args.timeout : 30000;
+    if (args.gone === true) {
+      await uia.waitForWindowGone(match, { timeout });
+      return textResult(`window gone: no window matching ${JSON.stringify(match)} is open anymore`);
+    }
+    const info = await uia.waitForWindow(match, { timeout });
     return textResult(`window: ${JSON.stringify(info.title)} [${info.className}] pid=${info.processId} hWnd=0x${info.hWnd.toString(16)} — attach by hWnd to drive it`);
   },
   wait_for_process: async (args) => {
@@ -2042,7 +2056,7 @@ const HANDLERS: Record<string, ToolHandler> = {
       // on some other control. Mirrors type/paste/cut, which always act on the ref rather than ambient focus.
       if (cursorDenied)
         return errorResult(
-          `${JSON.stringify(key)} could not be posted cursor-free (the ref has no native window handle) and the SendInput fallback is disabled by BUN_UIA_CURSOR=never — focus {ref} first (cursor-free SetFocus) then press_key, or use set_value`,
+          `${JSON.stringify(key)} cannot reach this control cursor-free: it has no native window handle (a WinUI/WPF/Electron sub-control), so a raw key needs SendInput — disabled by BUN_UIA_CURSOR=never — and focusing it adds NO cursor-free key path. Use the pattern for your intent instead: Enter/Space → invoke {ref}; a tab / list / menu choice → select {ref} by name; text entry → set_value {ref}. inspect_element {ref} lists the supported verbs (can:).`,
         );
       element.focus();
       uia.sendKeys(key);
@@ -2114,6 +2128,13 @@ const HANDLERS: Record<string, ToolHandler> = {
       if (scrollAt(centerX, centerY, direction, amount)) return withSnapshot(`scrolled ${target} ${direction} ${amount}`);
       return withSnapshot(`no scrollable container at ${target}`);
     }
+    // A PROVIDED-but-unrecognized direction must NOT silently fall through to scroll-into-view (a different operation
+    // reported as a confident success) — enumerate the valid set, mirroring act()/manage_window. An OMITTED direction is
+    // the legitimate scroll-into-view intent and still passes through.
+    if (direction !== undefined)
+      return errorResult(
+        `unknown scroll direction ${JSON.stringify(direction)} — valid directions are: up, down, left, right, top, bottom, page-up, page-down, page-left, page-right; or pass {to: 0-100} for a percent; or omit direction to scroll the ref into view.`,
+      );
     element.scrollIntoView();
     return withSnapshot(`scrolled ${target} into view`);
   },

@@ -191,6 +191,34 @@ export function waitForWindow(match: WindowMatch, options: { timeout?: number } 
   });
 }
 
+/**
+ * Resolve when a window matching `match` is GONE — immediately if none is currently open, otherwise on the first
+ * matching `close` event (the close event carries the window's LAST-KNOWN title/className/processId, since the hWnd is
+ * already dead). Rejects after `timeout` ms (default 30s). The mirror of waitForWindow: gate an action on a window
+ * DISAPPEARING — a dialog dismissed, a splash/progress window finishing, an app exiting.
+ */
+export function waitForWindowGone(match: WindowMatch, options: { timeout?: number } = {}): Promise<void> {
+  const timeout = options.timeout ?? 30000;
+  const predicate = toPredicate(match);
+  if (listWindows().find(predicate) === undefined) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    const watcher = watchWindows((event) => {
+      if (event.type !== 'close') return;
+      const info: WindowInfo = { hWnd: event.hWnd, title: event.title, className: event.className, processId: event.processId };
+      if (predicate(info)) {
+        clearTimeout(timer);
+        resolve();
+        // Defer stop() out of the JSCallback's own native frame — same use-after-free guard as waitForWindow's appear path.
+        queueMicrotask(() => watcher.stop());
+      }
+    });
+    const timer = setTimeout(() => {
+      watcher.stop();
+      reject(new Error(`waitForWindowGone: a window matching ${JSON.stringify(match)} was still open after ${timeout}ms`));
+    }, timeout);
+  });
+}
+
 /** Every running process as `{ processId, name }` (toolhelp32 snapshot). The image name is the bare exe (e.g. `notepad.exe`). */
 export function listProcesses(): { processId: number; name: string }[] {
   const snapshot = Kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);

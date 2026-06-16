@@ -5,7 +5,7 @@ import { dispatch } from './computer';
 import { elementAt, listMonitors, postClickAt, scrollAt } from './coords';
 import { diffTrees } from './diff';
 import { attach, focused, fromPoint, launch, root } from './element';
-import { listProcesses, waitForProcess, waitForWindow, watchWindows } from './events';
+import { listProcesses, waitForProcess, waitForWindow, waitForWindowGone, watchWindows } from './events';
 import { waitForIdle } from './idle';
 import { clickAt, isKeyDown, postKey, postText, sendKeys, setControlText, type } from './input';
 import { locateOnScreen } from './match';
@@ -60,6 +60,7 @@ export const uia = {
   waitForIdle,
   waitForProcess,
   waitForWindow,
+  waitForWindowGone,
   watchWindows,
   windowTree,
   windows: listWindows,
@@ -77,7 +78,7 @@ export { ControlType, PatternId, PropertyConditionFlags, PropertyId, SLOT, TreeS
 export { elementAt, listMonitors, type MonitorInfo, ownerHwnd, type PointDescription, postClickAt, postClickToHwnd, postDoubleClickAt, postDoubleClickToHwnd, scrollAt, virtualScreen, windowAt } from './coords';
 export { type DiffNode, diffTrees, refsRenumbered, type RenameChange, renderDiff, type StateChange, type TreeChange, type TreeDiff } from './diff';
 export { attach, Element, focused, fromHandle, fromPoint, launch, root, Window } from './element';
-export { listProcesses, waitForProcess, waitForWindow, watchWindows, type WindowEvent, type WindowEventType, type WindowMatch, type WindowWatcher } from './events';
+export { listProcesses, waitForProcess, waitForWindow, waitForWindowGone, watchWindows, type WindowEvent, type WindowEventType, type WindowMatch, type WindowWatcher } from './events';
 export { type IdleOptions, waitForIdle } from './idle';
 export {
   clickAt,
