@@ -63,7 +63,7 @@ export function safeExecute(window: Element, actions: readonly AgentAction[], op
       else if (action.do === 'type') element.type(action.text ?? '');
       else if (action.do === 'setValue') element.setValue(action.text ?? '');
       else if (action.do === 'toggle') element.toggle();
-      else value = element.value || element.text() || element.name;
+      else value = element.isPassword ? '(password — withheld)' : element.value || element.text() || ''; // withhold secret-field values — safeExecute is the TRUST layer (it ships redactTree); NOT element.name (no label-as-value)
       options.onAction?.({ action, target, ok: true, dryRun: false });
       results.push({ action, ok: true, value });
     } catch (error) {
