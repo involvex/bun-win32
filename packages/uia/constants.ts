@@ -168,6 +168,8 @@ export enum PropertyId {
   RangeValueValue = 30047,
   RangeValueMinimum = 30049,
   RangeValueMaximum = 30050,
+  ScrollVerticalScrollPercent = 30055,
+  ScrollVerticallyScrollable = 30058,
   ExpandCollapseExpandCollapseState = 30070,
   SelectionItemIsSelected = 30079,
   ToggleToggleState = 30086,
