@@ -460,6 +460,35 @@ function act(element: Element, action: string, text: string | undefined): string
   throw new Error(`unknown action: ${action}`);
 }
 
+// A toast/notification popup is a Windows.UI.Core.CoreWindow that User32.EnumWindows (and so list_windows) does NOT
+// surface — yet it is fully drivable via attach-by-hWnd. Find any whose subtree carries the NormalToastView /
+// ToastCenter automationId — locale-free, since the CoreWindow's own "New notification" name is localized — so the
+// agent can attach it by hWnd and read its text + invoke the Dismiss/Settings/action buttons. Best-effort: returns []
+// on any failure (never breaks list_windows).
+function notificationWindows(): { hWnd: bigint; label: string }[] {
+  const found: { hWnd: bigint; label: string }[] = [];
+  let root: Element;
+  try {
+    root = uia.root();
+  } catch {
+    return found;
+  }
+  const children = root.children;
+  try {
+    for (const child of children) {
+      if (child.className !== 'Windows.UI.Core.CoreWindow' || child.nativeWindowHandle === 0n) continue;
+      const toast = child.find({ automationId: 'NormalToastView' }) ?? child.find({ automationId: 'ToastCenterScrollViewer' }); // server-side scoped FindFirst — cheap, returns null fast on a non-toast CoreWindow
+      if (toast === null) continue;
+      toast.release();
+      found.push({ hWnd: child.nativeWindowHandle, label: child.name.length > 0 ? child.name : 'notification' });
+    }
+  } finally {
+    for (const child of children) child.release();
+    root.release();
+  }
+  return found;
+}
+
 /** A guaranteed-hittable screen point for an element (UIA clickable point, else bounds center). */
 function clickPoint(element: Element): { x: number; y: number } {
   const clickable = element.clickablePoint;
@@ -633,7 +662,7 @@ const TOOLS: McpTool[] = [
     name: 'list_windows',
     category: 'read',
     description:
-      'List visible top-level windows (title, className, processId, exe, hWnd, minimized/maximized/foreground, integrity). Start here. Set includePopups:true to ALSO list untitled popups — a combobox dropdown, classic #32768 context menu, or WPF/WinUI Popup opens in its own untitled window; list it, then attach it by hWnd to see + invoke its items.',
+      'List visible top-level windows (title, className, processId, exe, hWnd, minimized/maximized/foreground, integrity). Start here. A visible toast/notification popup is appended as an attachable "notification" row (hWnd) — EnumWindows never returns it, so attach it by hWnd to read its text + invoke its Dismiss/Settings/action buttons. Set includePopups:true to ALSO list untitled popups — a combobox dropdown, classic #32768 context menu, or WPF/WinUI Popup opens in its own untitled window; list it, then attach it by hWnd to see + invoke its items.',
     inputSchema: { type: 'object', properties: { includePopups: { type: 'boolean', description: 'Also include untitled popup windows (dropdowns / context menus / autocomplete) so you can attach + drive them.' } } },
   },
   {
@@ -1111,6 +1140,9 @@ const HANDLERS: Record<string, ToolHandler> = {
     const secure = isSecureDesktopActive()
       ? '⚠ A UAC consent / secure desktop is active — it is INVISIBLE and undrivable from this session (no UIA, no capture, screenshots freeze). A human must respond at the physical console, or relaunch the host elevated.\n\n'
       : '';
+    // Toasts/notification popups never come back from EnumWindows — surface them so the documented list_windows→attach flow finds them.
+    for (const toast of notificationWindows())
+      lines.push(`- ${JSON.stringify(toast.label)} [class=Windows.UI.Core.CoreWindow] [notification popup — attach by hWnd to read its text + invoke its Dismiss/Settings/action buttons] [hWnd=0x${toast.hWnd.toString(16)}]`);
     return textResult(`${secure}${lines.length > 0 ? lines.join('\n') : '(no visible top-level windows)'}`);
   },
   attach: (args) => {
