@@ -679,6 +679,7 @@ function act(element: Element, action: string, text: string | undefined): string
   if (action === 'toggle') return patternAction('toggle', () => (element.toggle(), `toggled ${target} (state ${element.toggleState})`));
   if (action === 'expand') return withPopupNote(() => patternAction('expand', () => (element.expand(), `expanded ${target}`)));
   if (action === 'collapse') return patternAction('collapse', () => (element.collapse(), `collapsed ${target}`));
+  if (action === 'select') return patternAction('select', () => (element.select(), `selected ${target}`)); // cursor-free SelectionItem.Select — select a tab/radio/list-item/cell by name in one call (grid_cell{do:select} advertised this)
   throw new Error(`unknown action: ${action}`);
 }
 
@@ -954,7 +955,7 @@ const TOOLS: McpTool[] = [
         element: { type: 'string', description: ELEMENT_DESC },
         ref: { type: 'string', description: REF_DESC },
         selector: SELECTOR_SCHEMA,
-        do: { type: 'string', enum: ['invoke', 'click', 'type', 'set_value', 'toggle', 'expand', 'collapse', 'focus', 'read'] },
+        do: { type: 'string', enum: ['invoke', 'click', 'type', 'set_value', 'toggle', 'expand', 'collapse', 'select', 'focus', 'read'] },
         text: { type: 'string', description: 'Text for type / set_value' },
       },
       required: ['do'],
@@ -970,7 +971,7 @@ const TOOLS: McpTool[] = [
       properties: {
         element: { type: 'string', description: ELEMENT_DESC },
         selector: SELECTOR_SCHEMA,
-        do: { type: 'string', enum: ['invoke', 'click', 'type', 'set_value', 'toggle', 'focus', 'read'] },
+        do: { type: 'string', enum: ['invoke', 'click', 'type', 'set_value', 'toggle', 'select', 'focus', 'read'] },
         text: { type: 'string', description: 'Text for type / set_value' },
       },
       required: ['selector'],
