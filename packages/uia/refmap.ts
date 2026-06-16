@@ -335,8 +335,12 @@ export function capSnapshot(text: string, maxChars: number): string {
  *  their UIA/a11y tree on demand and tear it down when idle, so a just-attached or long-idle window can read
  *  empty on the first snapshot; a genuinely tree-less surface (game/canvas/custom-draw) also reads empty. The
  *  note tells the agent how to recover rather than give up. Empty string when there ARE controls. */
-export function coldTreeNote(markCount: number, minimized = false, walled = false): string {
+export function coldTreeNote(markCount: number, minimized = false, walled = false, maxDepth?: number): string {
   if (markCount > 0) return '';
+  // A small maxDepth caps the tree ABOVE the window's interactable controls — that is NOT a cold tree, so the generic
+  // "re-snapshot to build it" steer would loop forever at the same depth. Steer to raising maxDepth instead. (UIPI /
+  // minimized are real conditions that take priority — they read empty at any depth.)
+  if (maxDepth !== undefined && !walled && !minimized) return `\n\n(0 actionable controls — you passed maxDepth=${maxDepth}, which capped the tree ABOVE this window's interactable controls. Raise maxDepth (e.g. 4) or omit it — re-snapshotting at the same depth will NOT help; this is not a cold tree.)`;
   if (walled)
     return '\n\n(0 actionable controls AND this window runs at a HIGHER integrity than this MCP host (a UAC-elevated / admin app) — the UIPI wall blocks UIA reads, capture, AND input alike, so the tree will ALWAYS read empty: re-snapshot / OCR / screen_capture cannot help. The only fix is to relaunch the MCP host ELEVATED (run it as administrator), then re-attach.)';
   if (minimized)
