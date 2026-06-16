@@ -462,8 +462,12 @@ function act(element: Element, action: string, text: string | undefined): string
   const target = `${element.controlTypeName} ${JSON.stringify(element.name)}`;
   if (action === 'invoke') return patternAction('invoke', () => (element.invoke(), `invoked ${target}`));
   if (action === 'click') return clickElement(element, 'left', false, false), `clicked ${target}`;
+  if (action === 'focus') return element.focus(), `focused ${target}`; // UIA SetFocus — cursor-free, no SendInput, so never gated
   if (action === 'type') {
-    if (cursorDenied) throw new Error('type sends synthetic keystrokes (SendInput) — disabled by BUN_UIA_CURSOR=never; use set_value (cursor-free WM_SETTEXT / ValuePattern)');
+    // Mirror the dedicated `type` tool: cursor-free WM_CHAR to an own-HWND control; SendInput only for a no-own-HWND sub-control.
+    const handle = element.nativeWindowHandle;
+    if (handle !== 0n) return postText(handle, text ?? ''), `typed into ${target} cursor-free`;
+    if (cursorDenied) throw new Error('this control has no native window handle for the cursor-free WM_CHAR path, so type would need SendInput — disabled by BUN_UIA_CURSOR=never; use set_value (ValuePattern), or focus it then press_key');
     return element.type(text ?? ''), `typed into ${target}`;
   }
   if (action === 'set_value') return patternAction('set_value', () => `${setValueSmart(element, text ?? '')} ${target}`);
@@ -712,7 +716,7 @@ const TOOLS: McpTool[] = [
         element: { type: 'string', description: ELEMENT_DESC },
         ref: { type: 'string', description: REF_DESC },
         selector: SELECTOR_SCHEMA,
-        do: { type: 'string', enum: ['invoke', 'click', 'type', 'set_value', 'toggle', 'expand', 'collapse', 'read'] },
+        do: { type: 'string', enum: ['invoke', 'click', 'type', 'set_value', 'toggle', 'expand', 'collapse', 'focus', 'read'] },
         text: { type: 'string', description: 'Text for type / set_value' },
       },
       required: ['do'],
@@ -728,7 +732,7 @@ const TOOLS: McpTool[] = [
       properties: {
         element: { type: 'string', description: ELEMENT_DESC },
         selector: SELECTOR_SCHEMA,
-        do: { type: 'string', enum: ['invoke', 'click', 'type', 'set_value', 'toggle', 'read'] },
+        do: { type: 'string', enum: ['invoke', 'click', 'type', 'set_value', 'toggle', 'focus', 'read'] },
         text: { type: 'string', description: 'Text for type / set_value' },
       },
       required: ['selector'],
@@ -762,6 +766,13 @@ const TOOLS: McpTool[] = [
     name: 'invoke',
     category: 'input',
     description: 'Invoke a control via the UIA Invoke pattern (buttons, links) — cursor-free, works on a background/locked window.',
+    inputSchema: { type: 'object', properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC } }, required: ['ref'] },
+  },
+  {
+    name: 'focus',
+    category: 'input',
+    description:
+      'Move keyboard focus to a control by ref (UIA SetFocus) — CURSOR-FREE (no SendInput), works under BUN_UIA_CURSOR=never and on a WinUI/WPF/Electron sub-control with NO own window handle. This is the prerequisite for driving such a control with the keyboard: focus it, then press_key (a chord like Ctrl+A / Ctrl+S, or Tab / arrow navigation) lands on it. Prefer invoke/set_value/toggle when a pattern exists.',
     inputSchema: { type: 'object', properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC } }, required: ['ref'] },
   },
   {
@@ -1253,6 +1264,14 @@ const HANDLERS: Record<string, ToolHandler> = {
     patternAction('invoke', () => element.invoke());
     return withSnapshot(`invoked ${target}`);
   },
+  focus: (args) => {
+    // UIA SetFocus — cursor-free (no SendInput), so it works under BUN_UIA_CURSOR=never and on a no-own-HWND
+    // WinUI/WPF/Electron control. The prerequisite for chord/arrow nav (press_key) to a SPECIFIC control by ref.
+    const element = resolveRef(requireString(args, 'ref'));
+    const target = named(element);
+    element.focus();
+    return withSnapshot(`focused ${target}`);
+  },
   type: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
     const text = requireString(args, 'text');
@@ -1576,9 +1595,11 @@ const HANDLERS: Record<string, ToolHandler> = {
       // The ref has no native window handle (WinUI/WPF/Chromium sub-control) — fall back to the FOCUSED control and
       // SAY so, rather than reporting a plain success that hides the target change.
       if (cursorDenied)
-        return errorResult(`${JSON.stringify(key)} could not be posted cursor-free (the ref has no native window handle) and the SendInput fallback is disabled by BUN_UIA_CURSOR=never — focus the control first, or use set_value`);
+        return errorResult(
+          `${JSON.stringify(key)} could not be posted cursor-free (the ref has no native window handle) and the SendInput fallback is disabled by BUN_UIA_CURSOR=never — focus {ref} first (cursor-free SetFocus) then press_key, or use set_value`,
+        );
       uia.sendKeys(key);
-      return withSnapshot(`pressed ${JSON.stringify(key)} on the FOCUSED control — the ref has no native window handle, so it could not be targeted cursor-free (focus it first, or use type/set_value)`);
+      return withSnapshot(`pressed ${JSON.stringify(key)} on the FOCUSED control — the ref has no native window handle, so it could not be targeted cursor-free (focus {ref} first to aim the keys at it, or use type/set_value)`);
     }
     if (cursorDenied)
       return errorResult(
