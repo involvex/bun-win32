@@ -712,12 +712,12 @@ function withActSnapshot(action: string, message: string, baseline: number): obj
  *  stable for ~300ms before the content lands. This is the launch path ONLY (the window is known fresh) — the per-action
  *  hot path is untouched, and a warm launch pays one extra tick. */
 function withLaunchSettledSnapshot(message: string): object {
-  let result = withSnapshot(message);
+  withSnapshot(message);
   let previous = current?.marks.length ?? 0;
   let grew = false;
   for (let elapsed = 0; elapsed < 2500; elapsed += 160) {
     Bun.sleepSync(160);
-    result = withSnapshot(message);
+    withSnapshot(message);
     const count = current?.marks.length ?? 0;
     if (count > previous) grew = true;
     const stable = count === previous;
@@ -725,7 +725,12 @@ function withLaunchSettledSnapshot(message: string): object {
     if (grew && stable) break; // late content arrived then settled (cold WinUI) → done
     if (!grew && stable && elapsed >= 640) break; // never grew + stable past the WinUI render window → warm/instant or provider-gap
   }
-  return result;
+  // Every settle-loop withSnapshot after the first sees `body === lastSnapshotBody` and short-circuits to the
+  // content-LESS "no UI change" line — so the loop's own result is always that empty line, never the freshly-rendered
+  // tree the launch is supposed to hand back. The window is provably FRESH (launch_app nulled lastSnapshotBody/Tree
+  // before this), so there is no real "prior" to diff against: force one final FULL render by clearing the baseline.
+  lastSnapshotBody = '';
+  return withSnapshot(message);
 }
 
 /** ValuePattern set, falling back to RangeValuePattern for a numeric value on a slider/spinner (ValuePattern

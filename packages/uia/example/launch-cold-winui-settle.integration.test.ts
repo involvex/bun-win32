@@ -75,9 +75,25 @@ try {
     assert(launched.result?.isError !== true, 'launch_app returned a snapshot (not an error)');
     assert(refs > 15, `the settled launch snapshot carries the cold-WinUI content (${refs} refs — a bare snapshot would show only ~4 title-bar controls)`);
   }
+
+  // Warm/instant classic app: the settle loop stabilizes on the first tick. This is the case the cycle-145 settle SHIPPED
+  // BROKEN (REFLECT #40 rank1) — every settle-loop withSnapshot after the first saw body===lastSnapshotBody and returned
+  // the content-LESS "no UI change" line, so launch_app handed back a ref-less tree for EVERY app, not just cold WinUI.
+  // The fix forces one final full render after the loop; this asserts a warm launch carries content too.
+  const warm = await call('tools/call', { name: 'launch_app', arguments: { command: 'charmap.exe', title: 'Character Map' } });
+  const warmText = textOf(warm);
+  if (warm.result?.isError === true && /no window matching/.test(warmText)) {
+    console.log('  skip: Character Map did not launch');
+  } else {
+    const warmRefs = (warmText.match(/\[ref=/g) ?? []).length;
+    assert(!warmText.includes('(no UI change since the last snapshot'), 'a warm launch does NOT return the content-less "no UI change" line');
+    assert(warmRefs > 5, `a warm classic launch (Character Map) carries content too (${warmRefs} refs)`);
+  }
 } finally {
+  await call('tools/call', { name: 'manage_window', arguments: { action: 'close' } }).catch(() => {});
   proc.kill();
   Bun.spawnSync(['taskkill', '/IM', 'SystemSettings.exe', '/F']);
+  Bun.spawnSync(['taskkill', '/IM', 'charmap.exe', '/F']);
 }
 
 console.log(failures === 0 ? '\nPASS — launch_app settles a cold WinUI store app so its late-rendered content is in the launch snapshot.' : `\nFAILED — ${failures} assertion(s)`);
