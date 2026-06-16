@@ -253,6 +253,7 @@ const WM_COPY = 0x0000_0301;
 const WM_PASTE = 0x0000_0302;
 const EM_SETSEL = 0x0000_00b1;
 const WM_MOUSEWHEEL = 0x0000_020a;
+const EM_UNDO = 0x0000_00c7;
 
 /** Set a control's text cursor-free via SendMessageW(WM_SETTEXT) — no keystrokes/focus, works on a background
  *  window. SendMessageW is synchronous, so the wide-string buffer is valid for the call.
@@ -261,6 +262,13 @@ export function setControlText(hWnd: bigint, text: string): boolean {
   if (hWnd === 0n) return false;
   const buffer = Buffer.from(`${text}\0`, 'utf16le');
   return User32.SendMessageW(hWnd, WM_SETTEXT, 0n, BigInt(buffer.ptr!)) !== 0n;
+}
+
+/** Undo the last edit in a classic Edit / RichEdit cursor-free via SendMessageW(EM_UNDO) — no Ctrl+Z keystroke,
+ *  no focus, works on a background/minimized window. Returns false for a 0 handle or a control that cannot undo. */
+export function undoControl(hWnd: bigint): boolean {
+  if (hWnd === 0n) return false;
+  return User32.SendMessageW(hWnd, EM_UNDO, 0n, 0n) !== 0n;
 }
 
 /** Scroll a control's HWND cursor-free via posted WM_MOUSEWHEEL — no real wheel/cursor, works on a background /

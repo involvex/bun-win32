@@ -106,6 +106,7 @@ export {
   sendKeys,
   setControlText,
   type,
+  undoControl,
   virtualKeyCode,
 } from './input';
 export { drawMarks, type MarkedScreenshot, type PlacedMark, screenshotWithMarks } from './marks';

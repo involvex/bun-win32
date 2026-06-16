@@ -76,6 +76,7 @@ import {
   type Snapshot,
   type TableData,
   uia,
+  undoControl,
   virtualScreen,
   type Window,
 } from './index';
@@ -1674,6 +1675,13 @@ const HANDLERS: Record<string, ToolHandler> = {
   },
   press_key: (args) => {
     const key = requireString(args, 'key');
+    // Ctrl+Z → cursor-free EM_UNDO on a classic Edit with its own HWND (the one undo-key the WM_COPY/CUT/PASTE/SETSEL
+    // cursor-free cluster was missing); falls through to the gated SendInput chord path for a no-own-HWND control.
+    if (typeof args.ref === 'string' && key.toLowerCase().replace(/\s/g, '').replace('ctrl', 'control') === 'control+z') {
+      const element = resolveRef(args.ref);
+      const handle = element.nativeWindowHandle;
+      if (handle !== 0n && undoControl(handle)) return withSnapshot(`undid the last edit in ${named(element)} cursor-free (EM_UNDO)`);
+    }
     if (typeof args.ref === 'string' && !key.includes('+')) {
       const handle = resolveRef(args.ref).nativeWindowHandle;
       if (handle !== 0n && postKey(handle, key)) return withSnapshot(`pressed ${JSON.stringify(key)} cursor-free`);
