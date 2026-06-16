@@ -66,13 +66,19 @@ function isAppWindow(hWnd: bigint): boolean {
 }
 
 function toPredicate(match: WindowMatch): (window: WindowInfo) => boolean {
-  if (typeof match === 'string') return (window) => window.title.includes(match);
+  // String/title substring matches CASE-INSENSITIVELY, mirroring attach (mcp.ts) — a differently-cased title
+  // (waiting on 'Save As' for the actual 'Save as', or a lowercased app name) must not silently time out. className
+  // stays exact (class names are case-sensitive identifiers); a RegExp carries its own case flags.
+  if (typeof match === 'string') {
+    const lower = match.toLowerCase();
+    return (window) => window.title.toLowerCase().includes(lower);
+  }
   return (window) => {
     if (match.process !== undefined && window.processId !== match.process) return false;
     if (match.className !== undefined && window.className !== match.className) return false;
     if (match.title !== undefined) {
       if (match.title instanceof RegExp) return match.title.test(window.title);
-      return window.title.includes(match.title);
+      return window.title.toLowerCase().includes(match.title.toLowerCase());
     }
     return true;
   };

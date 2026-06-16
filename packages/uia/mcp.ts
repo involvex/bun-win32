@@ -478,18 +478,29 @@ function minimizedCaptureSteer(hWnd: bigint, tool: string): string {
   return `${tool}: 0x${hWnd.toString(16)} is MINIMIZED, so it has no on-screen surface to capture. Restore it first (manage_window {action:"restore"} — cursor-free, no foreground), then retry.`;
 }
 
+/** The processId of the attached window, or undefined — scopes newPopup to the in-app popup so a cross-process SHELL
+ *  popup is never misattributed to an in-app action. */
+function attachedProcessId(): number | undefined {
+  return attached !== null ? windowProcessId(attached.hWnd) : undefined;
+}
+
 /** The NEW untitled popup window (dropdown / flyout / context menu / combobox list) that appeared since `before`, or
- *  undefined. A single synchronous scan — no sleep. */
-function newPopup(before: Set<bigint>): { hWnd: bigint; className: string } | undefined {
-  return uia.windows({ includeUntitled: true }).find((window) => !before.has(window.hWnd) && (window.className === '#32768' || /Combo|DropDown|Flyout|Menu|Popup/i.test(window.className)));
+ *  undefined. A single synchronous scan — no sleep. Scoped to the attached window's PROCESS by default: a classic
+ *  #32768 menu / ComboLBox and a WinUI app's own windowed popup are same-process, but a cross-process shell popup that
+ *  happens to open during the action (e.g. an explorer Xaml_WindowedPopupClass "PopupHost", a toast) is NOT this
+ *  action's popup and must not be auto-returned to the agent. */
+function newPopup(before: Set<bigint>, ownerProcessId = attachedProcessId()): { hWnd: bigint; className: string } | undefined {
+  return uia
+    .windows({ includeUntitled: true })
+    .find((window) => !before.has(window.hWnd) && (ownerProcessId === undefined || window.processId === ownerProcessId) && (window.className === '#32768' || /Combo|DropDown|Flyout|Menu|Popup/i.test(window.className)));
 }
 
 /** Poll for newPopup() over time. Checks FIRST so a popup created synchronously by the action costs nothing; `attempts`
  *  bounds the wait when none appears — only the provider-dependent context_menu needs the slow poll (invoke/expand use
  *  the sleep-free newPopup() bracketed around their withSnapshot rebuild instead). */
-async function pollForNewPopup(before: Set<bigint>, attempts: number): Promise<{ hWnd: bigint; className: string } | undefined> {
+async function pollForNewPopup(before: Set<bigint>, attempts: number, ownerProcessId = attachedProcessId()): Promise<{ hWnd: bigint; className: string } | undefined> {
   for (let attempt = 0; ; attempt += 1) {
-    const popup = newPopup(before);
+    const popup = newPopup(before, ownerProcessId);
     if (popup !== undefined) return popup;
     if (attempt + 1 >= attempts) return undefined;
     await Bun.sleep(80);
