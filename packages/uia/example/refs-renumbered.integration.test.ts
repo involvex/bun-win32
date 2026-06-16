@@ -10,7 +10,7 @@
  * Pure function over RefNode trees — no FFI, no windows, fully deterministic.
  * Run: bun run example/refs-renumbered.integration.test.ts
  */
-import { refsRenumbered, type RefNode } from '@bun-win32/uia';
+import { diffTrees, refsRenumbered, type RefNode } from '@bun-win32/uia';
 
 let failures = 0;
 function assert(condition: boolean, message: string): void {
@@ -46,6 +46,16 @@ assert(!refsRenumbered(beforeRename, afterRename), 'a ref-bearing node renamed b
 
 // 5. Identical trees — not renumbered.
 assert(!refsRenumbered(beforeValue, beforeValue), 'identical trees are not renumbered');
+
+// 6. The delta-collapse fix: a Text inserted at index 0 (a result/status line — the commonest click outcome) must
+// NOT renumber the automationId-bearing siblings' refs. Positional keying used to cascade EVERY later sibling
+// (insert at 0 shifts all indices), forcing a full re-dump + ref rejection; automationId-anchored keying holds them.
+const aided = (role: string, name: string, ref: string | undefined, automationId: string): RefNode => ({ role, name, automationId, ...(ref !== undefined ? { ref } : {}), children: [] });
+const beforeInsert = root(aided('Button', 'Five', 'e1', 'num5Button'), aided('Button', 'Plus', 'e2', 'plusButton'));
+const afterInsert = root(node('Text', 'Display is 5', undefined), aided('Button', 'Five', 'e1', 'num5Button'), aided('Button', 'Plus', 'e2', 'plusButton'));
+assert(!refsRenumbered(beforeInsert, afterInsert), 'a Text inserted before automationId-bearing controls does NOT renumber their refs (delta-collapse fix)');
+const diff6 = diffTrees(beforeInsert, afterInsert);
+assert(diff6.appeared.length === 1 && diff6.appeared[0]!.name === 'Display is 5' && diff6.disappeared.length === 0, 'that insert diffs as ONE appeared Text, not 2 buttons disappeared + 3 reappeared');
 
 console.log(failures === 0 ? '\nPASS — refsRenumbered detects ref-id shifts (incl. the Custom-rename gap) without false-positives on value/name changes.' : `\nFAILED — ${failures} assertion(s)`);
 process.exit(failures === 0 ? 0 : 1);

@@ -3,7 +3,9 @@
 // whole subtree every step. Pure logic over the minimal node shape (role + name + automationId +
 // optional ref + children), so both UiaNode (uia.tree) and RefNode (snapshots) diff with no cast.
 // Nodes are keyed by their structural path plus role + automationId, so a name change at a fixed
-// position reads as a rename, not appear+disappear.
+// position reads as a rename, not appear+disappear. Each path segment is the child's automationId
+// when it has one (a stable identity), else its index — so inserting a sibling (e.g. a result Text)
+// before a control does NOT shift the keys of automationId-bearing siblings and renumber their refs.
 
 /** The minimal tree shape diffTrees needs — satisfied structurally by both UiaNode and RefNode. */
 export interface DiffNode {
@@ -45,7 +47,16 @@ export interface TreeDiff {
 
 function flatten(node: DiffNode, path: string, into: Map<string, DiffNode>): void {
   into.set(`${path}:${node.role}:${node.automationId ?? ''}`, node);
-  for (let index = 0; index < node.children.length; index += 1) flatten(node.children[index]!, `${path}/${index}`, into);
+  // Child path segment is the child's automationId when it has one (a STABLE, position- AND name-independent identity),
+  // else its positional index. Anchoring on automationId stops a sibling inserted/removed before a child (the commonest
+  // click outcome — a status/result Text appearing) from cascading every later child's key and falsely renumbering
+  // their refs; the positional fallback keeps the prior behavior for the controls that expose no automationId (so a
+  // name change at a fixed position still reads as a rename, not appear+disappear).
+  for (let index = 0; index < node.children.length; index += 1) {
+    const child = node.children[index]!;
+    const segment = child.automationId !== undefined && child.automationId.length > 0 ? `#${child.automationId}` : `${index}`;
+    flatten(child, `${path}/${segment}`, into);
+  }
 }
 
 /** Compute the structural delta from `before` to `after`. */
