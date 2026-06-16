@@ -74,6 +74,12 @@ try {
       table.rows.some((row) => row.some((cell) => cell.trim().length > 0)),
       'at least one cell carries real text (GetItem + cell Name/Value read correctly)',
     );
+    // The Explorer-Details inversion guard: if a cell merely echoed its column header, every row would equal the
+    // header row. Require at least one row whose first cell is the actual datum, not the "Name" header label.
+    assert(
+      table.headers.length === 0 || table.rows.some((row) => row[0] !== undefined && row[0].trim().length > 0 && row[0] !== table.headers[0]),
+      `read the cell DATUM, not the column header (a row's first cell differs from ${JSON.stringify(table.headers[0] ?? '')})`,
+    );
     assert(table.rows.length <= 8, 'maxRows bound is honored (read <= 8 of the rows)');
   }
 } finally {

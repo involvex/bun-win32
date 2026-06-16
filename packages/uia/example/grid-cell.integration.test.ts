@@ -20,9 +20,13 @@ function assert(condition: boolean, message: string): void {
     failures += 1;
   }
 }
-function cellText(cell: Element): string {
+// Mirror readTable's cell-text precedence: Name is the datum (WinForms) UNLESS it is the column-header label
+// (Explorer Details sets every cell's Name to its header), in which case the datum is the ValuePattern value.
+function cellText(cell: Element, header = ''): string {
   const name = cell.name;
-  return name.length > 0 ? name : cell.value;
+  if (name.length > 0 && name !== header) return name;
+  const value = cell.value;
+  return value.length > 0 ? value : name;
 }
 
 uia.initialize();
@@ -51,10 +55,13 @@ try {
     }
     assert(grid !== null, 'found the details-view Grid container');
     if (grid !== null) {
+      const headers = grid.readTable(1)?.headers ?? [];
       const a = grid.cell(0, 0);
       const b = grid.cell(0, 1);
       assert(a !== null, `cell(0,0) is a live Element (${a?.controlTypeName})`);
-      assert(a !== null && cellText(a).length > 0, `cell(0,0) carries text (${JSON.stringify(cellText(a!).slice(0, 24))})`);
+      assert(a !== null && cellText(a, headers[0]).length > 0, `cell(0,0) carries text (${JSON.stringify(cellText(a!, headers[0]).slice(0, 24))})`);
+      // Guard the Explorer-Details header-vs-data inversion: cell(0,0)'s text must be the DATUM, not the "Name" header.
+      assert(a !== null && (headers[0] === undefined || cellText(a, headers[0]) !== headers[0]), `cell(0,0) returns the datum, not the column header ${JSON.stringify(headers[0] ?? '')}`);
       assert(a !== null && b !== null && a.ptr !== b.ptr, 'cell(0,0) and cell(0,1) are distinct cells (column addressing works)');
       a?.release();
       b?.release();

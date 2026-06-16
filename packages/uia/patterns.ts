@@ -444,10 +444,16 @@ const MAX_TABLE_COLUMNS = 4096; // safety bound for readTable's per-row column l
 
 /**
  * Read a GridPattern container (data grid, details-view list, spreadsheet-like control) as text — one
- * GetItem(row,col) per cell, cell text from the cell's Name (ValuePattern value when Name is empty), plus
- * column headers when the element also supports TablePattern. Returns null when there is no GridPattern.
- * `maxRows` bounds a huge/virtualized grid; `totalRows` always reports the grid's full row count. The column
- * count is clamped to MAX_TABLE_COLUMNS so a hostile/buggy provider cannot force an unbounded allocation.
+ * GetItem(row,col) per cell, plus column headers when the element also supports TablePattern. Returns null when
+ * there is no GridPattern. `maxRows` bounds a huge/virtualized grid; `totalRows` always reports the grid's full
+ * row count. The column count is clamped to MAX_TABLE_COLUMNS so a hostile/buggy provider cannot force an
+ * unbounded allocation.
+ *
+ * Cell text precedence: a cell's Name is normally the datum (WinForms DataGridView), but File Explorer's Details
+ * view (the canonical Windows grid) sets every cell's UIA Name to its COLUMN-HEADER label ("Name"/"Date
+ * modified"/…) and puts the real datum in the ValuePattern value — so when the Name equals the column header (or
+ * is empty) we take ValueValue instead, falling back to the Name only when there is no value. That keeps a
+ * name-is-data grid correct while fixing the Explorer-Details inversion (was returning the header for every cell).
  */
 export function readTable(ptr: bigint, maxRows = 100): TableData | null {
   const grid = getPattern(ptr, PatternId.Grid);
@@ -457,6 +463,7 @@ export function readTable(ptr: bigint, maxRows = 100): TableData | null {
     const columnCount = getLong(grid, SLOT.get_CurrentColumnCount);
     const limit = Math.min(Math.max(totalRows, 0), Math.max(maxRows, 0));
     const columns = Math.min(Math.max(columnCount, 0), MAX_TABLE_COLUMNS); // clamp a hostile/buggy provider's column count (mirrors the row clamp); no real grid exceeds this, but an unbounded count would mean a multi-GB alloc + billions of GetItem round-trips per row
+    const headers = columnHeaders(ptr); // computed once — also the per-cell header-label comparison below
     const rows: string[][] = [];
     const cellOut = Buffer.alloc(8);
     for (let row = 0; row < limit; row += 1) {
@@ -472,16 +479,16 @@ export function readTable(ptr: bigint, maxRows = 100): TableData | null {
           continue;
         }
         const name = getBstr(cell, SLOT.get_CurrentName);
-        if (name.length > 0) cells[column] = name;
+        if (name.length > 0 && name !== headers[column]) cells[column] = name; // a genuine datum in Name (WinForms DataGridView, where Name !== the column header)
         else {
-          const value = getPropertyValue(cell, PropertyId.ValueValue); // one round-trip via the property, not acquire+read+release of the Value pattern per blank cell
-          cells[column] = typeof value === 'string' ? value : '';
+          const value = getPropertyValue(cell, PropertyId.ValueValue); // Name is empty OR is just the column-header label (Explorer Details) → the datum is the ValuePattern value; '' when both are empty (a genuinely blank cell, e.g. a folder's Size — never echo the header label back)
+          cells[column] = typeof value === 'string' && value.length > 0 ? value : '';
         }
         comRelease(cell);
       }
       rows.push(cells);
     }
-    return { headers: columnHeaders(ptr), rows, totalRows };
+    return { headers, rows, totalRows };
   } finally {
     comRelease(grid);
   }
