@@ -54,7 +54,9 @@ export function matches(element: ElementProperties, selector: Selector): boolean
   if (selector.className !== undefined && element.className !== selector.className) return false;
   if (selector.name !== undefined) {
     if (selector.name instanceof RegExp) {
-      if (!selector.name.test(element.name)) return false;
+      // Strip g/y: a stateful lastIndex makes repeated .test() over sibling names skip every other match.
+      const pattern = selector.name.global || selector.name.sticky ? new RegExp(selector.name.source, selector.name.flags.replace(/[gy]/g, '')) : selector.name;
+      if (!pattern.test(element.name)) return false;
     } else if (element.name !== selector.name) return false;
   }
   if (selector.nameContains !== undefined && !element.name.includes(selector.nameContains)) return false;
@@ -124,7 +126,7 @@ export function compileCondition(pAutomation: bigint, selector: Selector): Compi
     if (part !== 0n) parts.push(part);
   }
   if (selector.nameContains !== undefined) needsClientFilter = true;
-  if (parts.length === 0) return { condition: trueCondition(), needsClientFilter: true, owned: false };
+  if (parts.length === 0) return { condition: trueCondition(), needsClientFilter, owned: false }; // empty selector → TrueCondition matches everything server-side, no client pass (needsClientFilter stays true only for a regex/substring-only selector)
   let condition = parts[0]!;
   for (let index = 1; index < parts.length; index += 1) {
     const combined = andCondition(pAutomation, condition, parts[index]!);

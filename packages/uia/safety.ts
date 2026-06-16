@@ -84,5 +84,7 @@ export function toToolResult(results: readonly AgentActionResult[]): { content: 
 
 /** A copy of a serialized tree with names matching `pattern` masked (passwords, secure text). */
 export function redactTree(node: UiaNode, pattern: RegExp): UiaNode {
-  return { ...node, name: pattern.test(node.name) ? '***' : node.name, children: node.children.map((child) => redactTree(child, pattern)) };
+  // Strip g/y: a stateful lastIndex would leave every other matching name unmasked (fail-open secret leak).
+  const stateless = pattern.global || pattern.sticky ? new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, '')) : pattern;
+  return { ...node, name: stateless.test(node.name) ? '***' : node.name, children: node.children.map((child) => redactTree(child, stateless)) };
 }
