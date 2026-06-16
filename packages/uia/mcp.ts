@@ -56,6 +56,7 @@ import {
   postClickToHwnd,
   postDoubleClickAt,
   postDoubleClickToHwnd,
+  postHWheel,
   postKey,
   postText,
   postWheel,
@@ -1226,7 +1227,7 @@ const TOOLS: McpTool[] = [
     name: 'scroll',
     category: 'input',
     description:
-      'Scroll a control. With a direction, scrolls the nearest ScrollPattern container by `amount` steps; if the control has no ScrollPattern but its own window handle, a posted WM_MOUSEWHEEL scrolls it up/down — both cursor-free, working on a locked/background/minimized window; only then does it fall to a real wheel. Without a direction, scrolls the ref into view via the ScrollItem pattern.',
+      'Scroll a control. With a direction, scrolls the nearest ScrollPattern container by `amount` steps; if the control has no ScrollPattern but its own window handle, a posted wheel scrolls it (WM_MOUSEWHEEL up/down, WM_MOUSEHWHEEL left/right) — both cursor-free, working on a locked/background/minimized window; only then does it fall to a ScrollPattern ancestor. Without a direction, scrolls the ref into view via the ScrollItem pattern.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1931,11 +1932,15 @@ const HANDLERS: Record<string, ToolHandler> = {
       const bounds = element.boundingRectangle;
       const centerX = bounds.x + Math.floor(bounds.width / 2);
       const centerY = bounds.y + Math.floor(bounds.height / 2);
-      // No ScrollPattern — for a classic control with its own HWND, a posted WM_MOUSEWHEEL scrolls it CURSOR-FREE
-      // (works minimized/background/locked), the path a ScrollPattern-less ListView/Edit/TreeView needs. Vertical only
-      // (WM_MOUSEWHEEL); horizontal falls through to the SendInput wheel.
+      // No ScrollPattern — for a classic control with its own HWND, a posted wheel scrolls it CURSOR-FREE (works
+      // minimized/background/locked), the path a ScrollPattern-less ListView/Edit/TreeView needs: WM_MOUSEWHEEL for
+      // up/down, WM_MOUSEHWHEEL for left/right. Only if there is no own HWND (or the post is rejected) does it fall to
+      // a UIA-ScrollPattern ANCESTOR via scrollAt (no SendInput-wheel fallback exists here — that would move the cursor).
       const handle = element.nativeWindowHandle !== 0n ? element.nativeWindowHandle : ownerHwnd(element);
+      const notches = direction === 'up' || direction === 'left' ? -Math.max(1, amount) : Math.max(1, amount); // wheel: +up/-down; hwheel: +right/-left
       if ((direction === 'up' || direction === 'down') && handle !== 0n && postWheel(handle, centerX, centerY, direction === 'up' ? Math.max(1, amount) : -Math.max(1, amount)))
+        return withSnapshot(`scrolled ${target} ${direction} ${amount} (posted wheel, cursor-free)`);
+      if ((direction === 'left' || direction === 'right') && handle !== 0n && postHWheel(handle, centerX, centerY, notches))
         return withSnapshot(`scrolled ${target} ${direction} ${amount} (posted wheel, cursor-free)`);
       if (scrollAt(centerX, centerY, direction, amount)) return withSnapshot(`scrolled ${target} ${direction} ${amount}`);
       return withSnapshot(`no scrollable container at ${target}`);

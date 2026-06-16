@@ -253,6 +253,7 @@ const WM_COPY = 0x0000_0301;
 const WM_PASTE = 0x0000_0302;
 const EM_SETSEL = 0x0000_00b1;
 const WM_MOUSEWHEEL = 0x0000_020a;
+const WM_MOUSEHWHEEL = 0x0000_020e;
 const EM_UNDO = 0x0000_00c7;
 
 /** Set a control's text cursor-free via SendMessageW(WM_SETTEXT) — no keystrokes/focus, works on a background
@@ -280,6 +281,17 @@ export function postWheel(hWnd: bigint, screenX: number, screenY: number, notche
   const wParam = BigInt(((delta & 0xffff) << 16) >>> 0); // hiword = wheel delta (signed short), loword = key flags (none)
   const lParam = BigInt((((screenY & 0xffff) << 16) | (screenX & 0xffff)) >>> 0); // loword = x, hiword = y (screen coords)
   return User32.PostMessageW(hWnd, WM_MOUSEWHEEL, wParam, lParam) !== 0;
+}
+
+/** Scroll a control's HWND HORIZONTALLY cursor-free via posted WM_MOUSEHWHEEL — the sideways twin of postWheel for a
+ *  ScrollPattern-less own-HWND control (wide list / carousel / horizontally-scrolled Edit). `notches` > 0 scrolls
+ *  RIGHT, < 0 LEFT (one notch = 120). False for a 0 handle. */
+export function postHWheel(hWnd: bigint, screenX: number, screenY: number, notches: number): boolean {
+  if (hWnd === 0n) return false;
+  const delta = Math.trunc(notches) * 120;
+  const wParam = BigInt(((delta & 0xffff) << 16) >>> 0); // hiword = wheel delta (signed short; +right/-left), loword = key flags
+  const lParam = BigInt((((screenY & 0xffff) << 16) | (screenX & 0xffff)) >>> 0); // loword = x, hiword = y (screen coords)
+  return User32.PostMessageW(hWnd, WM_MOUSEHWHEEL, wParam, lParam) !== 0;
 }
 
 /** Press a key (WM_KEYDOWN + WM_KEYUP) on a control's HWND cursor-free — Enter / Tab / Escape / arrows / a single
