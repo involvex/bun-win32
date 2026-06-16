@@ -305,7 +305,7 @@ export class Element {
   /** Build the actionable no-match message by scanning the candidate set under this element. */
   describeNoMatch(selector: Selector): string {
     const candidates = this.findAll(selector.controlType !== undefined ? { controlType: selector.controlType } : {});
-    const names = candidates.slice(0, 20).map((candidate) => candidate.name); // cap live Name reads — the no-match hint only needs the nearest few
+    const names = candidates.slice(0, 200).map((candidate) => candidate.name); // read a WIDE pool of Names so formatNoMatch can RANK the nearest (it renders only the top 8); a low cap here would hide the relevant candidate on a >20-descendant window. Runs only on the rare no-match error path.
     for (const candidate of candidates) candidate.release();
     return formatNoMatch(selector, this.name, names);
   }
