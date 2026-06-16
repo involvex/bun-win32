@@ -1324,8 +1324,17 @@ const HANDLERS: Record<string, ToolHandler> = {
   find_text: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
     if (element.isPassword) return textResult('(password — withheld) — find_text will not extract text from a secret field'); // the one read path that was missing the gate every sibling applies
+    // Disambiguate "no TextPattern" (wrong target) from "text genuinely absent" — they need different next steps.
+    if (element.getProperty(PropertyId.IsTextPatternAvailable) !== true)
+      return errorResult(
+        `this control has no UIA TextPattern, so find_text cannot search it — target a Document / Edit / Text control (the editor/terminal/document body), not its container. inspect_element {ref} shows whether a ref can read-text.`,
+      );
     const matched = element.selectText(requireString(args, 'text'), { ignoreCase: args.ignoreCase === true });
-    return textResult(matched === null ? `text not found (or the control has no TextPattern): ${JSON.stringify(args.text)}` : `found and selected ${JSON.stringify(matched)} — now the active text selection (copy / set_value / read it)`);
+    return textResult(
+      matched === null
+        ? `text not present in this control: ${JSON.stringify(args.text)} — try a shorter / exact substring, mind case (ignoreCase:true), or it may be scrolled/virtualized off-screen (reveal it first)`
+        : `found and selected ${JSON.stringify(matched)} — now the active text selection (copy / set_value / read it)`,
+    );
   },
   wait_for: async (args) => {
     const found = await requireAttached().waitFor(selectorFrom(args.selector), { timeout: typeof args.timeout === 'number' ? args.timeout : 5000 });
@@ -1525,7 +1534,7 @@ const HANDLERS: Record<string, ToolHandler> = {
     if (element.getProperty(PropertyId.IsTextPatternAvailable) === true) can.push('read-text');
     if (element.getProperty(PropertyId.IsGridPatternAvailable) === true) can.push('read-table');
     if (element.getProperty(PropertyId.IsMultipleViewPatternAvailable) === true) can.push('set-view (list_views/set_view)');
-    if (can.length > 0) lines.push(`can: ${can.join(', ')}`);
+    lines.push(can.length > 0 ? `can: ${can.join(', ')}` : 'can: (none — a static/container node with no actionable UIA pattern; act on a CHILD control instead, or use ocr / screen_capture / inspect_point for its pixels)');
     // TextPattern content (terminals, documents, read-only multiline text) — the buffer the ValuePattern `value`
     // does not carry. Prefer the ON-SCREEN text (GetVisibleRanges): bounded + relevant + cheap for a huge
     // scrollback; fall back to the full document for a non-scrollable text control. Capped either way.

@@ -50,7 +50,7 @@ The Windows desktop-automation cluster on npm is a field of native-addon pain, p
 - **`waitFor`** — Playwright-class auto-retry for flaky native UIs. No other Windows-desktop npm tool has it. Timeouts quote the selector, the window, and the nearest candidates.
 - **Read & assert** — `value`, `text()`, `isEnabled`, `boundingRectangle`, `toggleState`. Read state back through the tree to assert — pixel tools can't.
 - **Serialize the tree to JSON** for an LLM agent (`uia.tree`), with a token-svelte agent profile.
-- **Screenshot** any window via PrintWindow (auto-falls back to Windows.Graphics.Capture; the PNG can come back blank on a locked / secure-desktop session — UIA reads + `invoke`/`setValue` still work there).
+- **Screenshot** any window via PrintWindow — `Window.screenshot()` is pure PrintWindow (returns blank bytes when the window is occluded / GPU-composited / locked); for those, `captureWindowLive(hWnd)` (and the MCP `screenshot` tool) fall back to **Windows.Graphics.Capture**. All can come back blank on a locked / secure-desktop session — UIA reads + `invoke`/`setValue` still work there.
 - **MSAA fallback** (`uia.msaaTree`) for legacy / owner-draw windows.
 - **Crash-safe input observation** via `GetAsyncKeyState` polling — no foreign-thread hook, no message-pump assert.
 - **Drive in the dark** — `invoke()`/`setValue()`/`toggle()`/`scroll()` and `postClick(x, y)` move no real cursor and work on a window that is **minimized, in the background, occluded, or on a locked session** — no focus theft, the human-transcending default. SendInput is the opt-in "a human is watching" path.
