@@ -257,15 +257,26 @@ function controlTypeId(value: number | string): number | undefined {
 }
 
 const SELECTOR_KEYS = new Set(['name', 'nameContains', 'automationId', 'className', 'controlType']);
+// The selector idioms an LLM reaches for first (ARIA/Playwright muscle memory) folded onto the real UIA keys.
+const SELECTOR_ALIASES: Record<string, 'automationId' | 'controlType' | 'name'> = { accessibleName: 'name', id: 'automationId', label: 'name', role: 'controlType', title: 'name', type: 'controlType' };
 
 function selectorFrom(value: unknown): Selector {
-  const raw = record(value);
-  // Reject UNKNOWN keys (a silently-dropped alias would act on the WRONG control with a confident success). Map the
-  // common agent mistakes to the real key rather than ignoring them.
+  const raw = { ...record(value) };
+  // Fold the common LLM idioms (role/type → controlType, id → automationId, label/accessibleName/title → name) onto
+  // the real UIA keys rather than rejecting them. A bare alias is honored; an alias that conflicts with its canonical
+  // key is an error (never silently pick one and act on the wrong control).
+  for (const alias of Object.keys(raw)) {
+    const canonical = SELECTOR_ALIASES[alias];
+    if (canonical === undefined) continue;
+    if (canonical in raw && raw[canonical] !== raw[alias]) throw new Error(`selector has both ${JSON.stringify(alias)} and ${JSON.stringify(canonical)} — ${JSON.stringify(alias)} is an alias for ${JSON.stringify(canonical)}; pass only one`);
+    raw[canonical] = raw[alias];
+    delete raw[alias];
+  }
+  // Reject UNKNOWN keys (a silently-dropped key would act on the WRONG control with a confident success).
   const unknown = Object.keys(raw).filter((key) => !SELECTOR_KEYS.has(key));
   if (unknown.length > 0)
     throw new Error(
-      `unknown selector key${unknown.length > 1 ? 's' : ''} ${JSON.stringify(unknown)} — valid keys: name, nameContains, automationId, className, controlType. (Aliases: role/type → controlType; label/accessibleName/title → name or nameContains; id → automationId.)`,
+      `unknown selector key${unknown.length > 1 ? 's' : ''} ${JSON.stringify(unknown)} — valid keys: name, nameContains, automationId, className, controlType. (Aliases accepted: role/type → controlType; label/accessibleName/title → name; id → automationId.)`,
     );
   const selector: Selector = {};
   if (typeof raw.name === 'string') selector.name = raw.name;
@@ -788,6 +799,7 @@ const REF_DESC =
 const HWND_DESC = 'Target window handle — a decimal/0x-hex string or a JSON number; omit to use the attached window.';
 const SELECTOR_SCHEMA = {
   type: 'object',
+  description: 'Match a control by one or more fields (AND-ed). Aliases are accepted and folded onto these keys: role/type → controlType; id → automationId; label/accessibleName/title → name.',
   properties: {
     name: { type: 'string' },
     nameContains: { type: 'string' },
