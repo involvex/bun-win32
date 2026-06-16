@@ -73,6 +73,7 @@ import {
   screenshotWithMarks,
   scrollAt,
   selectAllInControl,
+  selectorToString,
   setControlText,
   type Selector,
   snapWindow,
@@ -1046,8 +1047,8 @@ const TOOLS: McpTool[] = [
   {
     name: 'wait_for',
     category: 'read',
-    description: 'Wait until a control matching the selector appears in the attached window, then return a fresh snapshot. On timeout, throws quoting the nearest candidates.',
-    inputSchema: { type: 'object', properties: { selector: SELECTOR_SCHEMA, timeout: { type: 'number', description: 'Milliseconds (default 5000)' } }, required: ['selector'] },
+    description: 'Wait until a control matching the selector APPEARS in the attached window (or, with gone:true, until it DISAPPEARS — the spinner / "Loading…" / progress-bar / just-dismissed-modal gate), then return a fresh snapshot. On timeout, throws quoting the nearest candidates (appear) or the still-present selector (gone).',
+    inputSchema: { type: 'object', properties: { selector: SELECTOR_SCHEMA, gone: { type: 'boolean', description: 'Wait for the control to DISAPPEAR instead of appear (spinner/loading/modal-dismissed).' }, timeout: { type: 'number', description: 'Milliseconds (default 5000)' } }, required: ['selector'] },
   },
   {
     name: 'wait_idle',
@@ -1590,7 +1591,13 @@ const HANDLERS: Record<string, ToolHandler> = {
     );
   },
   wait_for: async (args) => {
-    const found = await requireAttached().waitFor(selectorFrom(args.selector), { timeout: typeof args.timeout === 'number' ? args.timeout : 5000 });
+    const selector = selectorFrom(args.selector);
+    const timeout = typeof args.timeout === 'number' ? args.timeout : 5000;
+    if (args.gone === true) {
+      await requireAttached().waitForGone(selector, { timeout });
+      return withSnapshot(`gone: ${selectorToString(selector)}`);
+    }
+    const found = await requireAttached().waitFor(selector, { timeout });
     const target = named(found); // name the RESOLVED control, not a double-JSON-encoded echo of the selector
     found.release();
     return withSnapshot(`matched ${target}`);

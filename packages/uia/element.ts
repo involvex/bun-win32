@@ -8,7 +8,7 @@ import User32 from '@bun-win32/user32';
 import { automation, controlViewWalker } from './automation';
 import { AutomationElementMode, type CacheRequest, createCacheRequest } from './cache';
 import { comRelease, hresult, vcall } from './com';
-import { type CompiledCondition, compileCondition, type ElementProperties, formatNoMatch, matches, type Selector } from './condition';
+import { type CompiledCondition, compileCondition, type ElementProperties, formatNoMatch, matches, type Selector, selectorToString } from './condition';
 import { ControlType, PropertyId, S_OK, SLOT, TreeScope } from './constants';
 import { clickAt, type as inputType } from './input';
 import { listWindows, renderWidgetHandles, screenshot as windowScreenshot, windowForProcess } from './window';
@@ -306,6 +306,30 @@ export class Element {
         if (found !== null) return found;
         const elapsed = (Bun.nanoseconds() - start) / 1e6;
         if (elapsed >= timeout) throw new Error(`timed out after ${Math.round(elapsed)} ms — ${this.describeNoMatch(selector)}`);
+        await Bun.sleep(interval);
+      }
+    } finally {
+      if (compiled.owned) comRelease(compiled.condition);
+    }
+  }
+
+  /**
+   * Poll `find` until the selector NO LONGER matches or `timeout` (ms) elapses — the inverse of waitFor, for the
+   * spinner / "Loading…" / progress / just-dismissed-modal gate every real app flow needs (wait for the busy thing to
+   * VANISH before proceeding). Paced by an async sleep. On timeout, throws quoting the still-present selector.
+   */
+  async waitForGone(selector: Selector, options: { timeout?: number; interval?: number } = {}): Promise<void> {
+    const timeout = options.timeout ?? 5000;
+    const interval = options.interval ?? 100;
+    const start = Bun.nanoseconds();
+    const compiled = compileCondition(automation(), selector); // compile ONCE — reused across every poll
+    try {
+      for (;;) {
+        const found = findFirstMatch(this.ptr, compiled, selector, TreeScope.TreeScope_Descendants);
+        if (found === null) return;
+        found.release(); // still present — drop the handle so the poll cannot leak Elements
+        const elapsed = (Bun.nanoseconds() - start) / 1e6;
+        if (elapsed >= timeout) throw new Error(`timed out after ${Math.round(elapsed)} ms — ${selectorToString(selector)} is still present in ${JSON.stringify(this.name)} (it never disappeared)`);
         await Bun.sleep(interval);
       }
     } finally {
