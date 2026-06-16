@@ -416,6 +416,11 @@ function snapshotText(maxDepth?: number, rootName?: string): string {
     const { header, tree } = rebuildSnapshot(maxDepth, root);
     const body = renderTree(tree);
     lastSnapshotTree = tree;
+    // A defensive unscoped re-ground that finds the tree BYTE-IDENTICAL must NOT re-dump it or bump refGen: the
+    // structurally identical rebuild reassigned the same ref ids to the same controls, so the model's current-gen
+    // refs still resolve. Return a one-line "no change" (saves the full re-dump) and keep refs valid (mirrors the
+    // withSnapshot action-path contract). A scoped (root/maxDepth) snapshot always renders fully.
+    if (root === undefined && body === lastSnapshotBody) return stampRefs(`${header}\n(no UI change since the last snapshot — refs unchanged)`);
     lastSnapshotBody = body;
     refGen += 1; // an explicit re-ground renumbers refs — invalidate any the model still holds
     return stampRefs(`${header}\n${body}${root === undefined ? coldTreeNote(current?.marks.length ?? 0, attached !== null && isMinimized(attached.hWnd)) : ''}`);
@@ -1837,7 +1842,15 @@ const HANDLERS: Record<string, ToolHandler> = {
       return textResult('(this ref has no active text selection and no own-HWND Edit to copy — select text first with find_text {ref, text}, or call copy with no ref to Ctrl+C the focused control)');
     }
     if (cursorDenied) return errorResult('copy with no ref falls through to a real Ctrl+C (SendInput) on the focused control — disabled by BUN_UIA_CURSOR=never; select text cursor-free with find_text {ref, text}, then copy {ref}');
-    return textResult((await uia.copy()) || '(no selection / clipboard empty)');
+    const before = clipboardSequence();
+    const copied = await uia.copy();
+    // If Ctrl+C did not move the clipboard counter, nothing was selected — do NOT pass the prior (possibly secret /
+    // unrelated) clipboard off as the copied selection (the discipline the copy {ref} path already applies).
+    if (clipboardSequence() === before)
+      return textResult(
+        '(Ctrl+C changed nothing — likely no selection; not returning the existing clipboard, which may be unrelated. Read it explicitly with read_clipboard, or select text first with find_text {ref, text} then copy {ref}.)',
+      );
+    return textResult(capText(copied) || '(no selection / clipboard empty)');
   },
   cut: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
