@@ -1377,19 +1377,35 @@ const HANDLERS: Record<string, ToolHandler> = {
   },
   context_menu: async (args) => {
     const element = resolveRef(requireString(args, 'ref'));
-    const before = new Set(uia.windows({ includeUntitled: true }).map((window) => window.hWnd));
-    if (!element.showContextMenu()) return errorResult("this control does not support UIA ShowContextMenu (no IUIAutomationElement3) — open its menu with a real-cursor right-click: click {ref, button:'right', cursor:true}");
-    // Outcome-verified: ShowContextMenu returns S_OK even when no menu appears, so poll for the actual popup.
-    let popup: { hWnd: bigint; className: string } | undefined;
-    for (let attempt = 0; attempt < 12 && popup === undefined; attempt += 1) {
-      await Bun.sleep(80);
-      popup = uia.windows({ includeUntitled: true }).find((window) => !before.has(window.hWnd) && (window.className === '#32768' || /Popup|Menu|Flyout|DropDown/i.test(window.className)));
+    // ShowContextMenu / a posted right-click both return S_OK even when no menu appears, so poll for the REAL popup.
+    const pollForPopup = async (before: Set<bigint>): Promise<{ hWnd: bigint; className: string } | undefined> => {
+      for (let attempt = 0; attempt < 12; attempt += 1) {
+        await Bun.sleep(80);
+        const popup = uia.windows({ includeUntitled: true }).find((window) => !before.has(window.hWnd) && (window.className === '#32768' || /Popup|Menu|Flyout|DropDown/i.test(window.className)));
+        if (popup !== undefined) return popup;
+      }
+      return undefined;
+    };
+    const opened = (popup: { hWnd: bigint; className: string }): object =>
+      textResult(`context menu opened: [hWnd=0x${popup.hWnd.toString(16)}] [class=${popup.className}] — attach it (attach {hWnd}) to read + invoke its items (a WinUI flyout's items may need a re-snapshot).`);
+    // 1) UIA ShowContextMenu (cursor-free, IUIAutomationElement3).
+    if (element.showContextMenu()) {
+      const popup = await pollForPopup(new Set(uia.windows({ includeUntitled: true }).map((window) => window.hWnd)));
+      if (popup !== undefined) return opened(popup);
     }
-    if (popup === undefined)
-      return errorResult(
-        "ShowContextMenu returned OK but no menu popup appeared — this provider does not raise one via UIA. Use a real-cursor right-click instead: click {ref, button:'right', cursor:true} (needs an unlocked foreground desktop).",
-      );
-    return textResult(`context menu opened: [hWnd=0x${popup.hWnd.toString(16)}] [class=${popup.className}] — attach it (attach {hWnd}) to read + invoke its items (a WinUI flyout's items may need a re-snapshot).`);
+    // 2) Fallback: a POSTED right-click (WM_RBUTTON to the control's own window) — also cursor-free, and it raises a
+    //    menu on the modern WinUI/Chromium controls where ShowContextMenu has no Element3 or returns S_OK with no menu.
+    const owner = ownerHwnd(element);
+    if (owner !== 0n) {
+      const before = new Set(uia.windows({ includeUntitled: true }).map((window) => window.hWnd));
+      const point = clickPoint(element);
+      if (postClickToHwnd(owner, point.x, point.y, 'right')) {
+        const popup = await pollForPopup(before);
+        if (popup !== undefined) return opened(popup);
+      }
+    }
+    // 3) Both cursor-free paths failed — only a real-cursor right-click will raise this provider's menu.
+    return errorResult("no context menu appeared via UIA ShowContextMenu OR a posted right-click — this provider raises one only on a real right-click: click {ref, button:'right', cursor:true} (needs an unlocked, foregrounded desktop).");
   },
   invoke: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
