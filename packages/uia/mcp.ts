@@ -980,7 +980,7 @@ const TOOLS: McpTool[] = [
     name: 'click',
     category: 'input',
     description:
-      'Click a control. Cursor-free by default (UIA invoke, then a posted click — works on a background/minimized/occluded/locked window, no real cursor). Pass cursor:true (or right/middle/doubleClick) to move the REAL mouse, which needs an unlocked foregrounded desktop.',
+      'Click a control. CURSOR-FREE by default for EVERY button (left/right/middle) and doubleClick — UIA invoke for a left single/double, else a posted WM_*BUTTON to the control\'s own window — working on a background/minimized/occluded/locked window with no real cursor. Pass cursor:true to FORCE the real SendInput mouse (needs an unlocked, foregrounded desktop); the real mouse is also the automatic fallback when no cursor-free path applies.',
     inputSchema: {
       type: 'object',
       properties: {
