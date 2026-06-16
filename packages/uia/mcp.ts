@@ -1082,7 +1082,8 @@ const TOOLS: McpTool[] = [
   {
     name: 'launch_app',
     category: 'os',
-    description: 'Start a program. With a title/className, waits for its window and attaches (returns a snapshot); otherwise just spawns it. Gated — disabled unless the server policy enables the "os" category.',
+    description:
+      'Start a program by name (notepad, calc) OR an App-Paths / Store-alias exe a bare $PATH spawn can\'t find (mspaint, winword, excel, wt) — it falls back to ShellExecuteW automatically. With a title/className, waits for its window and attaches (returns a snapshot); otherwise just spawns it. Gated — disabled unless the server policy enables the "os" category.',
     inputSchema: {
       type: 'object',
       properties: { command: { type: 'string', description: 'Executable + args, space-separated (e.g. "notepad.exe")' }, title: { type: 'string' }, className: { type: 'string' }, timeout: { type: 'number' } },
@@ -1714,21 +1715,35 @@ const HANDLERS: Record<string, ToolHandler> = {
   },
   launch_app: async (args) => {
     const command = requireString(args, 'command');
-    if (typeof args.title === 'string' || typeof args.className === 'string') {
-      const target: { title?: string; className?: string } = {};
-      if (typeof args.title === 'string') target.title = args.title;
-      if (typeof args.className === 'string') target.className = args.className;
-      const window = await uia.launch(command.split(' '), target, typeof args.timeout === 'number' ? args.timeout : 8000);
+    const timeout = typeof args.timeout === 'number' ? args.timeout : 8000;
+    // $PATH spawn first; on failure fall back to ShellExecuteW, which resolves App-Paths registry entries + Store
+    // execution aliases (winword, excel, wt, mspaint, …) that a bare CreateProcess on $PATH cannot find.
+    let spawned = true;
+    try {
+      Bun.spawn(command.split(' '), { stdout: 'ignore', stderr: 'ignore' });
+    } catch {
+      spawned = false;
+    }
+    if (!spawned && !openPath(command))
+      return errorResult(`could not launch ${JSON.stringify(command)} — not on PATH and ShellExecuteW could not resolve it. Check the name, pass a full path, or use run_program for a command line with arguments.`);
+    const via = spawned ? '' : ' (via shell — App-Paths/alias)';
+    if (typeof args.title !== 'string' && typeof args.className !== 'string') return textResult(`launched${via}: ${command}`);
+    const target: { title?: string; className?: string } = {};
+    if (typeof args.title === 'string') target.title = args.title;
+    if (typeof args.className === 'string') target.className = args.className;
+    try {
+      const info = await uia.waitForWindow(target, { timeout });
+      const window = uia.attach(info.hWnd);
       current?.dispose();
       current = null;
       attached?.dispose();
       lastSnapshotBody = '';
       lastSnapshotTree = null;
       attached = window;
-      return withSnapshot(`launched and attached to ${JSON.stringify(window.name)}`);
+      return withSnapshot(`launched${via} and attached to ${JSON.stringify(window.name)}`);
+    } catch {
+      return errorResult(`launched${via} ${JSON.stringify(command)} but no window matching ${JSON.stringify(target)} appeared within ${timeout}ms — call list_windows / wait_for_window, then attach by hWnd.`);
     }
-    Bun.spawn(command.split(' '), { stdout: 'ignore', stderr: 'ignore' });
-    return textResult(`launched: ${command}`);
   },
   run_program: async (args) => {
     const command = requireString(args, 'command');
