@@ -297,15 +297,38 @@ export function foregroundWindow(): bigint {
   return User32.GetForegroundWindow();
 }
 
-/** If a DIFFERENT top-level window now holds the foreground AND `owner` is its root owner — a dialog / picker / modal
- *  that `owner` just spawned (GetAncestor GA_ROOTOWNER) — return that window's hWnd, else 0n. Lets a post-action
- *  snapshot warn that the agent's action opened a NEW window its refs do not cover, WITHOUT false-firing while
- *  driving `owner` cursor-free in the background (a background owner does not own the unrelated foreground window). */
+/** True when `owner` is somewhere in `window`'s OWNER chain (GetWindow GW_OWNER). This is the reliable test for an owned
+ *  top-level dialog — GetAncestor(GA_ROOTOWNER) is NOT: it walks GetParent, which returns 0 for an owned (non-child)
+ *  window, so it yields the window itself and never matches the owner. The bounded loop guards a pathological cycle. */
+function isOwnedBy(window: bigint, owner: bigint): boolean {
+  const GW_OWNER = 0x0000_0004;
+  let current = window;
+  for (let guard = 0; guard < 32 && current !== 0n; guard += 1) {
+    current = User32.GetWindow(current, GW_OWNER);
+    if (current === owner) return true;
+  }
+  return false;
+}
+
+/** If a DIFFERENT top-level window now holds the foreground AND it is owned by `owner` — a dialog / picker / modal that
+ *  `owner` just spawned — return that window's hWnd, else 0n. Lets a post-action snapshot warn that the agent's action
+ *  opened a NEW window its refs do not cover, WITHOUT false-firing while driving `owner` cursor-free in the background
+ *  (a background owner does not own the unrelated foreground window). */
 export function ownedForegroundDialog(owner: bigint): bigint {
-  const GA_ROOTOWNER = 0x0000_0003;
   const fg = User32.GetForegroundWindow();
   if (fg === 0n || fg === owner) return 0n;
-  return User32.GetAncestor(fg, GA_ROOTOWNER) === owner ? fg : 0n;
+  return isOwnedBy(fg, owner) ? fg : 0n;
+}
+
+/** If `owner` is currently DISABLED — the canonical sign a MODAL dialog has it blocked (a modal disables its owner) —
+ *  and a visible top-level window owned by it exists, return that dialog's hWnd, even when it does NOT hold the
+ *  foreground (the background/minimized "drive in the dark" case ownedForegroundDialog misses). Else 0n. The
+ *  disabled-owner gate avoids false-firing on non-modal palettes/tooltips, which never disable their owner. */
+export function ownedModalDialog(owner: bigint): bigint {
+  if (owner === 0n || User32.IsWindowEnabled(owner) !== 0) return 0n; // an enabled owner is not modal-blocked
+  for (const window of listWindows({ includeUntitled: true }))
+    if (window.hWnd !== owner && isOwnedBy(window.hWnd, owner)) return window.hWnd;
+  return 0n;
 }
 
 /** Move + resize a window to an absolute screen rectangle. Works on a background window (no activation). */

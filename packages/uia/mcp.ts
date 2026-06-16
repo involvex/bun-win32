@@ -49,6 +49,7 @@ import {
   normalizeKey,
   openPath,
   ownedForegroundDialog,
+  ownedModalDialog,
   ownerHwnd,
   pasteToControl,
   postClickAt,
@@ -442,9 +443,18 @@ function stampRefs(text: string): string {
 function foregroundNudge(): string {
   if (attached === null) return '';
   const dialog = ownedForegroundDialog(attached.hWnd);
-  if (dialog === 0n) return '';
-  const info = uia.windows({ includeUntitled: true }).find((window) => window.hWnd === dialog);
-  return `\n\n⚠ this action left a dialog/window it opened in the FOREGROUND: ${info !== undefined ? JSON.stringify(info.title) : '(untitled)'} [hWnd=0x${dialog.toString(16)}] — the snapshot above is the PREVIOUS window; attach {hWnd} to drive the new one.`;
+  if (dialog !== 0n) {
+    const info = uia.windows({ includeUntitled: true }).find((window) => window.hWnd === dialog);
+    return `\n\n⚠ this action left a dialog/window it opened in the FOREGROUND: ${info !== undefined ? JSON.stringify(info.title) : '(untitled)'} [hWnd=0x${dialog.toString(16)}] — the snapshot above is the PREVIOUS window; attach {hWnd} to drive the new one.`;
+  }
+  // The "drive in the dark" case: an owned MODAL dialog that did NOT grab the foreground (background/minimized app) is
+  // disabling the attached window. The snapshot above is the blocked parent — surface the modal so the agent attaches it.
+  const modal = ownedModalDialog(attached.hWnd);
+  if (modal !== 0n) {
+    const info = uia.windows({ includeUntitled: true }).find((window) => window.hWnd === modal);
+    return `\n\n⚠ a MODAL dialog owned by this window is blocking it (the window is disabled) and it is NOT in the foreground — the snapshot above is the blocked parent: ${info !== undefined ? JSON.stringify(info.title) : '(untitled)'} [hWnd=0x${modal.toString(16)}] — attach {hWnd} to drive it.`;
+  }
+  return '';
 }
 
 function snapshotText(maxDepth?: number, rootName?: string): string {

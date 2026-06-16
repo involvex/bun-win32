@@ -141,6 +141,7 @@ export {
   moveWindow,
   openPath,
   ownedForegroundDialog,
+  ownedModalDialog,
   processImagePath,
   raiseWindow,
   restoreWindow,
