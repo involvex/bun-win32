@@ -259,7 +259,7 @@ export class Element {
     try {
       const info = container.scrollInfo;
       if (info === null) return this.find(selector);
-      const maxSteps = options.maxSteps ?? 80;
+      const maxSteps = options.maxSteps ?? 80; // a LargeIncrement is ~one viewport page (measured ~15% of a 4000-item list/step → ~7 steps to traverse it), so 80 pages covers any practical list; the progress-break below stops at end-of-list
       // Scan ONE axis: rewind to its start (unless fromTop:false), then step in LargeIncrements until the item is found
       // or the axis stops progressing. Used for the vertical axis (primary) and, when an item is horizontally scrolled
       // off (carousels, wide lists, horizontally-virtualized panes), the horizontal axis a vertical-only scan misses.
