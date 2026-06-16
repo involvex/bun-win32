@@ -1131,7 +1131,7 @@ const TOOLS: McpTool[] = [
     name: 'press_key',
     category: 'input',
     description:
-      'Send a key or chord, e.g. "Enter", "Control+S", "Control+Shift+Tab", "F4". With a ref AND a single key (no chord), posts the key to that control cursor-free (background/occluded/locked OK, no focus). Otherwise sends to the focused control via synthetic input (needs an unlocked foregrounded desktop).',
+      'Send a key or chord, e.g. "Enter", "Control+S", "Control+Shift+Tab", "F4". With a ref AND a single key (no chord), posts the key to that control cursor-free (background/occluded/locked OK, no focus). With a ref AND a chord (or a single key on a control with no own window handle), the ref is FOCUSED first (cursor-free UIA SetFocus) so the synthetic input lands on it (needs an unlocked foregrounded desktop). With no ref, the key/chord goes to whatever currently holds focus.',
     inputSchema: { type: 'object', properties: { key: { type: 'string' }, element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC } }, required: ['key'] },
   },
   {
@@ -1756,21 +1756,32 @@ const HANDLERS: Record<string, ToolHandler> = {
       if (handle !== 0n && undoControl(handle)) return withSnapshot(`undid the last edit in ${named(element)} cursor-free (EM_UNDO)`);
     }
     if (typeof args.ref === 'string' && !key.includes('+')) {
-      const handle = resolveRef(args.ref).nativeWindowHandle;
+      const element = resolveRef(args.ref);
+      const handle = element.nativeWindowHandle;
       if (handle !== 0n && postKey(handle, key)) return withSnapshot(`pressed ${JSON.stringify(key)} cursor-free`);
-      // The ref has no native window handle (WinUI/WPF/Chromium sub-control) — fall back to the FOCUSED control and
-      // SAY so, rather than reporting a plain success that hides the target change.
+      // The ref has no native window handle (WinUI/WPF/Chromium sub-control) and cannot be posted to. The SendInput
+      // path aims at whatever holds focus, so FOCUS the ref first (cursor-free UIA SetFocus) — otherwise the key lands
+      // on some other control. Mirrors type/paste/cut, which always act on the ref rather than ambient focus.
       if (cursorDenied)
         return errorResult(
           `${JSON.stringify(key)} could not be posted cursor-free (the ref has no native window handle) and the SendInput fallback is disabled by BUN_UIA_CURSOR=never — focus {ref} first (cursor-free SetFocus) then press_key, or use set_value`,
         );
+      element.focus();
       uia.sendKeys(key);
-      return withSnapshot(`pressed ${JSON.stringify(key)} on the FOCUSED control — the ref has no native window handle, so it could not be targeted cursor-free (focus {ref} first to aim the keys at it, or use type/set_value)`);
+      return withSnapshot(`focused ${named(element)} then pressed ${JSON.stringify(key)} — the ref has no native window handle, so the key was delivered with synthetic input to the now-focused control`);
     }
     if (cursorDenied)
       return errorResult(
         `a key chord like ${JSON.stringify(key)} is delivered with synthetic input (SendInput) to the focused control — disabled by BUN_UIA_CURSOR=never. Post a single key to a control by ref (press_key {ref,key}) instead.`,
       );
+    // A chord with a ref: focus that control first (cursor-free SetFocus) so the synthetic chord lands on IT — without
+    // this the ref was silently ignored and the chord hit whatever happened to hold focus.
+    if (typeof args.ref === 'string') {
+      const element = resolveRef(args.ref);
+      element.focus();
+      uia.sendKeys(key);
+      return withSnapshot(`focused ${named(element)} then pressed ${JSON.stringify(key)} (synthetic chord)`);
+    }
     uia.sendKeys(key);
     return withSnapshot(`pressed ${JSON.stringify(key)}`);
   },
