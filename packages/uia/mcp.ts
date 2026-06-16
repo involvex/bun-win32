@@ -1360,7 +1360,8 @@ const HANDLERS: Record<string, ToolHandler> = {
       const wall = integrity === 'high' || integrity === 'system' ? ` [${integrity}-integrity — UIPI wall: drivable only if YOUR host runs elevated too]` : integrity === 'low' || integrity === 'untrusted' ? ` [${integrity}-integrity]` : '';
       // The placeholder UAC leaves on the NORMAL desktop while a consent is pending — the real prompt is on the secure
       // desktop, so this window is undrivable; flag it so the agent does not attach + stall on it.
-      const uac = window.className === '$$$Secure UAP Dummy Window Class' ? ' [UAC consent placeholder — the real prompt is on the secure desktop, undrivable from this session; a human must approve at the console, or relaunch the host elevated]' : '';
+      // startsWith, not ===: the live placeholder is often the "… For Interim Dialog" variant of the class, not the bare name.
+      const uac = window.className.startsWith('$$$Secure UAP Dummy Window Class') ? ' [UAC consent placeholder — the real prompt is on the secure desktop, undrivable from this session; a human must approve at the console, or relaunch the host elevated]' : '';
       return `- ${JSON.stringify(window.title)} [class=${window.className}] [pid=${window.processId}${exe ? ` ${exe}` : ''}] [hWnd=0x${window.hWnd.toString(16)}]${state ? ` (${state})` : ''}${wall}${uac}`;
     });
     // A UAC consent / secure desktop is invisible and undrivable from this session (no UIA, no capture) — say so, so

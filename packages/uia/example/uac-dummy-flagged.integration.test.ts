@@ -71,6 +71,14 @@ wndClass.writeBigUInt64LE(BigInt(hInstance), 24);
 wndClass.writeBigUInt64LE(BigInt(className.ptr!), 64);
 const registered = User32.RegisterClassW(wndClass.ptr!) !== 0;
 const dummy = registered ? User32.CreateWindowExW(0, className.ptr!, wide('uia-uac-dummy').ptr!, WS_OVERLAPPEDWINDOW | WS_VISIBLE, 120, 120, 300, 200, 0n, 0n, BigInt(hInstance), null) : 0n;
+// The live variant: the class is often "$$$Secure UAP Dummy Window Class For Interim Dialog", not the bare name.
+const className2 = wide(`${CLASS} For Interim Dialog`);
+const wndClass2 = Buffer.alloc(72);
+wndClass2.writeBigUInt64LE(BigInt(wndProc.ptr!), 8);
+wndClass2.writeBigUInt64LE(BigInt(hInstance), 24);
+wndClass2.writeBigUInt64LE(BigInt(className2.ptr!), 64);
+const registered2 = User32.RegisterClassW(wndClass2.ptr!) !== 0;
+const variant = registered2 ? User32.CreateWindowExW(0, className2.ptr!, wide('uia-uac-interim').ptr!, WS_OVERLAPPEDWINDOW | WS_VISIBLE, 140, 140, 300, 200, 0n, 0n, BigInt(hInstance), null) : 0n;
 try {
   await call('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'uac-dummy', version: '1' } });
   if (!registered || dummy === 0n) console.log('  skip: could not synthesize the placeholder window');
@@ -79,13 +87,19 @@ try {
     const list = textOf(await call('tools/call', { name: 'list_windows', arguments: {} }));
     const row = list.split('\n').find((line) => line.includes(`0x${dummy.toString(16)}`)) ?? '';
     assert(/UAC consent placeholder/.test(row) && /undrivable/.test(row), `the placeholder row is flagged as a UAC consent placeholder (got: ${JSON.stringify(row.slice(0, 110))})`);
-    const otherFlagged = list.split('\n').filter((line) => /UAC consent placeholder/.test(line) && !line.includes(`0x${dummy.toString(16)}`));
-    assert(otherFlagged.length === 0, 'no OTHER window is mislabeled as a UAC placeholder');
+    const variantRow = variant !== 0n ? (list.split('\n').find((line) => line.includes(`0x${variant.toString(16)}`)) ?? '') : '';
+    assert(variant !== 0n && /UAC consent placeholder/.test(variantRow), `the "For Interim Dialog" class VARIANT is also flagged (got: ${JSON.stringify(variantRow.slice(0, 90))})`);
+    // The real no-false-positive property: the flag appears ONLY on windows whose class is the UAC dummy (robust to a
+    // genuine OS "$$$Secure UAP Dummy Window Class For Interim Dialog" window also being present on the desktop).
+    const mislabeled = list.split('\n').filter((line) => /UAC consent placeholder/.test(line) && !/\[class=\$\$\$Secure UAP Dummy Window Class/.test(line));
+    assert(mislabeled.length === 0, `the flag lands only on UAC-dummy-class windows, never a different class — mislabeled: ${JSON.stringify(mislabeled.slice(0, 2))}`);
   }
 } finally {
   proc.kill();
   if (dummy !== 0n) User32.DestroyWindow(dummy);
+  if (variant !== 0n) User32.DestroyWindow(variant);
   if (registered) User32.UnregisterClassW(className.ptr!, BigInt(hInstance));
+  if (registered2) User32.UnregisterClassW(className2.ptr!, BigInt(hInstance));
   wndProc.close();
 }
 
