@@ -10,6 +10,7 @@ import User32 from '@bun-win32/user32';
 
 import { sendKeys } from './input';
 
+const CF_HDROP = 15;
 const CF_UNICODETEXT = 13;
 const GMEM_MOVEABLE = 0x0002;
 
@@ -34,6 +35,33 @@ export function readClipboard(): string {
       const text = Buffer.from(toArrayBuffer(pointer as Pointer, 0, size)).toString('utf16le');
       const terminator = text.indexOf('\0');
       return terminator === -1 ? text : text.slice(0, terminator);
+    } finally {
+      Kernel32.GlobalUnlock(handle);
+    }
+  } finally {
+    User32.CloseClipboard();
+  }
+}
+
+/** Read the file paths on the clipboard (CF_HDROP — what Explorer's Ctrl+C/Cut puts there), or [] if none. Parses the
+ *  DROPFILES struct directly: a 20-byte x64 header (pFiles offset @0, fWide flag @16) then a double-NUL-terminated
+ *  path list. Makes the Explorer copy/paste workflow visible to the agent. Zero new bindings. */
+export function readClipboardFiles(): readonly string[] {
+  if (User32.OpenClipboard(0n) === 0) return [];
+  try {
+    if (User32.IsClipboardFormatAvailable(CF_HDROP) === 0) return [];
+    const handle = User32.GetClipboardData(CF_HDROP);
+    if (handle === 0n) return [];
+    const pointer = Kernel32.GlobalLock(handle);
+    if (pointer === null) return [];
+    try {
+      const size = Number(Kernel32.GlobalSize(handle));
+      const view = new DataView(toArrayBuffer(pointer as Pointer, 0, size));
+      const listOffset = view.getUint32(0, true); // DROPFILES.pFiles
+      const wide = view.getUint32(16, true) !== 0; // DROPFILES.fWide
+      const bytes = Buffer.from(toArrayBuffer(pointer as Pointer, 0, size)).subarray(listOffset);
+      const blob = wide ? bytes.toString('utf16le') : bytes.toString('latin1');
+      return blob.split('\0').filter((path) => path.length > 0); // entries are NUL-separated; list ends with a double-NUL
     } finally {
       Kernel32.GlobalUnlock(handle);
     }

@@ -1199,7 +1199,7 @@ const TOOLS: McpTool[] = [
       required: ['action'],
     },
   },
-  { name: 'read_clipboard', category: 'read', description: 'Read the Windows clipboard as text. Pairs with copy (Ctrl+C) to pull selected text from any app, even one with no a11y tree.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'read_clipboard', category: 'read', description: 'Read the Windows clipboard as text. Pairs with copy (Ctrl+C) to pull selected text from any app, even one with no a11y tree. If the clipboard holds copied FILES instead of text (Explorer Ctrl+C/Cut → CF_HDROP), lists their full paths — so the Explorer copy/paste workflow is visible.', inputSchema: { type: 'object', properties: {} } },
   { name: 'set_clipboard', category: 'input', description: 'Set the Windows clipboard text (does not paste).', inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } },
   {
     name: 'paste',
@@ -1874,7 +1874,13 @@ const HANDLERS: Record<string, ToolHandler> = {
     } else throw new Error(`unknown manage_window action: ${action}`);
     return textResult(`window ${action}${action === 'snap' ? ` ${args.edge}` : ''} (hWnd=0x${hWnd.toString(16)})`);
   },
-  read_clipboard: () => textResult(capText(uia.readClipboard()) || '(clipboard empty or not text)'),
+  read_clipboard: () => {
+    const text = uia.readClipboard();
+    if (text.length > 0) return textResult(capText(text));
+    const files = uia.readClipboardFiles(); // Explorer Ctrl+C / Cut puts CF_HDROP, not text
+    if (files.length > 0) return textResult(`${files.length} file${files.length > 1 ? 's' : ''} on the clipboard (CF_HDROP):\n${files.join('\n')}`);
+    return textResult('(clipboard empty or not text)');
+  },
   set_clipboard: (args) => textResult(uia.writeClipboard(requireString(args, 'text')) ? 'clipboard set' : 'failed to set clipboard'),
   paste: (args) => {
     if (typeof args.ref === 'string') {
