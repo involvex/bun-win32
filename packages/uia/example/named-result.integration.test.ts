@@ -1,8 +1,9 @@
 /**
- * named-result — find_and_act / reveal (which run through act()) must NAME the resolved control in their success
- * message, not return a bare verb ("invoked"). On an ambiguous selector match that target confirmation is the only
- * way an LLM knows WHICH control it hit — the named-result contract the library already keeps in computer.ts:77/88
- * and documents at AI.md:181. act() previously returned bare literals; now every verb names the control.
+ * named-result — find_and_act / reveal (via act()) AND the dedicated verb tools (invoke/toggle/set_value/…) must
+ * NAME the resolved control in their success message, not a bare verb ("invoked") nor an echo of the agent's own
+ * optional `element` description (which silently confirms a wrong-target hallucination). That target confirmation is
+ * the only way an LLM knows WHICH control it hit — the named-result contract the library keeps in computer.ts:77/88
+ * and documents at AI.md:181. act() and every dedicated handler now name the RESOLVED control.
  *
  * Proof: launch Calculator, find_and_act {selector:{name:'Five'}, do:'invoke'} over the MCP wire → the result names
  * `Button "Five"`. Calculator is closed in teardown.
@@ -69,6 +70,18 @@ try {
   else {
     assert(/invoked/.test(text), 'find_and_act {do:invoke} reports the action');
     assert(/Button "Five"/.test(text), `the success message NAMES the resolved control, not a bare "invoked" (got: ${JSON.stringify(text.split('\n')[0]?.slice(0, 60))})`);
+  }
+
+  // The DEDICATED tools (invoke/toggle/… — not just find_and_act) must also name the RESOLVED control, NOT echo the
+  // agent's optional `element` description. Resolve the Five button to a ref, then invoke it with a deliberately
+  // WRONG description: the result must say Button "Five", not the lie we passed.
+  const snap = textOf(await call('tools/call', { name: 'desktop_snapshot', arguments: {} }));
+  const fiveRef = /Button "Five" \[ref=(e\d+(?:#\d+)?)\]/.exec(snap)?.[1];
+  if (fiveRef === undefined) console.log('  skip: no "Five" ref in the snapshot to exercise the dedicated invoke tool');
+  else {
+    const direct = textOf(await call('tools/call', { name: 'invoke', arguments: { ref: fiveRef, element: 'the totally wrong control' } }));
+    assert(/Button "Five"/.test(direct), `the dedicated invoke tool names the RESOLVED control (got: ${JSON.stringify(direct.split('\n')[0]?.slice(0, 60))})`);
+    assert(!/wrong control/.test(direct), "the dedicated invoke tool does NOT echo the agent's (wrong) element description back as confirmation");
   }
 } finally {
   proc.kill();

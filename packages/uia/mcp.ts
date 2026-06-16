@@ -192,6 +192,13 @@ function quote(value: unknown): string {
   return typeof value === 'string' ? JSON.stringify(value) : JSON.stringify(value ?? 'element');
 }
 
+// The RESOLVED control's identity for an action result — so the agent gets target confirmation grounded in what the
+// ref actually resolved to, NOT an echo of its own (possibly hallucinated) `element` description. Matches the named
+// results act()/find_and_act/reveal already return; one cheap name read.
+function named(element: Element): string {
+  return `${element.controlTypeName} ${JSON.stringify(element.name)}`;
+}
+
 /** Resolve a controlType selector value to its numeric UIA id — a number, a numeric string ("50000"), OR a role
  *  NAME ("Button", "list", "tree item"), case- and separator-insensitive. undefined for an unknown name. */
 function controlTypeId(value: number | string): number | undefined {
@@ -1184,8 +1191,7 @@ const HANDLERS: Record<string, ToolHandler> = {
     const element = window.reveal(selector);
     if (element === null) throw new Error(`reveal could not surface a match by scrolling — ${window.describeNoMatch(selector)}`);
     try {
-      const outcome = typeof args.do === 'string' ? act(element, args.do, typeof args.text === 'string' ? args.text : undefined) : 'revealed';
-      return withSnapshot(`${outcome} ${quote(args.element)}`);
+      return withSnapshot(typeof args.do === 'string' ? act(element, args.do, typeof args.text === 'string' ? args.text : undefined) : `revealed ${named(element)}`);
     } finally {
       element.release();
     }
@@ -1194,7 +1200,7 @@ const HANDLERS: Record<string, ToolHandler> = {
     const element = resolveRef(requireString(args, 'ref'));
     const button = args.button === 'right' ? 'right' : args.button === 'middle' ? 'middle' : 'left';
     const outcome = clickElement(element, button, args.doubleClick === true, args.cursor === true);
-    return withSnapshot(`${outcome} ${quote(args.element)}`);
+    return withSnapshot(`${outcome} ${named(element)}`);
   },
   context_menu: async (args) => {
     const element = resolveRef(requireString(args, 'ref'));
@@ -1214,50 +1220,58 @@ const HANDLERS: Record<string, ToolHandler> = {
   },
   invoke: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
+    const target = named(element);
     patternAction('invoke', () => element.invoke());
-    return withSnapshot(`invoked ${quote(args.element)}`);
+    return withSnapshot(`invoked ${target}`);
   },
   type: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
     const text = requireString(args, 'text');
+    const target = named(element);
     const handle = element.nativeWindowHandle;
     if (handle !== 0n) {
       // Cursor-free: WM_CHAR per code unit to the control's OWN HWND — no focus, works minimized/background/locked (the SendInput path can't).
       postText(handle, text);
       if (args.submit === true) postKey(handle, 'Enter');
-      return withSnapshot(`typed into ${quote(args.element)} cursor-free${args.submit === true ? ' and pressed Enter' : ''}`);
+      return withSnapshot(`typed into ${target} cursor-free${args.submit === true ? ' and pressed Enter' : ''}`);
     }
     // WinUI/WPF/Chromium sub-control with no own HWND — only SendInput reaches it (needs an unlocked, foregrounded desktop).
     if (cursorDenied) return errorResult('this control has no native window handle for the cursor-free WM_CHAR path, so type would need SendInput — disabled by BUN_UIA_CURSOR=never. Use set_value (ValuePattern) to write it cursor-free.');
     element.type(text);
     if (args.submit === true) uia.sendKeys('Enter');
-    return withSnapshot(`typed into ${quote(args.element)}${args.submit === true ? ' and pressed Enter' : ''}`);
+    return withSnapshot(`typed into ${target}${args.submit === true ? ' and pressed Enter' : ''}`);
   },
   set_value: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
-    const outcome = patternAction('set_value', () => setValueSmart(element, requireString(args, 'value'))); // wrap the CALL SITE so RangeValue + WM_SETTEXT fallbacks still run and only the final exhausted throw gets the can: steer
-    return withSnapshot(`${outcome} ${quote(args.element)} = ${JSON.stringify(args.value)}`);
+    const value = requireString(args, 'value'); // hoisted OUT of the patternAction closure so a missing-value SCHEMA error is not annotated with pattern-support advice
+    const target = named(element);
+    const outcome = patternAction('set_value', () => setValueSmart(element, value)); // wrap the CALL SITE so RangeValue + WM_SETTEXT fallbacks still run and only the final exhausted throw gets the can: steer
+    return withSnapshot(`${outcome} ${target} = ${JSON.stringify(args.value)}`);
   },
   toggle: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
+    const target = named(element);
     patternAction('toggle', () => element.toggle());
-    return withSnapshot(`toggled ${quote(args.element)} (state ${element.toggleState})`);
+    return withSnapshot(`toggled ${target} (state ${element.toggleState})`);
   },
   expand: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
+    const target = named(element);
     patternAction('expand', () => element.expand());
-    return withSnapshot(`expanded ${quote(args.element)} (state ${element.expandCollapseState}) — desktop_snapshot to see revealed items; a dropdown that opens in its own window needs list_windows{includePopups}`);
+    return withSnapshot(`expanded ${target} (state ${element.expandCollapseState}) — desktop_snapshot to see revealed items; a dropdown that opens in its own window needs list_windows{includePopups}`);
   },
   collapse: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
+    const target = named(element);
     patternAction('collapse', () => element.collapse());
-    return withSnapshot(`collapsed ${quote(args.element)}`);
+    return withSnapshot(`collapsed ${target}`);
   },
   select: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
+    const target = named(element);
     const mode = args.mode === 'add' ? 'add' : args.mode === 'remove' ? 'remove' : 'replace';
     patternAction('select', () => (mode === 'add' ? element.addToSelection() : mode === 'remove' ? element.removeFromSelection() : element.select()));
-    return withSnapshot(`${mode === 'add' ? 'added to selection' : mode === 'remove' ? 'removed from selection' : 'selected'} ${quote(args.element)}`);
+    return withSnapshot(`${mode === 'add' ? 'added to selection' : mode === 'remove' ? 'removed from selection' : 'selected'} ${target}`);
   },
   find_text: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
@@ -1485,8 +1499,9 @@ const HANDLERS: Record<string, ToolHandler> = {
   set_view: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
     const id = requireNumber(args, 'id');
+    const target = named(element);
     if (!element.setView(id)) return errorResult(`set_view: could not switch to view ${id} — the control has no MultipleView pattern or ${id} is not a supported id (call list_views).`);
-    return withSnapshot(`switched ${quote(args.element)} to view ${id}`);
+    return withSnapshot(`switched ${target} to view ${id}`);
   },
   native_tree: (args) => textResult(renderWindowTree(uia.windowTree(resolveHwnd(args), typeof args.maxDepth === 'number' ? args.maxDepth : 12))),
   msaa_tree: (args) => {
@@ -1533,6 +1548,7 @@ const HANDLERS: Record<string, ToolHandler> = {
   },
   scroll: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
+    const target = named(element);
     const direction = args.direction;
     if (direction === 'up' || direction === 'down' || direction === 'left' || direction === 'right') {
       const amount = typeof args.amount === 'number' ? args.amount : 3;
@@ -1541,14 +1557,14 @@ const HANDLERS: Record<string, ToolHandler> = {
         const horizontal = direction === 'left' || direction === 'right';
         const step = direction === 'up' || direction === 'left' ? ScrollAmount.SmallDecrement : ScrollAmount.SmallIncrement;
         for (let count = 0; count < Math.max(1, amount); count += 1) element.scroll(horizontal ? step : ScrollAmount.NoAmount, horizontal ? ScrollAmount.NoAmount : step);
-        return withSnapshot(`scrolled ${quote(args.element)} ${direction} ${amount}`);
+        return withSnapshot(`scrolled ${target} ${direction} ${amount}`);
       }
       const bounds = element.boundingRectangle;
-      if (scrollAt(bounds.x + Math.floor(bounds.width / 2), bounds.y + Math.floor(bounds.height / 2), direction, amount)) return withSnapshot(`scrolled ${quote(args.element)} ${direction} ${amount}`);
-      return withSnapshot(`no scrollable container at ${quote(args.element)}`);
+      if (scrollAt(bounds.x + Math.floor(bounds.width / 2), bounds.y + Math.floor(bounds.height / 2), direction, amount)) return withSnapshot(`scrolled ${target} ${direction} ${amount}`);
+      return withSnapshot(`no scrollable container at ${target}`);
     }
     element.scrollIntoView();
-    return withSnapshot(`scrolled ${quote(args.element)} into view`);
+    return withSnapshot(`scrolled ${target} into view`);
   },
   drag: (args) => {
     if (cursorDenied) return errorResult('drag moves the real cursor, disabled by BUN_UIA_CURSOR=never');
@@ -1593,19 +1609,20 @@ const HANDLERS: Record<string, ToolHandler> = {
   paste: (args) => {
     if (typeof args.ref === 'string') {
       const element = resolveRef(args.ref);
+      const target = named(element);
       const handle = element.nativeWindowHandle;
       if (handle !== 0n) {
         // Cursor-free: set the clipboard (when text given), then WM_PASTE to the control's OWN HWND — no focus, works minimized/background/locked.
         if (typeof args.text === 'string') uia.writeClipboard(args.text);
         pasteToControl(handle);
-        return withSnapshot(`pasted ${typeof args.text === 'string' ? `${args.text.length} chars` : 'clipboard'} into ${quote(args.element)} cursor-free`);
+        return withSnapshot(`pasted ${typeof args.text === 'string' ? `${args.text.length} chars` : 'clipboard'} into ${target} cursor-free`);
       }
       // WinUI/WPF/Chromium sub-control with no own HWND — only SendInput Ctrl+V reaches it.
       if (cursorDenied) return errorResult('this control has no native window handle for the cursor-free WM_PASTE path, so paste would need SendInput Ctrl+V — disabled by BUN_UIA_CURSOR=never. Use set_value to write it cursor-free.');
       element.focus();
       if (typeof args.text === 'string') uia.paste(args.text);
       else uia.sendKeys('Control+V');
-      return withSnapshot(`pasted ${typeof args.text === 'string' ? `${args.text.length} chars` : 'clipboard'} into ${quote(args.element)}`);
+      return withSnapshot(`pasted ${typeof args.text === 'string' ? `${args.text.length} chars` : 'clipboard'} into ${target}`);
     }
     // No ref → Ctrl+V on whatever owns focus (SendInput).
     if (cursorDenied) return errorResult('paste with no ref injects Ctrl+V via SendInput on the focused control — disabled by BUN_UIA_CURSOR=never; target a control by ref for the cursor-free WM_PASTE path, or use set_value');
