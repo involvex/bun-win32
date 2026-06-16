@@ -700,6 +700,32 @@ function withActSnapshot(action: string, message: string, baseline: number): obj
   return action === 'expand' && !/OWN window/.test(message) ? withSettledSnapshot(message, baseline) : withSnapshot(message);
 }
 
+/** Like withSnapshot, but for launch_app where the window provably JUST appeared mid-render. A cold WinUI/UWP store app
+ *  (Settings/Photos/Store/Mail) surfaces only its title-bar chrome immediately and renders its real content ~0.6-1.5s LATER
+ *  (live-measured: a cold Settings launch shows 4 actionable refs the instant the window appears, 49 by +585ms, plateauing
+ *  at 51 by ~865ms), so a bare snapshot hands the agent a content-less tree that LOOKS complete. Poll the rebuilt snapshot:
+ *  once its actionable-ref count has GROWN past the first reading and then held steady across a tick, the content has
+ *  settled — return it. A warm/instant app (or an MSAA-only provider gap) never grows, so it returns after a short floor;
+ *  bounded by a ~2.5s cap. Grow-then-plateau (not bare plateau) is required because the cold title-bar frame is itself
+ *  stable for ~300ms before the content lands. This is the launch path ONLY (the window is known fresh) — the per-action
+ *  hot path is untouched, and a warm launch pays one extra tick. */
+function withLaunchSettledSnapshot(message: string): object {
+  let result = withSnapshot(message);
+  let previous = current?.marks.length ?? 0;
+  let grew = false;
+  for (let elapsed = 0; elapsed < 2500; elapsed += 160) {
+    Bun.sleepSync(160);
+    result = withSnapshot(message);
+    const count = current?.marks.length ?? 0;
+    if (count > previous) grew = true;
+    const stable = count === previous;
+    previous = count;
+    if (grew && stable) break; // late content arrived then settled (cold WinUI) → done
+    if (!grew && stable && elapsed >= 640) break; // never grew + stable past the WinUI render window → warm/instant or provider-gap
+  }
+  return result;
+}
+
 /** ValuePattern set, falling back to RangeValuePattern for a numeric value on a slider/spinner (ValuePattern
  *  throws there) — so set_value drives both cursor-free. */
 function setValueSmart(element: Element, value: string): string {
@@ -2386,7 +2412,7 @@ const HANDLERS: Record<string, ToolHandler> = {
       lastSnapshotBody = '';
       lastSnapshotTree = null;
       attached = window;
-      return withSnapshot(`launched${via} and attached to ${JSON.stringify(window.name)}`);
+      return withLaunchSettledSnapshot(`launched${via} and attached to ${JSON.stringify(window.name)}`);
     } catch {
       return errorResult(`launched${via} ${JSON.stringify(command)} but no window matching ${JSON.stringify(target)} appeared within ${timeout}ms — call list_windows / wait_for_window, then attach by hWnd.`);
     }
