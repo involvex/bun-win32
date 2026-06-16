@@ -58,8 +58,17 @@ try {
   const ref = /(?:Start|Search)"? \[ref=(e\d+(?:#\d+)?)\]/.exec(snap)?.[1] ?? /\[ref=(e\d+(?:#\d+)?)\]/.exec(snap)?.[1];
   if (ref === undefined) console.log('  skip: no taskbar button ref to exercise');
   else {
+    const steer = /inspect_element \{ref\} and pick a verb from its 'can:'/;
     const expanded = await call('tools/call', { name: 'expand', arguments: { ref } });
-    assert(expanded.result?.isError === true && /inspect_element \{ref\} and pick a verb from its 'can:'/.test(textOf(expanded)), 'expand on a non-expandable control points the agent at inspect_element\'s can: list');
+    assert(expanded.result?.isError === true && steer.test(textOf(expanded)), "expand on a non-expandable control points the agent at inspect_element's can: list");
+
+    // The cycle-49 additions: invoke / set_value AND find_and_act {do} must carry the SAME steer (previously a
+    // bare "does not support X" dead-end). A taskbar Button has no ValuePattern → set_value exhausts and steers.
+    const setVal = await call('tools/call', { name: 'set_value', arguments: { ref, value: 'x' } });
+    assert(setVal.result?.isError === true && steer.test(textOf(setVal)), 'set_value on a no-ValuePattern control carries the can: steer (not a bare ValuePattern dead-end)');
+
+    const faa = await call('tools/call', { name: 'find_and_act', arguments: { ref, do: 'set_value', text: 'x' } });
+    assert(faa.result?.isError === true && steer.test(textOf(faa)), 'find_and_act {do:set_value} routes through act() and carries the can: steer too');
   }
 } finally {
   proc.kill();

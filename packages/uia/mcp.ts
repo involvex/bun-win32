@@ -444,16 +444,16 @@ function setValueSmart(element: Element, value: string): string {
 }
 
 function act(element: Element, action: string, text: string | undefined): string {
-  if (action === 'invoke') return element.invoke(), 'invoked';
+  if (action === 'invoke') return patternAction('invoke', () => (element.invoke(), 'invoked'));
   if (action === 'click') return clickElement(element, 'left', false, false), 'clicked';
   if (action === 'type') {
     if (cursorDenied) throw new Error('type sends synthetic keystrokes (SendInput) — disabled by BUN_UIA_CURSOR=never; use set_value (cursor-free WM_SETTEXT / ValuePattern)');
     return element.type(text ?? ''), 'typed';
   }
-  if (action === 'set_value') return setValueSmart(element, text ?? '');
-  if (action === 'toggle') return element.toggle(), `toggled (state ${element.toggleState})`;
-  if (action === 'expand') return element.expand(), 'expanded';
-  if (action === 'collapse') return element.collapse(), 'collapsed';
+  if (action === 'set_value') return patternAction('set_value', () => setValueSmart(element, text ?? ''));
+  if (action === 'toggle') return patternAction('toggle', () => (element.toggle(), `toggled (state ${element.toggleState})`));
+  if (action === 'expand') return patternAction('expand', () => (element.expand(), 'expanded'));
+  if (action === 'collapse') return patternAction('collapse', () => (element.collapse(), 'collapsed'));
   if (action === 'read') return element.isPassword ? 'value: (password — withheld)' : `value: ${JSON.stringify(element.value || element.text() || element.name)}`;
   throw new Error(`unknown action: ${action}`);
 }
@@ -1075,8 +1075,10 @@ const BLIND_SPOTS: { test: RegExp; note: string }[] = [
 ];
 
 /** Run a pattern action; on a "not supported" throw, append the recovery hint that points at inspect_element's
- *  `can:` affordance list — so a toggle/select/expand/collapse on the wrong control steers the agent, like set_value
- *  (which inherits the ValuePattern hint via setValueSmart) already does. */
+ *  `can:` affordance list — so a verb on the wrong control steers the agent to a verb it DOES support. Every
+ *  pattern verb routes through here: the standalone invoke/set_value/toggle/expand/collapse/select handlers AND
+ *  the find_and_act/reveal verbs via act(). (set_value wraps the setValueSmart CALL SITE, so its RangeValue +
+ *  WM_SETTEXT fallbacks still run and only the final exhausted throw is annotated.) */
 function patternAction<T>(verb: string, run: () => T): T {
   try {
     return run();
@@ -1173,7 +1175,8 @@ const HANDLERS: Record<string, ToolHandler> = {
     return textResult(`context menu opened: [hWnd=0x${popup.hWnd.toString(16)}] [class=${popup.className}] — attach it (attach {hWnd}) to read + invoke its items (a WinUI flyout's items may need a re-snapshot).`);
   },
   invoke: (args) => {
-    resolveRef(requireString(args, 'ref')).invoke();
+    const element = resolveRef(requireString(args, 'ref'));
+    patternAction('invoke', () => element.invoke());
     return withSnapshot(`invoked ${quote(args.element)}`);
   },
   type: (args) => {
@@ -1183,7 +1186,8 @@ const HANDLERS: Record<string, ToolHandler> = {
     return withSnapshot(`typed into ${quote(args.element)}${args.submit === true ? ' and pressed Enter' : ''}`);
   },
   set_value: (args) => {
-    const outcome = setValueSmart(resolveRef(requireString(args, 'ref')), requireString(args, 'value'));
+    const element = resolveRef(requireString(args, 'ref'));
+    const outcome = patternAction('set_value', () => setValueSmart(element, requireString(args, 'value'))); // wrap the CALL SITE so RangeValue + WM_SETTEXT fallbacks still run and only the final exhausted throw gets the can: steer
     return withSnapshot(`${outcome} ${quote(args.element)} = ${JSON.stringify(args.value)}`);
   },
   toggle: (args) => {
