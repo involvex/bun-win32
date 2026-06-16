@@ -303,6 +303,22 @@ export function postKey(hWnd: bigint, name: string): boolean {
   return User32.PostMessageW(hWnd, WM_KEYUP, keyCode, 0xc000_0001n) !== 0; // lParam: key-up transition + previously down
 }
 
+/** Hold a key DOWN on a control's HWND cursor-free for durationMs via a WM_KEYDOWN autorepeat stream (bit 30 — previous
+ *  key-state-down — set after the first press), closed by WM_KEYUP — no focus, no SendInput, background/occluded/locked
+ *  capable. The ~40ms cadence mirrors the OS keyboard auto-repeat an app expects while a key is held (arrow-repeat, a
+ *  game key). False for a 0 handle (a sub-control with no own HWND — hold it via SendInput holdKey instead). */
+export async function postHoldKey(hWnd: bigint, name: string, durationMs: number): Promise<boolean> {
+  if (hWnd === 0n) return false;
+  const keyCode = BigInt(virtualKeyCode(name));
+  User32.PostMessageW(hWnd, WM_KEYDOWN, keyCode, 0x0000_0001n); // initial press: repeat count 1, previous state up
+  const deadline = Date.now() + Math.max(0, durationMs);
+  while (Date.now() < deadline) {
+    await Bun.sleep(40);
+    User32.PostMessageW(hWnd, WM_KEYDOWN, keyCode, 0x4000_0001n); // autorepeat: bit 30 (previous state down) set
+  }
+  return User32.PostMessageW(hWnd, WM_KEYUP, keyCode, 0xc000_0001n) !== 0; // lParam: key-up transition + previously down
+}
+
 /** Paste the clipboard into a control's HWND cursor-free via SendMessageW(WM_PASTE) — no focus/keystrokes, works on
  *  a background/occluded/minimized window. WM_PASTE returns 0 regardless of outcome, so this is best-effort: false
  *  only for a 0 handle (a WinUI/WPF/Chromium sub-control with no own HWND — paste it via SendInput Ctrl+V instead). */

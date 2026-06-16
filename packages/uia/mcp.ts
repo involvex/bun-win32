@@ -57,6 +57,7 @@ import {
   postDoubleClickAt,
   postDoubleClickToHwnd,
   postHWheel,
+  postHoldKey,
   postKey,
   postText,
   postWheel,
@@ -108,7 +109,7 @@ const PROTOCOL_VERSION = '2025-11-25';
 const SUPPORTED_VERSIONS = new Set(['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']);
 const SERVER_INFO = { name: 'bun-uia', version: '1.5.0' };
 const INSTRUCTIONS =
-  'Drive Windows desktop apps via the UI Automation tree — and beyond it. Call list_windows, then attach (by hWnd or exact title — className is reliable only for single-window classes like Shell_TrayWnd, not the Chromium/Electron family) — attach ALREADY returns a ref-keyed tree, so act on those refs directly; call desktop_snapshot only to RE-ground after refs go stale (e.g. Button "Five" [ref=e49#1]); pass that ref VERBATIM (with its #generation tag) to click/invoke/type/toggle/set_value/inspect_element. Refs are valid ONLY for the most recent snapshot — every action returns a fresh one; re-ground from it. A ref from before a re-render is REJECTED (not silently mis-resolved), so always use the refs from the latest snapshot/delta. To stay cheap, an action that changes little returns just a "Δ" delta (the +/-/~ changes, with refs on appeared/renamed) instead of the full tree — your other refs stay valid; desktop_snapshot {maxDepth} bounds the tree size when a window is large. Prefer invoke/set_value/toggle/scroll (cursor-free — they need no focus and work on a minimized, background, occluded, or locked window) over click. To SEE beyond the attached window (a 2nd monitor, a game/browser, a composited surface, or anything with no window) use screen_capture; to see a SPECIFIC window even when occluded, in the background, or GPU-composited (where a plain screenshot is blank) use capture_window (Windows.Graphics.Capture); turn a pixel into a control with inspect_point. screenshot auto-falls-back PrintWindow → WGC → desktop-region. Read legacy/owner-draw windows with native_tree/msaa_tree. drag and real-cursor clicks move the actual mouse; SendInput-based input (sendKeys, press_key chord, hold_key, drag, and the type/paste fallback for a control with no own HWND) needs an unlocked, foregrounded desktop — the posted cursor-free paths do not: type (WM_CHAR) / paste (WM_PASTE) / press_key {ref} on an own-HWND control, plus set_value/invoke/toggle. launch/run/file tools and manage_window may be disabled by the server policy (BUN_UIA_PROFILE).';
+  'Drive Windows desktop apps via the UI Automation tree — and beyond it. Call list_windows, then attach (by hWnd or exact title — className is reliable only for single-window classes like Shell_TrayWnd, not the Chromium/Electron family) — attach ALREADY returns a ref-keyed tree, so act on those refs directly; call desktop_snapshot only to RE-ground after refs go stale (e.g. Button "Five" [ref=e49#1]); pass that ref VERBATIM (with its #generation tag) to click/invoke/type/toggle/set_value/inspect_element. Refs are valid ONLY for the most recent snapshot — every action returns a fresh one; re-ground from it. A ref from before a re-render is REJECTED (not silently mis-resolved), so always use the refs from the latest snapshot/delta. To stay cheap, an action that changes little returns just a "Δ" delta (the +/-/~ changes, with refs on appeared/renamed) instead of the full tree — your other refs stay valid; desktop_snapshot {maxDepth} bounds the tree size when a window is large. Prefer invoke/set_value/toggle/scroll (cursor-free — they need no focus and work on a minimized, background, occluded, or locked window — for a classic Win32/HWND app; a UWP/WinUI store app SUSPENDS its UI tree when minimized or fully backgrounded, so its tree reads empty and posted actions may not land until you restore/raise it) over click. To SEE beyond the attached window (a 2nd monitor, a game/browser, a composited surface, or anything with no window) use screen_capture; to see a SPECIFIC window even when occluded, in the background, or GPU-composited (where a plain screenshot is blank) use capture_window (Windows.Graphics.Capture); turn a pixel into a control with inspect_point. screenshot auto-falls-back PrintWindow → WGC → desktop-region. Read legacy/owner-draw windows with native_tree/msaa_tree. drag and real-cursor clicks move the actual mouse; SendInput-based input (sendKeys, press_key chord, hold_key, drag, and the type/paste fallback for a control with no own HWND) needs an unlocked, foregrounded desktop — the posted cursor-free paths do not: type (WM_CHAR) / paste (WM_PASTE) / press_key {ref} on an own-HWND control, plus set_value/invoke/toggle. launch/run/file tools and manage_window may be disabled by the server policy (BUN_UIA_PROFILE).';
 // Shown instead of INSTRUCTIONS when the policy enables no 'input' category — so the system-prompt guidance never
 // describes action tools that tools/list does not expose (a readonly/restricted profile).
 const INSTRUCTIONS_READONLY =
@@ -271,7 +272,8 @@ function selectorFrom(value: unknown): Selector {
   for (const alias of Object.keys(raw)) {
     const canonical = SELECTOR_ALIASES[alias];
     if (canonical === undefined) continue;
-    if (canonical in raw && raw[canonical] !== raw[alias]) throw new Error(`selector has both ${JSON.stringify(alias)} and ${JSON.stringify(canonical)} — ${JSON.stringify(alias)} is an alias for ${JSON.stringify(canonical)}; pass only one`);
+    if (canonical in raw && raw[canonical] !== raw[alias])
+      throw new Error(`selector has both ${JSON.stringify(alias)} and ${JSON.stringify(canonical)} — ${JSON.stringify(alias)} is an alias for ${JSON.stringify(canonical)}; pass only one`);
     raw[canonical] = raw[alias];
     delete raw[alias];
   }
@@ -517,7 +519,9 @@ function snapshotText(maxDepth?: number, rootName?: string): string {
       ); // coldTreeNote is '' for a warm tree; on a still-COLD re-snapshot it re-surfaces the restore/activate/elevate steer the bare line would have suppressed (or a maxDepth-cap steer)
     lastSnapshotBody = body;
     refGen += 1; // an explicit re-ground renumbers refs — invalidate any the model still holds
-    return stampRefs(`${header}\n${body}${root === undefined ? coldTreeNote(current?.marks.length ?? 0, attached !== null && isMinimized(attached.hWnd), attached !== null && isUipiWalled(attached.hWnd), maxDepth) + foregroundNudge() : ''}`);
+    return stampRefs(
+      `${header}\n${body}${root === undefined ? coldTreeNote(current?.marks.length ?? 0, attached !== null && isMinimized(attached.hWnd), attached !== null && isUipiWalled(attached.hWnd), maxDepth) + foregroundNudge() : ''}`,
+    );
   } finally {
     root?.release();
   }
@@ -660,7 +664,9 @@ function act(element: Element, action: string, text: string | undefined, submit 
   if (action === 'read') {
     if (element.isPassword) return 'value: (password — withheld)';
     const content = element.value || element.text(); // NOT element.name — returning the label dressed as `value:` is a silent wrong read
-    return content.length > 0 ? `value: ${JSON.stringify(capText(content))}` : `(no readable value — control name is ${JSON.stringify(element.name)}; it may be empty or expose no Value/Text pattern — try inspect_element {ref} or read_table)`;
+    return content.length > 0
+      ? `value: ${JSON.stringify(capText(content))}`
+      : `(no readable value — control name is ${JSON.stringify(element.name)}; it may be empty or expose no Value/Text pattern — try inspect_element {ref} or read_table)`;
   }
   // Name the RESOLVED control in every result so an LLM gets target confirmation on an ambiguous selector match
   // (the named-result contract computer.ts:77/88 + AI.md:181 already document). One name/role read per action.
@@ -687,7 +693,7 @@ function act(element: Element, action: string, text: string | undefined, submit 
   if (action === 'expand') return withPopupNote(() => patternAction('expand', () => (element.expand(), `expanded ${target}`)));
   if (action === 'collapse') return patternAction('collapse', () => (element.collapse(), `collapsed ${target}`));
   if (action === 'select') return patternAction('select', () => (element.select(), `selected ${target}`)); // cursor-free SelectionItem.Select — select a tab/radio/list-item/cell by name in one call (grid_cell{do:select} advertised this)
-  throw new Error(`unknown action: ${action}`);
+  throw new Error(`unknown action ${JSON.stringify(action)} — valid "do" verbs are: read, invoke, click, focus, type, set_value, toggle, expand, collapse, select.`);
 }
 
 // A toast/notification popup is a Windows.UI.Core.CoreWindow that User32.EnumWindows (and so list_windows) does NOT
@@ -732,7 +738,8 @@ function trayFlyoutWindow(): { hWnd: bigint; label: string } | undefined {
   }
   const children = root.children;
   try {
-    for (const child of children) if (child.className === 'TopLevelWindowForOverflowXamlIsland' && child.nativeWindowHandle !== 0n) return { hWnd: child.nativeWindowHandle, label: child.name.length > 0 ? child.name : 'system tray overflow' };
+    for (const child of children)
+      if (child.className === 'TopLevelWindowForOverflowXamlIsland' && child.nativeWindowHandle !== 0n) return { hWnd: child.nativeWindowHandle, label: child.name.length > 0 ? child.name : 'system tray overflow' };
     return undefined;
   } finally {
     for (const child of children) child.release();
@@ -955,7 +962,7 @@ const TOOLS: McpTool[] = [
     name: 'find_and_act',
     category: 'input',
     description:
-      'Find a control and act in one call. Target by ref (from the latest snapshot) OR selector. A selector acts on the FIRST match — if it could be ambiguous, pass a ref or a tighter selector (add automationId/controlType). Action is invoke|click|type|set_value|toggle|expand|collapse|read.',
+      'Find a control and act in one call. Target by ref (from the latest snapshot) OR selector. A selector acts on the FIRST match — if it could be ambiguous, pass a ref or a tighter selector (add automationId/controlType). Action is invoke|click|focus|type|set_value|toggle|expand|collapse|select|read (select = cursor-free SelectionItem for a tab/radio/list-item; focus = UIA SetFocus).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -973,7 +980,7 @@ const TOOLS: McpTool[] = [
     name: 'reveal',
     category: 'input',
     description:
-      'Scroll a VIRTUALIZED / off-screen list, grid, or tree item into view by selector, then optionally act on it. Use when a desktop_snapshot omits an item because it is scrolled out of view (Explorer folders, long lists, data grids, horizontal carousels) — those rows are not in the a11y tree until realized. Scans the container vertically (primary) and, when it only scrolls horizontally, along the horizontal axis. Cursor-free, no focus. do = invoke|click|type|set_value|toggle|read; omit do to just bring it into the next snapshot (it then has a ref).',
+      'Scroll a VIRTUALIZED / off-screen list, grid, or tree item into view by selector, then optionally act on it. Use when a desktop_snapshot omits an item because it is scrolled out of view (Explorer folders, long lists, data grids, horizontal carousels) — those rows are not in the a11y tree until realized. Scans the container vertically (primary) and, when it only scrolls horizontally, along the horizontal axis. Cursor-free, no focus. do = invoke|click|focus|type|set_value|toggle|select|read (select = cursor-free SelectionItem; focus = UIA SetFocus); omit do to just bring it into the next snapshot (it then has a ref).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -990,7 +997,7 @@ const TOOLS: McpTool[] = [
     name: 'click',
     category: 'input',
     description:
-      'Click a control. CURSOR-FREE by default for EVERY button (left/right/middle) and doubleClick — UIA invoke for a left single/double, else a posted WM_*BUTTON to the control\'s own window — working on a background/minimized/occluded/locked window with no real cursor. Pass cursor:true to FORCE the real SendInput mouse (needs an unlocked, foregrounded desktop); the real mouse is also the automatic fallback when no cursor-free path applies.',
+      "Click a control. CURSOR-FREE by default for EVERY button (left/right/middle) and doubleClick — UIA invoke for a left single/double, else a posted WM_*BUTTON to the control's own window — working on a background/minimized/occluded/locked window with no real cursor. Pass cursor:true to FORCE the real SendInput mouse (needs an unlocked, foregrounded desktop); the real mouse is also the automatic fallback when no cursor-free path applies.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -1013,7 +1020,8 @@ const TOOLS: McpTool[] = [
   {
     name: 'invoke',
     category: 'input',
-    description: 'Invoke a control via the UIA Invoke pattern (buttons, links) — cursor-free, works on a background/locked window. If it opens a flyout/menu in its OWN window, that popup\'s hWnd is returned automatically — attach it to drive its items.',
+    description:
+      "Invoke a control via the UIA Invoke pattern (buttons, links) — cursor-free, works on a background/locked window. If it opens a flyout/menu in its OWN window, that popup's hWnd is returned automatically — attach it to drive its items.",
     inputSchema: { type: 'object', properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC } }, required: ['ref'] },
   },
   {
@@ -1050,7 +1058,7 @@ const TOOLS: McpTool[] = [
     name: 'expand',
     category: 'input',
     description:
-      'Expand a control via the UIA ExpandCollapse pattern — a combobox dropdown, tree node, split button, or menu — cursor-free, no focus (Invoke/posted clicks do NOT open these on WinUI/WPF/Chromium). If the list opens in its OWN window, that popup\'s hWnd is returned automatically (attach it to select items); otherwise desktop_snapshot to read the revealed items.',
+      "Expand a control via the UIA ExpandCollapse pattern — a combobox dropdown, tree node, split button, or menu — cursor-free, no focus (Invoke/posted clicks do NOT open these on WinUI/WPF/Chromium). If the list opens in its OWN window, that popup's hWnd is returned automatically (attach it to select items); otherwise desktop_snapshot to read the revealed items.",
     inputSchema: { type: 'object', properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC } }, required: ['ref'] },
   },
   {
@@ -1084,8 +1092,17 @@ const TOOLS: McpTool[] = [
   {
     name: 'wait_for',
     category: 'read',
-    description: 'Wait until a control matching the selector APPEARS in the attached window (or, with gone:true, until it DISAPPEARS — the spinner / "Loading…" / progress-bar / just-dismissed-modal gate), then return a fresh snapshot. On timeout, throws quoting the nearest candidates (appear) or the still-present selector (gone).',
-    inputSchema: { type: 'object', properties: { selector: SELECTOR_SCHEMA, gone: { type: 'boolean', description: 'Wait for the control to DISAPPEAR instead of appear (spinner/loading/modal-dismissed).' }, timeout: { type: 'number', description: 'Milliseconds (default 5000)' } }, required: ['selector'] },
+    description:
+      'Wait until a control matching the selector APPEARS in the attached window (or, with gone:true, until it DISAPPEARS — the spinner / "Loading…" / progress-bar / just-dismissed-modal gate), then return a fresh snapshot. On timeout, throws quoting the nearest candidates (appear) or the still-present selector (gone).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        selector: SELECTOR_SCHEMA,
+        gone: { type: 'boolean', description: 'Wait for the control to DISAPPEAR instead of appear (spinner/loading/modal-dismissed).' },
+        timeout: { type: 'number', description: 'Milliseconds (default 5000)' },
+      },
+      required: ['selector'],
+    },
   },
   {
     name: 'wait_idle',
@@ -1289,8 +1306,13 @@ const TOOLS: McpTool[] = [
   {
     name: 'hold_key',
     category: 'input',
-    description: 'Press and hold a key for durationMs, then release (e.g. an arrow-repeat or a game key). Needs an unlocked desktop.',
-    inputSchema: { type: 'object', properties: { key: { type: 'string' }, durationMs: { type: 'number', description: 'Default 1000' } }, required: ['key'] },
+    description:
+      'Press and hold a key for durationMs, then release (e.g. an arrow-repeat or a game key). With a ref to a control that has its OWN window handle, the hold is posted cursor-free (a WM_KEYDOWN autorepeat stream — no focus, background/occluded/locked OK); without a ref (or for a sub-control with no own HWND) it uses SendInput to the focused window, which needs an unlocked foregrounded desktop.',
+    inputSchema: {
+      type: 'object',
+      properties: { key: { type: 'string' }, durationMs: { type: 'number', description: 'Default 1000' }, element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC } },
+      required: ['key'],
+    },
   },
   {
     name: 'manage_window',
@@ -1312,7 +1334,13 @@ const TOOLS: McpTool[] = [
       required: ['action'],
     },
   },
-  { name: 'read_clipboard', category: 'read', description: 'Read the Windows clipboard as text. Pairs with copy (Ctrl+C) to pull selected text from any app, even one with no a11y tree. If the clipboard holds copied FILES instead of text (Explorer Ctrl+C/Cut → CF_HDROP), lists their full paths — so the Explorer copy/paste workflow is visible.', inputSchema: { type: 'object', properties: {} } },
+  {
+    name: 'read_clipboard',
+    category: 'read',
+    description:
+      'Read the Windows clipboard as text. Pairs with copy (Ctrl+C) to pull selected text from any app, even one with no a11y tree. If the clipboard holds copied FILES instead of text (Explorer Ctrl+C/Cut → CF_HDROP), lists their full paths — so the Explorer copy/paste workflow is visible.',
+    inputSchema: { type: 'object', properties: {} },
+  },
   { name: 'set_clipboard', category: 'input', description: 'Set the Windows clipboard text (does not paste).', inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } },
   {
     name: 'paste',
@@ -1352,8 +1380,13 @@ const TOOLS: McpTool[] = [
   {
     name: 'run_program',
     category: 'os',
-    description: 'Run a command and return its exit code, stdout, and stderr. Gated behind the "os" policy category.',
-    inputSchema: { type: 'object', properties: { command: { type: 'string' }, args: { type: 'array', items: { type: 'string' } } }, required: ['command'] },
+    description:
+      'Run a console command and return its exit code, stdout, and stderr. For programs that exit on their own (CLI tools). NOT for GUI apps or servers that keep running — those are killed after timeoutMs (default 30000) and you get partial output; launch GUI apps with launch_app instead. Gated behind the "os" policy category.',
+    inputSchema: {
+      type: 'object',
+      properties: { command: { type: 'string' }, args: { type: 'array', items: { type: 'string' } }, timeoutMs: { type: 'number', description: 'Kill the process and return partial output after this many ms (default 30000, max 300000).' } },
+      required: ['command'],
+    },
   },
   {
     name: 'open_path',
@@ -1416,7 +1449,8 @@ function patternAction<T>(verb: string, run: () => T): T {
     const message = error instanceof Error ? error.message : String(error);
     // A MINIMIZED WinUI/UWP window suspends its UIA tree, so a pattern verb fails with a misleading error — steer to the
     // cursor-free restore (the real unblock) rather than the generic "this control may not support …" can:-list loop.
-    if (attached !== null && isMinimized(attached.hWnd)) throw new Error(`${message} — the attached window is MINIMIZED, so its WinUI/UWP UIA tree may be suspended; restore it first (manage_window {action:"restore"} — cursor-free, no foreground), then retry ${verb}.`);
+    if (attached !== null && isMinimized(attached.hWnd))
+      throw new Error(`${message} — the attached window is MINIMIZED, so its WinUI/UWP UIA tree may be suspended; restore it first (manage_window {action:"restore"} — cursor-free, no foreground), then retry ${verb}.`);
     throw new Error(`${message} — this control may not support ${verb}; call inspect_element {ref} and pick a verb from its 'can:' list`);
   }
 }
@@ -1438,7 +1472,9 @@ const HANDLERS: Record<string, ToolHandler> = {
       // The placeholder UAC leaves on the NORMAL desktop while a consent is pending — the real prompt is on the secure
       // desktop, so this window is undrivable; flag it so the agent does not attach + stall on it.
       // startsWith, not ===: the live placeholder is often the "… For Interim Dialog" variant of the class, not the bare name.
-      const uac = window.className.startsWith('$$$Secure UAP Dummy Window Class') ? ' [UAC consent placeholder — the real prompt is on the secure desktop, undrivable from this session; a human must approve at the console, or relaunch the host elevated]' : '';
+      const uac = window.className.startsWith('$$$Secure UAP Dummy Window Class')
+        ? ' [UAC consent placeholder — the real prompt is on the secure desktop, undrivable from this session; a human must approve at the console, or relaunch the host elevated]'
+        : '';
       return `- ${JSON.stringify(window.title)} [class=${window.className}] [pid=${window.processId}${exe ? ` ${exe}` : ''}] [hWnd=0x${window.hWnd.toString(16)}]${state ? ` (${state})` : ''}${wall}${uac}`;
     });
     // A UAC consent / secure desktop is invisible and undrivable from this session (no UIA, no capture) — say so, so
@@ -1451,7 +1487,8 @@ const HANDLERS: Record<string, ToolHandler> = {
       lines.push(`- ${JSON.stringify(toast.label)} [class=Windows.UI.Core.CoreWindow] [notification popup — attach by hWnd to read its text + invoke its Dismiss/Settings/action buttons] [hWnd=0x${toast.hWnd.toString(16)}]`);
     // The open system-tray overflow flyout is also a root-child window EnumWindows misses — surface it so a hidden NotifyItemIcon is reachable.
     const trayFlyout = trayFlyoutWindow();
-    if (trayFlyout !== undefined) lines.push(`- ${JSON.stringify(trayFlyout.label)} [class=TopLevelWindowForOverflowXamlIsland] [system-tray overflow flyout — attach by hWnd to invoke a hidden tray icon] [hWnd=0x${trayFlyout.hWnd.toString(16)}]`);
+    if (trayFlyout !== undefined)
+      lines.push(`- ${JSON.stringify(trayFlyout.label)} [class=TopLevelWindowForOverflowXamlIsland] [system-tray overflow flyout — attach by hWnd to invoke a hidden tray icon] [hWnd=0x${trayFlyout.hWnd.toString(16)}]`);
     return textResult(`${secure}${lines.length > 0 ? lines.join('\n') : '(no visible top-level windows)'}`);
   },
   attach: (args) => {
@@ -1545,7 +1582,8 @@ const HANDLERS: Record<string, ToolHandler> = {
     // Auto-return a flyout/menu that opened in its OWN window (so the agent need not hand-hunt it) — with NO dead poll
     // sleep: check once immediately (most providers create the popup synchronously) and once after the withSnapshot
     // rebuild, whose ~13ms cache build doubles as settle time for a slow provider.
-    const note = (popup: { hWnd: bigint; className: string }): string => `invoked ${target} — it opened a flyout/menu in its OWN window: [hWnd=0x${popup.hWnd.toString(16)}] [class=${popup.className}] — attach it (attach {hWnd}) to drive its items.`;
+    const note = (popup: { hWnd: bigint; className: string }): string =>
+      `invoked ${target} — it opened a flyout/menu in its OWN window: [hWnd=0x${popup.hWnd.toString(16)}] [class=${popup.className}] — attach it (attach {hWnd}) to drive its items.`;
     const early = newPopup(before);
     const result = withSnapshot(early !== undefined ? note(early) : `invoked ${target}`);
     const late = early === undefined ? newPopup(before) : undefined;
@@ -1581,7 +1619,7 @@ const HANDLERS: Record<string, ToolHandler> = {
     const value = requireString(args, 'value'); // hoisted OUT of the patternAction closure so a missing-value SCHEMA error is not annotated with pattern-support advice
     const target = named(element);
     const outcome = patternAction('set_value', () => setValueSmart(element, value)); // wrap the CALL SITE so RangeValue + WM_SETTEXT fallbacks still run and only the final exhausted throw gets the can: steer
-    return withSnapshot(`${outcome} ${target} = ${JSON.stringify(args.value)}`);
+    return withSnapshot(`${outcome} ${target} = ${element.isPassword ? '(password — withheld)' : JSON.stringify(args.value)}`); // never echo a secret-field value back (matches read / inspect_element / find_text)
   },
   toggle: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
@@ -1596,7 +1634,8 @@ const HANDLERS: Record<string, ToolHandler> = {
     const baseline = current?.marks.length ?? 0;
     patternAction('expand', () => element.expand());
     // Classic combobox / WinUI 3 desktop flyout opens its list in its OWN untitled window — auto-return it (sleep-free).
-    const note = (popup: { hWnd: bigint; className: string }): string => `expanded ${target} (state ${element.expandCollapseState}) — its list opened in its OWN window: [hWnd=0x${popup.hWnd.toString(16)}] [class=${popup.className}] — attach it (attach {hWnd}) to see + select its items.`;
+    const note = (popup: { hWnd: bigint; className: string }): string =>
+      `expanded ${target} (state ${element.expandCollapseState}) — its list opened in its OWN window: [hWnd=0x${popup.hWnd.toString(16)}] [class=${popup.className}] — attach it (attach {hWnd}) to see + select its items.`;
     const early = newPopup(before);
     if (early !== undefined) return withSnapshot(note(early));
     // In-process WinUI/UWP combobox/menu: items render into the SAME tree after a brief render race — settle until the
@@ -2012,8 +2051,7 @@ const HANDLERS: Record<string, ToolHandler> = {
       const notches = direction === 'up' || direction === 'left' ? -Math.max(1, amount) : Math.max(1, amount); // wheel: +up/-down; hwheel: +right/-left
       if ((direction === 'up' || direction === 'down') && handle !== 0n && postWheel(handle, centerX, centerY, direction === 'up' ? Math.max(1, amount) : -Math.max(1, amount)))
         return withSnapshot(`scrolled ${target} ${direction} ${amount} (posted wheel, cursor-free)`);
-      if ((direction === 'left' || direction === 'right') && handle !== 0n && postHWheel(handle, centerX, centerY, notches))
-        return withSnapshot(`scrolled ${target} ${direction} ${amount} (posted wheel, cursor-free)`);
+      if ((direction === 'left' || direction === 'right') && handle !== 0n && postHWheel(handle, centerX, centerY, notches)) return withSnapshot(`scrolled ${target} ${direction} ${amount} (posted wheel, cursor-free)`);
       if (scrollAt(centerX, centerY, direction, amount)) return withSnapshot(`scrolled ${target} ${direction} ${amount}`);
       return withSnapshot(`no scrollable container at ${target}`);
     }
@@ -2038,9 +2076,22 @@ const HANDLERS: Record<string, ToolHandler> = {
     return withSnapshot(`dragged ${fromX},${fromY} → ${toX},${toY}`);
   },
   hold_key: async (args) => {
-    if (cursorDenied) return errorResult('hold_key holds a key down with synthetic input (SendInput) — disabled by BUN_UIA_CURSOR=never');
-    await holdKey(normalizeKey(requireString(args, 'key')), typeof args.durationMs === 'number' ? args.durationMs : 1000);
-    return withSnapshot(`held ${JSON.stringify(args.key)} for ${typeof args.durationMs === 'number' ? args.durationMs : 1000}ms`);
+    const key = requireString(args, 'key');
+    const durationMs = typeof args.durationMs === 'number' ? args.durationMs : 1000;
+    if (typeof args.ref === 'string') {
+      // Own-HWND control → hold it cursor-free (posted WM_KEYDOWN autorepeat); no focus, background/locked OK.
+      const element = resolveRef(args.ref);
+      const handle = element.nativeWindowHandle;
+      if (handle !== 0n) {
+        await postHoldKey(handle, key, durationMs);
+        return withSnapshot(`held ${JSON.stringify(key)} on ${named(element)} for ${durationMs}ms cursor-free`);
+      }
+      if (cursorDenied)
+        return errorResult(`hold_key on this ref needs SendInput (the control has no native window handle for the cursor-free WM_KEYDOWN path) — disabled by BUN_UIA_CURSOR=never; target a control with its own window handle`);
+    }
+    if (cursorDenied) return errorResult('hold_key holds a key down with synthetic input (SendInput) — disabled by BUN_UIA_CURSOR=never; pass a {ref} to an own-HWND control to hold it cursor-free');
+    await holdKey(normalizeKey(key), durationMs);
+    return withSnapshot(`held ${JSON.stringify(key)} for ${durationMs}ms`);
   },
   manage_window: (args) => {
     const hWnd = resolveHwnd(args);
@@ -2066,7 +2117,7 @@ const HANDLERS: Record<string, ToolHandler> = {
       const edge = requireString(args, 'edge');
       if (edge !== 'left' && edge !== 'right' && edge !== 'top' && edge !== 'bottom' && edge !== 'center') throw new Error(`snap edge must be left/right/top/bottom/center, got ${JSON.stringify(edge)}`);
       snapWindow(hWnd, edge);
-    } else throw new Error(`unknown manage_window action: ${action}`);
+    } else throw new Error(`unknown manage_window action ${JSON.stringify(action)} — valid actions are: close, minimize, maximize, restore, raise, move, snap.`);
     return textResult(`window ${action}${action === 'snap' ? ` ${args.edge}` : ''} (hWnd=0x${hWnd.toString(16)})`);
   },
   read_clipboard: () => {
@@ -2195,8 +2246,44 @@ const HANDLERS: Record<string, ToolHandler> = {
   run_program: async (args) => {
     const command = requireString(args, 'command');
     const extra = Array.isArray(args.args) ? args.args.filter((part): part is string => typeof part === 'string') : [];
+    const timeoutMs = typeof args.timeoutMs === 'number' && Number.isFinite(args.timeoutMs) && args.timeoutMs > 0 ? Math.min(args.timeoutMs, 300_000) : 30_000;
     const proc = Bun.spawn(extra.length > 0 ? [command, ...extra] : command.split(' '), { stdout: 'pipe', stderr: 'pipe' });
-    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    let out = '';
+    let err = '';
+    // Drain incrementally so partial output survives a timeout-kill — a GUI/never-exiting process keeps its pipe open, so Response(...).text() would never resolve and would wedge the serialized dispatch chain.
+    const drainOut = (async () => {
+      const reader = proc.stdout.getReader();
+      const dec = new TextDecoder();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        out += dec.decode(value, { stream: true });
+      }
+    })().catch(() => {});
+    const drainErr = (async () => {
+      const reader = proc.stderr.getReader();
+      const dec = new TextDecoder();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        err += dec.decode(value, { stream: true });
+      }
+    })().catch(() => {});
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      proc.exited.then(() => 'exited' as const),
+      new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), timeoutMs);
+      }),
+    ]);
+    if (outcome === 'timeout') {
+      proc.kill();
+      return textResult(
+        `run_program: ${JSON.stringify(command)} did not exit within ${timeoutMs}ms — killed it. That usually means a GUI app or a long-running/server process; launch GUI apps with launch_app (it attaches to the window), or pass a larger timeoutMs.\n--- stdout (partial) ---\n${out.slice(0, 8000)}${err.length > 0 ? `\n--- stderr (partial) ---\n${err.slice(0, 2000)}` : ''}`,
+      );
+    }
+    if (timer !== undefined) clearTimeout(timer);
+    await Promise.all([drainOut, drainErr]);
     const code = await proc.exited;
     return textResult(`exit ${code}\n--- stdout ---\n${out.slice(0, 8000)}${err.length > 0 ? `\n--- stderr ---\n${err.slice(0, 2000)}` : ''}`);
   },

@@ -99,6 +99,7 @@ export {
   packMouseInput,
   pasteToControl,
   postHWheel,
+  postHoldKey,
   postKey,
   postText,
   postWheel,
