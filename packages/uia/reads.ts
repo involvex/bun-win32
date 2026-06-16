@@ -66,12 +66,14 @@ function readVariantProperty(ptr: bigint, slot: number, propertyId: number): Var
   scratch24.fill(0, 0, 24); // clear vt + value first — a failed call or a prior VT_BSTR must not leave a stale vt for VariantClear to mis-free
   if (vcall(ptr, slot, [FFIType.i32, FFIType.ptr], [propertyId, scratch24.ptr!]) !== S_OK) return null;
   const vt = scratch24.readUInt16LE(0);
+  // A scalar VARIANT (I4/R8/BOOL) owns no resource, so VariantClear is a no-op for it (MSDN) — skip the cross-DLL FFI
+  // call and return directly. These are ~94% of cached state reads (toggle/selected/password bools, scroll percents),
+  // so skipping VariantClear here is the snapshot hot-path win; the next call's scratch24.fill(0) clears the slot anyway.
+  if (vt === VT_I4) return scratch24.readInt32LE(8);
+  if (vt === VT_R8) return scratch24.readDoubleLE(8);
+  if (vt === VT_BOOL) return scratch24.readInt16LE(8) !== 0; // VARIANT_BOOL: 0 false, -1 true
   let value: VariantValue = null;
-  if (vt === VT_I4) value = scratch24.readInt32LE(8);
-  else if (vt === VT_R8) value = scratch24.readDoubleLE(8);
-  else if (vt === VT_BOOL)
-    value = scratch24.readInt16LE(8) !== 0; // VARIANT_BOOL: 0 false, -1 true
-  else if (vt === VT_BSTR) {
+  if (vt === VT_BSTR) {
     const bstr = scratch24.readBigUInt64LE(8);
     if (bstr === 0n) value = '';
     else {
@@ -80,7 +82,7 @@ function readVariantProperty(ptr: bigint, slot: number, propertyId: number): Var
       value = length === 0 ? '' : Buffer.from(toArrayBuffer(pointer, 0, length * 2)).toString('utf16le'); // copy, don't free — VariantClear frees the BSTR (.ptr read inline below survives the copy's possible relocation)
     }
   }
-  Oleaut32.VariantClear(scratch24.ptr!);
+  Oleaut32.VariantClear(scratch24.ptr!); // frees a returned BSTR (copied out above), releases an interface, or clears any resource-owning vt we did not decode
   return value;
 }
 
