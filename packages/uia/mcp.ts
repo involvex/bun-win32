@@ -309,7 +309,9 @@ function requireString(args: Record<string, unknown>, key: string): string {
   // grounded a snapshot. Match the rest of the surface's actionable-error doctrine instead of dead-ending on a bare
   // "missing argument": point at the snapshot-first path and the by-selector verbs that need no ref.
   if (key === 'ref' && typeof value !== 'string')
-    throw new Error('missing required argument: ref — a ref comes from a snapshot (attach returns one; or call desktop_snapshot), then pass it VERBATIM (e.g. e5#3). To act by name with no ref, use find_and_act {selector, do} / reveal {selector}.');
+    throw new Error(
+      'missing required argument: ref — a ref comes from a snapshot (attach returns one; or call desktop_snapshot), then pass it VERBATIM (e.g. e5#3). To act by name with no ref, use find_and_act {selector, do} / reveal {selector}.',
+    );
   if (typeof value !== 'string') throw new Error(`missing required string argument: ${key}`);
   return value;
 }
@@ -703,11 +705,14 @@ function resolveRef(ref: string): Element {
     throw new Error(
       `ref ${id} is missing its #generation tag — pass it VERBATIM from the latest snapshot (e.g. ${id}#${refGen}); a bare ref can no longer be proven current, so it is rejected rather than mis-resolved — re-read the snapshot above and use ITS refs`,
     );
-  // A ref carrying a stale generation provably no longer denotes the same control — fail loud instead of acting on
-  // whatever now occupies that traversal slot.
-  if (hash >= 0 && Number(ref.slice(hash + 1)) !== refGen)
-    throw new Error(`ref ${id} is from an earlier snapshot generation (the tree was re-grounded since) — read the latest snapshot above and use ITS refs, or use find_and_act {selector} / reveal {selector}, which need no ref`);
   const element = current?.resolve(id) ?? null;
+  // A ref carrying a stale generation provably no longer denotes the same control — fail loud instead of acting on
+  // whatever now occupies that traversal slot. Reserve the "re-grounded since" wording for an id that DOES still
+  // appear in the current tree (a genuinely re-numbered/stale generation); if the id is absent entirely it was
+  // fabricated/hallucinated, so fall through to the "not in the current snapshot" wording rather than implying it
+  // once existed and will reappear on re-snapshot.
+  if (hash >= 0 && Number(ref.slice(hash + 1)) !== refGen && element !== null)
+    throw new Error(`ref ${id} is from an earlier snapshot generation (the tree was re-grounded since) — read the latest snapshot above and use ITS refs, or use find_and_act {selector} / reveal {selector}, which need no ref`);
   if (element === null) throw new Error(`ref ${id} not in the current snapshot (epoch ${epoch}) — re-ground with desktop_snapshot, or use find_and_act {selector} / reveal {selector}, which need no ref`);
   return element;
 }
@@ -729,10 +734,16 @@ const TRACE_MASK_KEYS = new Set(['content', 'text', 'value']);
 function maskKey(value: string): string {
   return value.length === 1 && !value.includes('+') ? '<char>' : value;
 }
-/** A masked, JSON-safe copy of a tool's arguments for the trace line — long free-text fields become `<N chars>`. */
+/** A masked, JSON-safe copy of a tool's arguments for the trace/audit line — long free-text fields become `<N chars>` and
+ *  any array-of-args (run_program.args, copy_files.paths) collapses to its element count. Command-line args are THE canonical
+ *  home of credentials (--password=, -psecret, Authorization: Bearer …), so they must never reach the journal/SIEM verbatim;
+ *  the element count is the forensic signal (HOW MANY args/paths) that survives. */
 function maskArgs(args: Record<string, unknown>): Record<string, unknown> {
   const masked: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(args)) masked[key] = typeof value === 'string' ? (TRACE_MASK_KEYS.has(key) ? `<${value.length} chars>` : key === 'key' ? maskKey(value) : value) : value;
+  for (const [key, value] of Object.entries(args)) {
+    if (Array.isArray(value)) masked[key] = `<${value.length} arg${value.length === 1 ? '' : 's'}>`;
+    else masked[key] = typeof value === 'string' ? (TRACE_MASK_KEYS.has(key) ? `<${value.length} chars>` : key === 'key' ? maskKey(value) : value) : value;
+  }
   return masked;
 }
 /** The text payload of an MCP tool result (the first text-content block), for the trace observation summary. */
@@ -1847,6 +1858,25 @@ const TOOLS: McpTool[] = [
     },
   },
   {
+    name: 'manage_element',
+    category: 'window',
+    description:
+      'Move/resize/rotate an ELEMENT (by {ref}) cursor-free via UIA TransformPattern — the FlaUI Transform-pattern parity tool. Unlike manage_window (which SetWindowPos a top-level HWND), this reaches an HWND-less child: an MDI child, a dockable/floating pane, a resizable splitter panel. move needs x,y; resize needs width,height; rotate needs degrees. Check inspect_element first — only an element whose can: list shows move/resize/rotate supports it (it throws otherwise). Works locked/background, no real cursor.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ref: { type: 'string', description: REF_DESC },
+        action: { type: 'string', enum: ['move', 'resize', 'rotate'] },
+        x: { type: 'number' },
+        y: { type: 'number' },
+        width: { type: 'number' },
+        height: { type: 'number' },
+        degrees: { type: 'number' },
+      },
+      required: ['ref', 'action'],
+    },
+  },
+  {
     name: 'read_clipboard',
     // 'input', NOT 'read', so the readonly profile (read-only) does NOT auto-expose it: the global clipboard is a
     // plaintext secret store the human just used (password-manager auto-paste, 2FA codes, copied tokens), higher
@@ -1949,7 +1979,7 @@ const TOOLS: McpTool[] = [
 
 // Annotation policy: read tools are read-only; the rest mutate state (destructive); os tools reach beyond the
 // local desktop (open-world); setters/copies are idempotent. Hosts use these to drive their permission UI.
-const IDEMPOTENT = new Set(['copy', 'java_set_text', 'set_clipboard', 'set_value']);
+const IDEMPOTENT = new Set(['copy', 'java_set_text', 'manage_element', 'set_clipboard', 'set_value']);
 // Tools that READ state without mutating it but are NOT in the 'read' policy category (read_clipboard is gated as
 // 'input' so readonly does not auto-expose the secret-bearing clipboard) — they still earn readOnlyHint, not destructive.
 const READ_ONLY_NATURE = new Set(['read_clipboard']);
@@ -2614,7 +2644,7 @@ const HANDLERS: Record<string, ToolHandler> = {
       listMonitors()
         .map(
           (monitor, index) =>
-            `- monitor ${index}${monitor.primary ? ' (primary)' : ''} bounds={x:${monitor.bounds.x},y:${monitor.bounds.y} w:${monitor.bounds.width} h:${monitor.bounds.height}} work={w:${monitor.workArea.width} h:${monitor.workArea.height}}`,
+            `- monitor ${index}${monitor.primary ? ' (primary)' : ''} bounds={x:${monitor.bounds.x},y:${monitor.bounds.y} w:${monitor.bounds.width} h:${monitor.bounds.height}} work={w:${monitor.workArea.width} h:${monitor.workArea.height}} dpi=${monitor.dpi} scale=${monitor.scale}x`,
         )
         .join('\n'),
     ),
@@ -2813,6 +2843,23 @@ const HANDLERS: Record<string, ToolHandler> = {
     if (cursorDenied) return errorResult('hold_key holds a key down with synthetic input (SendInput) — disabled by BUN_UIA_CURSOR=never; pass a {ref} to an own-HWND control to hold it cursor-free');
     await holdKey(key, durationMs);
     return withSnapshot(`held ${keyShown} for ${durationMs}ms`);
+  },
+  manage_element: (args) => {
+    const element = resolveRef(requireString(args, 'ref'));
+    const action = requireString(args, 'action');
+    if (action === 'move') {
+      element.move(requireNumber(args, 'x'), requireNumber(args, 'y'));
+      return withSnapshot(`moved ${named(element)} to ${args.x},${args.y} cursor-free (TransformPattern)`);
+    }
+    if (action === 'resize') {
+      element.resize(requireNumber(args, 'width'), requireNumber(args, 'height'));
+      return withSnapshot(`resized ${named(element)} to ${args.width}×${args.height} cursor-free (TransformPattern)`);
+    }
+    if (action === 'rotate') {
+      element.rotate(requireNumber(args, 'degrees'));
+      return withSnapshot(`rotated ${named(element)} by ${args.degrees}° cursor-free (TransformPattern)`);
+    }
+    throw new Error(`unknown manage_element action ${JSON.stringify(action)} — valid actions are: move, resize, rotate.`);
   },
   manage_window: (args) => {
     const hWnd = resolveHwnd(args);
