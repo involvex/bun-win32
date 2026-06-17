@@ -111,7 +111,7 @@
     "example:chromium-scroll": "bun ./example/chromium-scroll.integration.test.ts",
     "example:click-no-raise-waitstate": "bun ./example/click-no-raise-waitstate.integration.test.ts",
     "example:clipboard-image": "bun ./example/clipboard-image.integration.test.ts",
-    "example:coldnote": "bun ./example/coldnote.integration.test.ts",
+    "example:coldnote": "bun ./example/coldnote-maxdepth-relative.integration.test.ts",
     "example:computer-use": "bun ./example/computer-use.ts",
     "example:condition-perf": "bun ./example/condition-perf.integration.test.ts",
     "example:copy-secret-redacted-not-journaled": "bun ./example/copy-secret-redacted-not-journaled.integration.test.ts",
