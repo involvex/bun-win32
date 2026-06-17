@@ -11,7 +11,7 @@ import { comRelease, hresult, vcall } from './com';
 import { type CompiledCondition, compileCondition, type ElementProperties, formatNoMatch, matches, needsSubtreeFilter, type Selector, selectorToString } from './condition';
 import { ControlType, PropertyId, S_OK, SLOT, TreeScope } from './constants';
 import { ownerHwnd, postClickToHwnd } from './coords';
-import { clickAt, dragTo as inputDragTo, type as inputType } from './input';
+import { clickAt, dragTo as inputDragTo, postText, type as inputType } from './input';
 import { type OcrText, ocrBitmap } from './ocr';
 import { type Bitmap, cropBitmap } from './screen';
 import { captureWindowLive } from './wgc';
@@ -943,14 +943,21 @@ export class Element {
   }
 
   // synthetic input fallbacks (SendInput) for controls without a usable pattern
-  /** Give the element keyboard focus (UIA SetFocus). Returns this for chaining. */
+  /** Give the element keyboard focus (UIA SetFocus). Returns this for chaining. On an MSAA-bridged provider (a classic
+   *  Win32 control) UIA SetFocus routes through the accessibility bridge and can RAISE/foreground the control's window
+   *  (findings/32) — and, where the foreground-lock serializes, block measurably. Prefer a control-pattern action or, for
+   *  an own-HWND control, the cursor-free posted path (postText / setControlText) which never steals foreground. */
   focus(): this {
     vcall(this.ptr, SLOT.SetFocus, [], []);
     return this;
   }
 
-  /** Focus the element, then type Unicode text into it via SendInput. Returns this for chaining. */
+  /** Type Unicode text into the element. For a control with its OWN HWND this posts WM_CHAR cursor-free (no focus, no
+   *  foreground steal, background-capable) — mirroring setValueSmart and the MCP `type` tool. Only a no-own-HWND control
+   *  (a WinUI/WPF/Electron sub-control) falls back to UIA SetFocus + SendInput. Returns this for chaining. */
   type(text: string): this {
+    const hWnd = this.nativeWindowHandle;
+    if (hWnd !== 0n && postText(hWnd, text)) return this;
     this.focus();
     inputType(text);
     return this;
