@@ -22,6 +22,14 @@ export interface Selector {
    *  this nested selector — "the ListItem that CONTAINS a Button named Delete". Client-side, evaluated per surviving
    *  candidate via a Subtree find, so it engages only when set (it does NOT touch the hot server-only path). Nestable. */
   has?: Selector;
+  /** Negated `has` (Playwright `filter({hasNot})` / FlaUI `.Not()`): REJECT a candidate whose own subtree contains a
+   *  match for this nested selector — "the ListItem WITHOUT a Delete child", "the row that is NOT the header". The
+   *  inverse of `has`; client-side, evaluated per surviving candidate via a Subtree find (off the hot server path).
+   *  Nestable. A candidate with no such descendant survives; one that contains it is dropped. */
+  hasNot?: Selector;
+  /** Negated `hasText` (Playwright `filter({hasNotText})`): REJECT a candidate whose subtree contains a control whose
+   *  name includes this substring — "the row that does NOT contain 'Archived'". The inverse of `hasText`, client-side. */
+  hasNotText?: string;
   /** Descendant-scoped text filter (Playwright `filter({hasText})`): keep only a candidate whose subtree contains a
    *  control whose name includes this substring — "the row that has the text 'Overdue'". Client-side, like `has`. */
   hasText?: string;
@@ -40,6 +48,9 @@ export interface Selector {
   name?: RegExp | string;
   /** Substring of the name (client-side). */
   nameContains?: string;
+  /** Negated name (FlaUI `.Not()` on a name predicate): REJECT a candidate whose Name matches this — exact string or a
+   *  regular expression ("buttons whose name is NOT Close"). Client-side; reuses the stateless-regex machinery of `name`. */
+  nameNot?: RegExp | string;
 }
 
 /** The minimal property surface the client-side matcher reads — `Element` satisfies it. */
@@ -73,9 +84,12 @@ export function selectorToString(selector: Selector): string {
   if (selector.controlTypes !== undefined) parts.push(`controlTypes: [${selector.controlTypes.map((controlType) => ControlType[controlType] ?? controlType).join(', ')}]`);
   if (selector.name !== undefined) parts.push(`name: ${selector.name instanceof RegExp ? selector.name.toString() : JSON.stringify(selector.name)}`);
   if (selector.nameContains !== undefined) parts.push(`nameContains: ${JSON.stringify(selector.nameContains)}`);
+  if (selector.nameNot !== undefined) parts.push(`nameNot: ${selector.nameNot instanceof RegExp ? selector.nameNot.toString() : JSON.stringify(selector.nameNot)}`);
   if (selector.automationId !== undefined) parts.push(`automationId: ${JSON.stringify(selector.automationId)}`);
   if (selector.className !== undefined) parts.push(`className: ${JSON.stringify(selector.className)}`);
   if (selector.has !== undefined) parts.push(`has: ${selectorToString(selector.has)}`);
+  if (selector.hasNot !== undefined) parts.push(`hasNot: ${selectorToString(selector.hasNot)}`);
+  if (selector.hasNotText !== undefined) parts.push(`hasNotText: ${JSON.stringify(selector.hasNotText)}`);
   if (selector.hasText !== undefined) parts.push(`hasText: ${JSON.stringify(selector.hasText)}`);
   if (selector.labeledBy !== undefined) parts.push(`labeledBy: ${JSON.stringify(selector.labeledBy)}`);
   if (selector.index !== undefined) parts.push(`index: ${selector.index}`);
@@ -125,7 +139,7 @@ export function formatNoMatch(selector: Selector, windowName: string, candidateN
  *  the Element, runs the Subtree find / LabeledBy read when this is true; `matches()` stays a pure property check that
  *  never rejects on `has`/`hasText`/`labeledBy`. */
 export function needsSubtreeFilter(selector: Selector): boolean {
-  return selector.has !== undefined || selector.hasText !== undefined || selector.labeledBy !== undefined;
+  return selector.has !== undefined || selector.hasNot !== undefined || selector.hasNotText !== undefined || selector.hasText !== undefined || selector.labeledBy !== undefined;
 }
 
 /** Match a (already-read) element against a selector — all fields AND together (controlTypes is an internal OR). Pure logic.
@@ -142,6 +156,11 @@ export function matches(element: ElementProperties, selector: Selector): boolean
     } else if (element.name !== selector.name) return false;
   }
   if (selector.nameContains !== undefined && !element.name.includes(selector.nameContains)) return false;
+  if (selector.nameNot !== undefined) {
+    if (selector.nameNot instanceof RegExp) {
+      if (statelessRegExp(selector.nameNot).test(element.name)) return false; // reject when the negated name matches (inverse of `name`)
+    } else if (element.name === selector.nameNot) return false;
+  }
   return true;
 }
 
@@ -262,6 +281,7 @@ export function compileCondition(pAutomation: bigint, selector: Selector): Compi
     else needsClientFilter = true;
   }
   if (selector.nameContains !== undefined) needsClientFilter = true;
+  if (selector.nameNot !== undefined) needsClientFilter = true; // negated name has no server part here — matches() rejects it client-side; never weakens the server AND of positives
   if (needsSubtreeFilter(selector)) needsClientFilter = true; // has/hasText/labeledBy is decided per-candidate from the live element (element.ts), never server-side — force the client pass that runs it
   if (parts.length === 0) return { condition: trueCondition(), needsClientFilter, owned: false }; // empty selector → TrueCondition matches everything server-side, no client pass (needsClientFilter stays true only for a regex/substring-only selector)
   let condition = parts[0]!;

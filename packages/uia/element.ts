@@ -113,6 +113,22 @@ function subtreeMatches(ptr: bigint, selector: Selector): boolean {
     if (inner === null) return false;
     inner.release();
   }
+  // hasNot/hasNotText (Playwright filter({hasNot, hasNotText}) / FlaUI .Not()): the inverse of has/hasText — REJECT the
+  // candidate when its subtree DOES contain the match. Same one Subtree find; the returned descendant Element is released.
+  if (selector.hasNot !== undefined) {
+    const inner = candidate.find(selector.hasNot, TreeScope.TreeScope_Subtree);
+    if (inner !== null) {
+      inner.release();
+      return false;
+    }
+  }
+  if (selector.hasNotText !== undefined) {
+    const inner = candidate.find({ nameContains: selector.hasNotText }, TreeScope.TreeScope_Subtree);
+    if (inner !== null) {
+      inner.release();
+      return false;
+    }
+  }
   // labeledBy (Playwright getByLabel / FlaUI LabeledBy): read the candidate's UIA LabeledBy property — the element
   // that LABELS it (e.g. the Text control naming an empty-Name edit) — and keep the candidate only when that label's
   // Name equals the requested string. get_CurrentLabeledBy returns an owned IUIAutomationElement* (or 0n when the

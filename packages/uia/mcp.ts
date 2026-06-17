@@ -349,7 +349,7 @@ function controlTypeId(value: number | string): number | undefined {
   return undefined;
 }
 
-const SELECTOR_KEYS = new Set(['name', 'nameContains', 'automationId', 'className', 'controlType']);
+const SELECTOR_KEYS = new Set(['name', 'nameContains', 'nameNot', 'automationId', 'className', 'controlType']);
 // The selector idioms an LLM reaches for first (ARIA/Playwright muscle memory) folded onto the real UIA keys.
 const SELECTOR_ALIASES: Record<string, 'automationId' | 'controlType' | 'name'> = { accessibleName: 'name', id: 'automationId', label: 'name', role: 'controlType', title: 'name', type: 'controlType' };
 const STATE_KEYS = new Set(['enabled', 'expanded', 'selected', 'toggle', 'value', 'valueContains']);
@@ -371,11 +371,12 @@ function selectorFrom(value: unknown): Selector {
   const unknown = Object.keys(raw).filter((key) => !SELECTOR_KEYS.has(key));
   if (unknown.length > 0)
     throw new Error(
-      `unknown selector key${unknown.length > 1 ? 's' : ''} ${JSON.stringify(unknown)} — valid keys: name, nameContains, automationId, className, controlType. (Aliases accepted: role/type → controlType; label/accessibleName/title → name; id → automationId.)`,
+      `unknown selector key${unknown.length > 1 ? 's' : ''} ${JSON.stringify(unknown)} — valid keys: name, nameContains, nameNot, automationId, className, controlType. (Aliases accepted: role/type → controlType; label/accessibleName/title → name; id → automationId.)`,
     );
   const selector: Selector = {};
   if (typeof raw.name === 'string') selector.name = raw.name;
   if (typeof raw.nameContains === 'string') selector.nameContains = raw.nameContains;
+  if (typeof raw.nameNot === 'string') selector.nameNot = raw.nameNot; // negated name (FlaUI .Not()): reject a control whose Name equals this — "the Button that is NOT Close"
   if (typeof raw.automationId === 'string') selector.automationId = raw.automationId;
   if (typeof raw.className === 'string') selector.className = raw.className;
   if (typeof raw.controlType === 'number' || typeof raw.controlType === 'string') {
@@ -1368,6 +1369,7 @@ const SELECTOR_SCHEMA = {
   properties: {
     name: { type: 'string' },
     nameContains: { type: 'string' },
+    nameNot: { type: 'string', description: 'Negated name (FlaUI .Not()): reject a control whose Name equals this — "the Button that is NOT Close".' },
     automationId: { type: 'string' },
     className: { type: 'string' },
     controlType: { type: ['number', 'string'], description: 'UIA control-type — a number (50000), or a role NAME (Button, Edit, List, Tree, TreeItem, …)' },
