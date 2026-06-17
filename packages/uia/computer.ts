@@ -7,8 +7,8 @@
 // that the computer-use literature attributes to screenshot-only grounding.
 
 import { ownerHwnd, postClickAt, postClickToHwnd, postDoubleClickAt, postTripleClickAt, scrollAt } from './coords';
-import { fromPoint, type Window } from './element';
-import { clickAt, cursorPosition, doubleClickAt, dragTo, holdKey, middleClickAt, mouseDown, mouseUp, moveTo, rightClickAt, scrollWheel, sendKeys, type as typeText } from './input';
+import { focused, fromPoint, type Window } from './element';
+import { clickAt, cursorPosition, doubleClickAt, dragTo, holdKey, middleClickAt, mouseDown, mouseUp, moveTo, postHoldKey, postKey, postText, rightClickAt, scrollWheel, sendKeys, type as typeText } from './input';
 
 export interface ComputerAction {
   action: string;
@@ -106,6 +106,23 @@ function semanticClick(x: number, y: number, cursorless: boolean): ComputerResul
   return { ok: true, semantic: resolved, output: resolved !== undefined ? `clicked ${resolved.role} ${JSON.stringify(resolved.name)}` : 'clicked (coordinate)' };
 }
 
+/** The own HWND of the element with keyboard focus, or its nearest window-owning ancestor (cursor-free, UIA
+ *  GetFocusedElement → ownerHwnd) — the same self→ancestor walk semanticClick's posted fallback uses, so a focused
+ *  HWND-less leaf (e.g. Notepad's RichEdit surface) still resolves to the editor's own HWND. 0n when there is no focus
+ *  or nothing in the chain owns a window (a pure WinUI/WPF/Chromium sub-control), where only SendInput can reach it. */
+function focusedHandle(): bigint {
+  try {
+    const element = focused();
+    try {
+      return ownerHwnd(element);
+    } finally {
+      element.release();
+    }
+  } catch {
+    return 0n;
+  }
+}
+
 /** Execute one computer-use action against a window. Async (some actions wait). Never throws. */
 export async function dispatch(window: Window, action: ComputerAction, options: DispatchOptions = {}): Promise<ComputerResult> {
   const cursorless = options.cursorless ?? true;
@@ -156,15 +173,33 @@ export async function dispatch(window: Window, action: ComputerAction, options: 
         if (start !== undefined && action.coordinate !== undefined) dragTo(start[0], start[1], action.coordinate[0], action.coordinate[1]);
         return { ok: true };
       }
-      case 'key':
-        sendKeys(normalizeKey(action.text ?? ''));
+      case 'key': {
+        const combo = normalizeKey(action.text ?? '');
+        // Cursor-free parity with the MCP press_key path: when the FOCUSED control owns a real HWND, post a single key
+        // (WM_KEYDOWN/UP) to it — works minimized/background/locked. A chord (modifier+key) or a no-own-HWND focus has
+        // no posted-key path, so fall to SendInput (system focus). postKey is a single key only, hence the no-'+' guard.
+        const handle = cursorless && !combo.includes('+') ? focusedHandle() : 0n;
+        if (handle !== 0n && postKey(handle, combo)) return { ok: true, output: `key ${action.text} (cursor-free)` };
+        sendKeys(combo);
         return { ok: true, output: `key ${action.text}` };
-      case 'hold_key':
-        await holdKey(normalizeKey(action.text ?? ''), Math.round((action.duration ?? 1) * 1000));
+      }
+      case 'hold_key': {
+        const name = normalizeKey(action.text ?? '');
+        const durationMs = Math.round((action.duration ?? 1) * 1000);
+        const handle = cursorless && !name.includes('+') ? focusedHandle() : 0n;
+        if (handle !== 0n && (await postHoldKey(handle, name, durationMs))) return { ok: true, output: `held ${action.text} ${durationMs}ms (cursor-free)` };
+        await holdKey(name, durationMs);
         return { ok: true };
-      case 'type':
-        typeText(action.text ?? '');
-        return { ok: true, output: `typed ${JSON.stringify(action.text ?? '')}` };
+      }
+      case 'type': {
+        const text = action.text ?? '';
+        // Cursor-free parity with the MCP type path: WM_CHAR per code unit to the FOCUSED control's own HWND. A
+        // no-own-HWND focus (WinUI/WPF/Chromium sub-control) has no posted-text path, so fall to SendInput.
+        const handle = cursorless ? focusedHandle() : 0n;
+        if (handle !== 0n && postText(handle, text)) return { ok: true, output: `typed ${JSON.stringify(text)} (cursor-free)` };
+        typeText(text);
+        return { ok: true, output: `typed ${JSON.stringify(text)}` };
+      }
       case 'scroll': {
         const centerX = action.coordinate !== undefined ? x : Math.round(window.boundingRectangle.x + window.boundingRectangle.width / 2);
         const centerY = action.coordinate !== undefined ? y : Math.round(window.boundingRectangle.y + window.boundingRectangle.height / 2);

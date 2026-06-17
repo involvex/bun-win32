@@ -76,7 +76,7 @@ export { AutomationElementMode, CacheRequest, createCacheRequest, DEFAULT_CACHE_
 export { clipboardSequence, copy, paste, readClipboard, readClipboardFiles, readClipboardImage, writeClipboard, writeClipboardFiles, writeClipboardImage } from './clipboard';
 export { comRelease, guid, hresult, vcall } from './com';
 export { type ComputerAction, type ComputerResult, dispatch, type DispatchOptions, fromCuaAction, normalizeKey } from './computer';
-export { type CompiledCondition, compileCondition, type ElementProperties, formatNoMatch, matches, pickIndexed, selectorToString, type Selector } from './condition';
+export { type CompiledCondition, compileCondition, type ElementProperties, formatNoMatch, matches, needsSubtreeFilter, pickIndexed, selectorToString, type Selector } from './condition';
 export { ControlType, PatternId, PropertyConditionFlags, PropertyId, SLOT, TreeScope } from './constants';
 export {
   elementAt,

@@ -68,9 +68,14 @@ export function findImage(haystack: Bitmap, needle: Bitmap, options: { threshold
   return confidence >= threshold ? { x: bestX, y: bestY, score: confidence } : null;
 }
 
-/** Capture the screen and locate `needle` on it, returning ABSOLUTE screen coords (ready to click). */
-export function locateOnScreen(needle: Bitmap, options?: { threshold?: number; step?: number }): Match | null {
-  const screen = captureScreen();
+/**
+ * Capture the screen (or `region`, to scope the scan to a known window/sub-rect — the nut.js
+ * searchRegion / AHK ImageSearch bounds parity) and locate `needle` on it, returning ABSOLUTE
+ * screen coords (ready to click). The region's origin is folded into the captured bitmap, so the
+ * returned coords stay absolute regardless of the scan bounds.
+ */
+export function locateOnScreen(needle: Bitmap, options?: { threshold?: number; step?: number; region?: Partial<Rect> }): Match | null {
+  const screen = captureScreen(options?.region);
   const match = findImage(screen, needle, options);
   return match === null ? null : { x: screen.originX + match.x, y: screen.originY + match.y, score: match.score };
 }
@@ -123,9 +128,13 @@ export function findAllImages(haystack: Bitmap, needle: Bitmap, options: { thres
   return accepted;
 }
 
-/** Capture the screen and locate EVERY occurrence of `needle`, each in ABSOLUTE screen coords. */
-export function locateAllOnScreen(needle: Bitmap, options?: { threshold?: number; step?: number; maxResults?: number }): Match[] {
-  const screen = captureScreen();
+/**
+ * Capture the screen (or `region`, to scope the scan to a known window/sub-rect) and locate EVERY
+ * occurrence of `needle`, each in ABSOLUTE screen coords. The region's origin is folded into the
+ * captured bitmap, so the returned coords stay absolute regardless of the scan bounds.
+ */
+export function locateAllOnScreen(needle: Bitmap, options?: { threshold?: number; step?: number; maxResults?: number; region?: Partial<Rect> }): Match[] {
+  const screen = captureScreen(options?.region);
   return findAllImages(screen, needle, options).map((match) => ({ x: screen.originX + match.x, y: screen.originY + match.y, score: match.score }));
 }
 

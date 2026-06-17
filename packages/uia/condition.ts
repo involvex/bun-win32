@@ -18,6 +18,13 @@ export interface Selector {
   /** Any-of control types: matches an element whose controlType is in this set (server-side OR of ControlType
    *  conditions). The agent's "the clickable thing whether it's a Button OR a Hyperlink OR a MenuItem" case. */
   controlTypes?: readonly (ControlType | number)[];
+  /** Descendant-scoped filter (Playwright `filter({has})`): keep only a candidate whose own subtree contains a match for
+   *  this nested selector — "the ListItem that CONTAINS a Button named Delete". Client-side, evaluated per surviving
+   *  candidate via a Subtree find, so it engages only when set (it does NOT touch the hot server-only path). Nestable. */
+  has?: Selector;
+  /** Descendant-scoped text filter (Playwright `filter({hasText})`): keep only a candidate whose subtree contains a
+   *  control whose name includes this substring — "the row that has the text 'Overdue'". Client-side, like `has`. */
+  hasText?: string;
   /** Pick the Nth match (0-based) from the candidate list instead of the first — disambiguates N identical twins
    *  (three "Delete" buttons, 20 unnamed ListItems) without a snapshot round-trip. Out-of-range yields no match. */
   index?: number;
@@ -62,6 +69,8 @@ export function selectorToString(selector: Selector): string {
   if (selector.nameContains !== undefined) parts.push(`nameContains: ${JSON.stringify(selector.nameContains)}`);
   if (selector.automationId !== undefined) parts.push(`automationId: ${JSON.stringify(selector.automationId)}`);
   if (selector.className !== undefined) parts.push(`className: ${JSON.stringify(selector.className)}`);
+  if (selector.has !== undefined) parts.push(`has: ${selectorToString(selector.has)}`);
+  if (selector.hasText !== undefined) parts.push(`hasText: ${JSON.stringify(selector.hasText)}`);
   if (selector.index !== undefined) parts.push(`index: ${selector.index}`);
   if (selector.last === true) parts.push('last: true');
   return `{ ${parts.join(', ')} }`;
@@ -98,7 +107,16 @@ export function formatNoMatch(selector: Selector, windowName: string, candidateN
   return `no element matched ${selectorToString(selector)} in "${windowName}"${tail}${containsHint}`;
 }
 
-/** Match a (already-read) element against a selector — all fields AND together (controlTypes is an internal OR). Pure logic. */
+/** Whether the selector carries a descendant-scoped filter (`has`/`hasText`) that `matches()` cannot decide from
+ *  properties alone — it needs the live candidate's subtree. The caller (element.ts), which holds the Element, runs
+ *  the Subtree find when this is true; `matches()` stays a pure property check that never rejects on `has`/`hasText`. */
+export function needsSubtreeFilter(selector: Selector): boolean {
+  return selector.has !== undefined || selector.hasText !== undefined;
+}
+
+/** Match a (already-read) element against a selector — all fields AND together (controlTypes is an internal OR). Pure logic.
+ *  `has`/`hasText` are NOT checked here (they need the live subtree, not just properties) — the caller folds them in via
+ *  a Subtree find after this passes; matches() neither evaluates nor rejects on them. */
 export function matches(element: ElementProperties, selector: Selector): boolean {
   if (selector.controlType !== undefined && element.controlType !== selector.controlType) return false;
   if (selector.controlTypes !== undefined && !selector.controlTypes.includes(element.controlType)) return false;
@@ -230,6 +248,7 @@ export function compileCondition(pAutomation: bigint, selector: Selector): Compi
     else needsClientFilter = true;
   }
   if (selector.nameContains !== undefined) needsClientFilter = true;
+  if (needsSubtreeFilter(selector)) needsClientFilter = true; // has/hasText is decided per-candidate from the live subtree (element.ts), never server-side — force the client pass that runs it
   if (parts.length === 0) return { condition: trueCondition(), needsClientFilter, owned: false }; // empty selector → TrueCondition matches everything server-side, no client pass (needsClientFilter stays true only for a regex/substring-only selector)
   let condition = parts[0]!;
   for (let index = 1; index < parts.length; index += 1) {

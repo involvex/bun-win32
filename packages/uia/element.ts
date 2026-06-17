@@ -8,7 +8,7 @@ import User32 from '@bun-win32/user32';
 import { automation, controlViewWalker } from './automation';
 import { AutomationElementMode, type CacheRequest, createCacheRequest } from './cache';
 import { comRelease, hresult, vcall } from './com';
-import { type CompiledCondition, compileCondition, type ElementProperties, formatNoMatch, matches, type Selector, selectorToString } from './condition';
+import { type CompiledCondition, compileCondition, type ElementProperties, formatNoMatch, matches, needsSubtreeFilter, type Selector, selectorToString } from './condition';
 import { ControlType, PropertyId, S_OK, SLOT, TreeScope } from './constants';
 import { postClickToHwnd } from './coords';
 import { clickAt, type as inputType } from './input';
@@ -90,6 +90,25 @@ function readCachedProperties(ptr: bigint): ElementProperties {
   };
 }
 
+// Whether the candidate `ptr` survives the selector's descendant-scoped filter (has/hasText, Playwright filter()).
+// Only the client-filter loops call this, and only after needsSubtreeFilter(selector) — so it stays off the hot path.
+// Each predicate is one Subtree find (TreeScope_Subtree = element+descendants) on a borrowed Element wrapping ptr; the
+// wrapper is NOT released (the loop owns ptr's lifetime), but the matched descendant Element it returns IS released here.
+function subtreeMatches(ptr: bigint, selector: Selector): boolean {
+  const candidate = new Element(ptr);
+  if (selector.has !== undefined) {
+    const inner = candidate.find(selector.has, TreeScope.TreeScope_Subtree);
+    if (inner === null) return false;
+    inner.release();
+  }
+  if (selector.hasText !== undefined) {
+    const inner = candidate.find({ nameContains: selector.hasText }, TreeScope.TreeScope_Subtree);
+    if (inner === null) return false;
+    inner.release();
+  }
+  return true;
+}
+
 function findFirstPointer(scopeElement: bigint, scope: number, condition: bigint): bigint {
   if (vcall(scopeElement, SLOT.FindFirst, [FFIType.i32, FFIType.u64, FFIType.ptr], [scope, condition, scratch8.ptr!]) !== S_OK) return 0n;
   return scratch8.readBigUInt64LE(0);
@@ -108,10 +127,11 @@ function findFirstMatch(scopeElement: bigint, compiled: CompiledCondition, selec
   // is a client-side object (in-proc to build/release); the returned Elements are Full-mode (actionable).
   const request = createCacheRequest(MATCHER_PROPERTIES, TreeScope.TreeScope_Element, AutomationElementMode.Full);
   try {
+    const subtreeFilter = needsSubtreeFilter(selector);
     const pointers = findAllCachedPointers(scopeElement, scope, compiled.condition, request.ptr);
     for (let index = 0; index < pointers.length; index += 1) {
       const pointer = pointers[index]!;
-      if (matches(readCachedProperties(pointer), selector)) {
+      if (matches(readCachedProperties(pointer), selector) && (!subtreeFilter || subtreeMatches(pointer, selector))) {
         for (let rest = index + 1; rest < pointers.length; rest += 1) comRelease(pointers[rest]!);
         return new Element(pointer);
       }
@@ -451,10 +471,11 @@ export class Element {
       // Regex/substring client filter: one cached round-trip prefetches the matcher props, so each candidate is
       // matched in-proc instead of 4 live cross-process reads each (the dominant cost on a large window).
       const request = createCacheRequest(MATCHER_PROPERTIES, TreeScope.TreeScope_Element, AutomationElementMode.Full);
+      const subtreeFilter = needsSubtreeFilter(selector);
       try {
         const result: Element[] = [];
         for (const pointer of findAllCachedPointers(this.ptr, scope, compiled.condition, request.ptr)) {
-          if (matches(readCachedProperties(pointer), selector)) result.push(new Element(pointer));
+          if (matches(readCachedProperties(pointer), selector) && (!subtreeFilter || subtreeMatches(pointer, selector))) result.push(new Element(pointer));
           else comRelease(pointer);
         }
         return result;
@@ -472,6 +493,7 @@ export class Element {
    */
   findAllCached(selector: Selector, request: CacheRequest, scope: number = TreeScope.TreeScope_Descendants): Element[] {
     const compiled = compileCondition(automation(), selector);
+    const subtreeFilter = needsSubtreeFilter(selector);
     try {
       if (vcall(this.ptr, SLOT.FindAllBuildCache, [FFIType.i32, FFIType.u64, FFIType.u64, FFIType.ptr], [scope, compiled.condition, request.ptr, scratch8.ptr!]) !== S_OK) return [];
       const pArray = scratch8.readBigUInt64LE(0);
@@ -484,7 +506,7 @@ export class Element {
           if (vcall(pArray, SLOT.GetElement, [FFIType.i32, FFIType.ptr], [index, scratch8.ptr!]) !== S_OK) continue;
           const pointer = scratch8.readBigUInt64LE(0);
           if (pointer === 0n) continue;
-          if (!compiled.needsClientFilter || matches(readCachedProperties(pointer), selector)) result.push(new Element(pointer));
+          if ((!compiled.needsClientFilter || matches(readCachedProperties(pointer), selector)) && (!subtreeFilter || subtreeMatches(pointer, selector))) result.push(new Element(pointer));
           else comRelease(pointer);
         }
         return result;
@@ -503,8 +525,7 @@ export class Element {
     return pointer === 0n ? this : new Element(pointer);
   }
 
-  // --- cached property reads (valid only on elements returned by findAllCached / buildUpdatedCache) ---
-
+  // cached property reads — valid only on elements from findAllCached / buildUpdatedCache
   /** Cached immediate children (in-proc; valid after a Subtree-scoped buildUpdatedCache). */
   get cachedChildren(): Element[] {
     if (vcall(this.ptr, SLOT.GetCachedChildren, [FFIType.ptr], [scratch8.ptr!]) !== S_OK) return [];
@@ -564,8 +585,7 @@ export class Element {
     comRelease(this.ptr);
   }
 
-  // --- control-pattern actions (each proven against a real control in Phase 5) ---
-
+  // control-pattern actions — each proven against a real control in Phase 5
   /** Press via InvokePattern. Throws if unsupported (try `.click()`). */
   invoke(): void {
     invoke(this.ptr);
@@ -739,8 +759,7 @@ export class Element {
     setWindowVisualState(this.ptr, state);
   }
 
-  // --- synthetic input fallbacks (SendInput) for controls without a usable pattern ---
-
+  // synthetic input fallbacks (SendInput) for controls without a usable pattern
   /** Give the element keyboard focus (UIA SetFocus). Returns this for chaining. */
   focus(): this {
     vcall(this.ptr, SLOT.SetFocus, [], []);
