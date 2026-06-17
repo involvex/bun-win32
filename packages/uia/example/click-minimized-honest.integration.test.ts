@@ -14,49 +14,9 @@
  */
 import { closeWindow, uia, windowProcessId } from '@bun-win32/uia';
 
-type Rpc = { id?: number; result?: { isError?: boolean; content?: { text?: string }[] } };
-const proc = Bun.spawn(['bun', 'run', `${import.meta.dir}/../mcp.ts`], { stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', env: { ...Bun.env, BUN_UIA_PROFILE: 'safe' } });
-const reader = proc.stdout.getReader();
-const decoder = new TextDecoder();
-let buffer = '';
-const pending = new Map<number, (message: Rpc) => void>();
-void (async () => {
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let index: number;
-    while ((index = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, index).trim();
-      buffer = buffer.slice(index + 1);
-      if (line.length === 0) continue;
-      try {
-        const message = JSON.parse(line) as Rpc;
-        if (typeof message.id === 'number' && pending.has(message.id)) {
-          pending.get(message.id)!(message);
-          pending.delete(message.id);
-        }
-      } catch {}
-    }
-  }
-})();
-let nextId = 1;
-const call = (method: string, params: unknown): Promise<Rpc> => {
-  const id = nextId++;
-  proc.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
-  proc.stdin.flush();
-  return new Promise((resolve) => pending.set(id, resolve));
-};
-const textOf = (m: Rpc): string => m.result?.content?.[0]?.text ?? '';
+import { assert, finish, skip, spawnServer } from './_harness';
 
-let failures = 0;
-function assert(condition: boolean, message: string): void {
-  if (condition) console.log(`  ok: ${message}`);
-  else {
-    console.error(`  FAIL: ${message}`);
-    failures += 1;
-  }
-}
+const { call, kill, textOf } = spawnServer();
 
 uia.initialize();
 const notepad = await uia.launch(['notepad.exe'], { className: 'Notepad' });
@@ -68,11 +28,11 @@ try {
   const snap = textOf(await call('tools/call', { name: 'desktop_snapshot', arguments: {} }));
   // A Document/Edit/Text node has no Invoke pattern, so a click on it takes the posted-coordinate path.
   const ref = /(?:Document|Edit|Text)[^\n]*?\[ref=(e\d+(?:#\d+)?)\]/i.exec(snap)?.[1];
-  if (ref === undefined) console.log('  skip: no non-Invoke ref to exercise the coordinate-click guard');
+  if (ref === undefined) skip('no non-Invoke ref to exercise the coordinate-click guard');
   else {
     const clicked = await call('tools/call', { name: 'click', arguments: { ref } });
     const text = textOf(clicked);
-    if (/posted .*cursor-free|clicked/.test(text) && clicked.result?.isError !== true) console.log(`  skip: control was Invoke-able / on-screen (got a real success: ${JSON.stringify(text.split('\n')[0]?.slice(0, 50))})`);
+    if (/posted .*cursor-free|clicked/.test(text) && clicked.result?.isError !== true) skip(`control was Invoke-able / on-screen (got a real success: ${JSON.stringify(text.split('\n')[0]?.slice(0, 50))})`);
     else
       assert(
         clicked.result?.isError === true && /off-screen|minimized/.test(text) && /manage_window/.test(text),
@@ -82,11 +42,10 @@ try {
 } finally {
   const notepadPid = windowProcessId(notepad.hWnd);
   if (notepadPid) Bun.spawnSync(['taskkill', '/F', '/PID', String(notepadPid)]);
-  proc.kill();
+  kill();
   closeWindow(notepad.hWnd);
   notepad.dispose();
   uia.uninitialize();
 }
 
-console.log(failures === 0 ? '\nPASS — a coordinate click on an off-screen/minimized no-Invoke control fails honestly, not silently.' : `\nFAILED — ${failures} assertion(s)`);
-process.exit(failures === 0 ? 0 : 1);
+finish('PASS — a coordinate click on an off-screen/minimized no-Invoke control fails honestly, not silently.');

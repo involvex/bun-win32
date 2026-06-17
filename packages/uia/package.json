@@ -124,6 +124,7 @@
     "example:find-text": "bun ./example/find-text.integration.test.ts",
     "example:get-variant": "bun ./example/get-variant.integration.test.ts",
     "example:grid-cell": "bun ./example/grid-cell.integration.test.ts",
+    "example:harness-asserted-guard": "bun ./example/harness-asserted-guard.integration.test.ts",
     "example:hello-uia": "bun ./example/hello-uia.ts",
     "example:inline-state": "bun ./example/inline-state.integration.test.ts",
     "example:inspector": "bun ./example/inspector.ts",
