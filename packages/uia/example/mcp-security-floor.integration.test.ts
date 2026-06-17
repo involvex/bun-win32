@@ -10,7 +10,10 @@
  *      returning it verbatim, and fences the result as UNTRUSTED content (prompt-injection boundary). copy/cut — which
  *      extract an app's text the same way — fence their returned text identically (no UNFENCED captured-text return).
  *   4. OS/READONLY MISMATCH: readonly + BUN_UIA_OS=1 serves the ACTING instructions (not the READ-ONLY banner), so the
- *      model is never told it is read-only while run_program/write_file are live.
+ *      model is never told it is read-only while run_program/write_file are live. The same honesty floor holds for the
+ *      BUN_UIA_ALLOW path: a readonly profile that allow-lists an acting tool (click/type) or an fs tool (read_file)
+ *      MUST drop the READ-ONLY banner and emit a startup WARNING — the banner/instructions key off the ACTUAL allowed
+ *      surface, not enabledCategories (which the allow-list never populates).
  *
  * bun test is broken repo-wide for FFI — runnable harness (MCP subprocesses only; no GUI window is opened):
  * Run: bun run example/mcp-security-floor.integration.test.ts
@@ -183,6 +186,34 @@ try {
   roOs.kill();
 }
 
+// 4a — readonly + BUN_UIA_ALLOW=<acting tool>: the allow-list grants click/type/set_value WITHOUT widening
+// enabledCategories, so the honesty banner/instructions MUST track the actual allowed surface — not the profile's
+// categories. A readonly banner that says "NO action/input tools" while type is live mis-tells the model it cannot act.
+const roAllowActing = spawnServer({ BUN_UIA_PROFILE: 'readonly', BUN_UIA_ALLOW: 'type,set_value,click' });
+try {
+  const initReply = await roAllowActing.call('initialize', init);
+  const instructions = initReply.result?.instructions ?? '';
+  assert(!/READ-ONLY under the current server policy/.test(instructions), 'readonly+ALLOW=type/set_value/click does NOT serve the READ-ONLY banner (acting tools are live — the model must not be told it cannot act)');
+  const list = await roAllowActing.call('tools/list', {});
+  const names = new Set((list.result?.tools ?? []).map((tool) => tool.name));
+  assert(names.has('click') && names.has('type') && names.has('set_value'), 'the allow-listed acting tools are actually exposed by tools/list (the banner mismatch is real reach, not theoretical)');
+  await Bun.sleep(50);
+  assert(/readonly profile exposes acting tools via BUN_UIA_ALLOW/.test(roAllowActing.stderr()), 'readonly+ALLOW=<acting> emits a startup WARNING that the banner reads READ-ONLY while acting tools are reachable');
+} finally {
+  roAllowActing.kill();
+}
+
+// 4a' — readonly + BUN_UIA_ALLOW=read_file: an fs tool is live via the allow-list (no BUN_UIA_OS=1), so the os/fs-reach
+// warning must fire off the ACTUAL allowed surface, not enabledCategories (which the allow-list never populates).
+const roAllowFs = spawnServer({ BUN_UIA_PROFILE: 'readonly', BUN_UIA_ALLOW: 'read_file' });
+try {
+  await roAllowFs.call('initialize', init);
+  await Bun.sleep(50);
+  assert(/read-only profile has live os\/fs reach/.test(roAllowFs.stderr()), 'readonly+ALLOW=read_file emits the os/fs-reach warning (the fs tool is live via the allow-list, banner still reads READ-ONLY)');
+} finally {
+  roAllowFs.kill();
+}
+
 // 4b — readonly with audit explicitly disabled: the opt-out must be EXPLICIT and visible (never silent).
 const roAuditOff = spawnServer({ BUN_UIA_PROFILE: 'safe', BUN_UIA_AUDIT: 'off' });
 try {
@@ -236,7 +267,7 @@ try {
 
 console.log(
   failures === 0
-    ? '\nPASS — audit trail on (calls AND policy-refusals), clipboard least-privilege + redacted + fenced, readonly+OS instructions consistent, thrown-error text un-prefixed, inline command-line credentials masked everywhere.'
+    ? '\nPASS — audit trail on (calls AND policy-refusals), clipboard least-privilege + redacted + fenced, readonly+OS/ALLOW instructions consistent (banner never lies while acting/fs is live), thrown-error text un-prefixed, inline command-line credentials masked everywhere.'
     : `\nFAILED — ${failures} assertion(s)`,
 );
 process.exit(failures === 0 ? 0 : 1);
