@@ -87,11 +87,13 @@ import {
   type Selector,
   snapWindow,
   type Snapshot,
+  type StateExpectation,
   type TableData,
   uia,
   undoControl,
   virtualScreen,
   type Window,
+  wgcAvailable,
   windowOnCurrentDesktop,
   windowProcessId,
 } from './index';
@@ -327,6 +329,7 @@ function controlTypeId(value: number | string): number | undefined {
 const SELECTOR_KEYS = new Set(['name', 'nameContains', 'automationId', 'className', 'controlType']);
 // The selector idioms an LLM reaches for first (ARIA/Playwright muscle memory) folded onto the real UIA keys.
 const SELECTOR_ALIASES: Record<string, 'automationId' | 'controlType' | 'name'> = { accessibleName: 'name', id: 'automationId', label: 'name', role: 'controlType', title: 'name', type: 'controlType' };
+const STATE_KEYS = new Set(['enabled', 'expanded', 'selected', 'toggle', 'value', 'valueContains']);
 
 function selectorFrom(value: unknown): Selector {
   const raw = { ...record(value) };
@@ -360,6 +363,24 @@ function selectorFrom(value: unknown): Selector {
   // An empty selector would silently match the window ROOT (a wrong target an AI can't self-correct from) — refuse.
   if (Object.keys(selector).length === 0) throw new Error('empty selector — pass a non-empty selector with name / nameContains / automationId / className / controlType (a number e.g. 50000, or a role name like Button), or target by ref');
   return selector;
+}
+
+/** The wait_for `state` object → a StateExpectation (timeout/interval are filled by the handler). Copies only the
+ *  known typed fields, rejects unknown keys, and refuses an EMPTY state (every predicate field absent would match
+ *  the first poll vacuously — a false "reached" the agent can't self-correct from). */
+function stateFrom(value: unknown): StateExpectation {
+  const raw = record(value);
+  const unknown = Object.keys(raw).filter((key) => !STATE_KEYS.has(key));
+  if (unknown.length > 0) throw new Error(`unknown state key${unknown.length > 1 ? 's' : ''} ${JSON.stringify(unknown)} — valid keys: enabled, expanded, selected, toggle, value, valueContains`);
+  const state: StateExpectation = {};
+  if (typeof raw.enabled === 'boolean') state.enabled = raw.enabled;
+  if (typeof raw.expanded === 'boolean') state.expanded = raw.expanded;
+  if (typeof raw.selected === 'boolean') state.selected = raw.selected;
+  if (typeof raw.toggle === 'boolean') state.toggle = raw.toggle;
+  if (typeof raw.value === 'string') state.value = raw.value;
+  if (typeof raw.valueContains === 'string') state.valueContains = raw.valueContains;
+  if (Object.keys(state).length === 0) throw new Error('empty state — set at least one of enabled / expanded / selected / toggle / value / valueContains (an empty state matches immediately and proves nothing)');
+  return state;
 }
 
 /** `element` is a permission-prompt LABEL, never a target (no handler reads it). An LLM that passes only `element`
@@ -566,6 +587,24 @@ function minimizedCaptureSteer(hWnd: bigint, tool: string): string {
   return `${tool}: 0x${hWnd.toString(16)} is MINIMIZED, so it has no on-screen surface to capture. Restore it first (manage_window {action:"restore"} — cursor-free, no foreground), then retry.`;
 }
 
+/** Capture a window's live pixels, with one COLD-FRAME retry: a freshly-created Direct3D11CaptureFramePool routinely
+ *  misses its first frame inside the 500ms default (the pool is cold), so the very first capture of a just-attached
+ *  window returns null for a reason that has nothing to do with DRM/availability. On a null that is NOT a minimized
+ *  (surfaceless) window and WHERE WGC is actually available, poll once more on a longer deadline before giving up. */
+async function captureWindowLiveWarm(hWnd: bigint): Promise<Awaited<ReturnType<typeof captureWindowLive>>> {
+  const first = await captureWindowLive(hWnd);
+  if (first !== null || isMinimized(hWnd) || !wgcAvailable()) return first;
+  return captureWindowLive(hWnd, { timeoutMs: 2000 });
+}
+
+/** The disambiguated error text for a capture that came back null even after the cold-frame retry — separates the
+ *  genuine 'WGC unavailable' wall from protected/DRM content, so the message stops misattributing a slow cold pool
+ *  (already retried) to DRM. (The minimized case is handled by the caller via minimizedCaptureSteer.) */
+function captureUnavailable(tool: string): string {
+  if (!wgcAvailable()) return `${tool}: Windows.Graphics.Capture is unavailable on this session (locked/headless desktop or a pre-1809 OS); no live capture is possible.`;
+  return `${tool}: Windows.Graphics.Capture returned no frame — the window is most likely protected/DRM content (e.g. a PlayReady media surface), which WGC cannot read.`;
+}
+
 /** The processId of the attached window, or undefined — scopes newPopup to the in-app popup so a cross-process SHELL
  *  popup is never misattributed to an in-app action. */
 function attachedProcessId(): number | undefined {
@@ -707,6 +746,17 @@ function auditCall(tool: string, category: ToolCategory, args: Record<string, un
   if (category === 'read' && auditMode !== 'verbose') return;
   const isError = (result as { isError?: unknown }).isError === true;
   const line = { ts: new Date().toISOString(), tool, category, args: maskArgs(args), ok: !isError, error: isError ? resultText(result).split('\n', 1)[0]?.slice(0, 200) : undefined };
+  try {
+    process.stderr.write(`[bun-uia-audit] ${JSON.stringify(line)}\n`);
+  } catch {}
+}
+/** Emit one forensic audit line for a tools/call REFUSED by the server policy — the intrusion-detection signal a
+ *  least-privilege audit must capture (a confused/jailbroken/prompt-injected agent probing disabled capabilities).
+ *  Logged for EVERY category (a denied read under a deny-list is signal too), unlike auditCall which skips reads
+ *  unless verbose; still honors the explicit BUN_UIA_AUDIT=off opt-out. Args masked by maskArgs. */
+function auditDenied(tool: string, category: ToolCategory, args: Record<string, unknown>): void {
+  if (auditMode === 'off') return;
+  const line = { ts: new Date().toISOString(), tool, category, args: maskArgs(args), ok: false, error: 'DENIED by policy' };
   try {
     process.stderr.write(`[bun-uia-audit] ${JSON.stringify(line)}\n`);
   } catch {}
@@ -1348,12 +1398,24 @@ const TOOLS: McpTool[] = [
     name: 'wait_for',
     category: 'read',
     description:
-      'Wait until a control matching the selector APPEARS in the attached window (or, with gone:true, until it DISAPPEARS — the spinner / "Loading…" / progress-bar / just-dismissed-modal gate), then return a fresh snapshot. On timeout, throws quoting the nearest candidates (appear) or the still-present selector (gone).',
+      'Wait until a control matching the selector APPEARS in the attached window (or, with gone:true, until it DISAPPEARS — the spinner / "Loading…" / progress-bar / just-dismissed-modal gate), then return a fresh snapshot. Pass state to instead retry until the matching control reaches a STATE — the desktop analogue of Playwright expect(locator).toBeChecked()/toHaveValue()/toBeEnabled(): CONFIRM an action landed (a toggle is now on, a set value stuck, an item is now selected/expanded/enabled) without hand-rolling snapshot → parse → sleep → re-snapshot. On timeout, throws quoting the nearest candidates (appear), the still-present selector (gone), or the last-seen state (state).',
     inputSchema: {
       type: 'object',
       properties: {
         selector: SELECTOR_SCHEMA,
         gone: { type: 'boolean', description: 'Wait for the control to DISAPPEAR instead of appear (spinner/loading/modal-dismissed).' },
+        state: {
+          type: 'object',
+          description: 'Retry until the matching control reaches this state (all provided fields must hold at once) instead of merely appearing. Ignored when gone:true.',
+          properties: {
+            enabled: { type: 'boolean', description: 'Wait until the control is enabled (true) / disabled (false).' },
+            expanded: { type: 'boolean', description: 'Wait until an ExpandCollapse control is expanded (true) / collapsed (false).' },
+            selected: { type: 'boolean', description: 'Wait until a SelectionItem is selected (true) / deselected (false).' },
+            toggle: { type: 'boolean', description: 'Wait until a checkbox / toggle is on (true) / off (false).' },
+            value: { type: 'string', description: 'Wait until the control value EQUALS this exact string.' },
+            valueContains: { type: 'string', description: 'Wait until the control value CONTAINS this substring.' },
+          },
+        },
         timeout: { type: 'number', description: 'Milliseconds (default 5000)' },
       },
       required: ['selector'],
@@ -2043,6 +2105,13 @@ const HANDLERS: Record<string, ToolHandler> = {
       await requireAttached().waitForGone(selector, { timeout });
       return withSnapshot(`gone: ${selectorToString(selector)}`);
     }
+    if (args.state !== undefined) {
+      const state = stateFrom(args.state);
+      const reached = await requireAttached().waitForState(selector, { ...state, timeout });
+      const target = named(reached); // name the RESOLVED control, not a double-JSON-encoded echo of the selector
+      reached.release();
+      return withSnapshot(`reached ${JSON.stringify(state)} on ${target}`);
+    }
     const found = await requireAttached().waitFor(selector, { timeout });
     const target = named(found); // name the RESOLVED control, not a double-JSON-encoded echo of the selector
     found.release();
@@ -2157,7 +2226,7 @@ const HANDLERS: Record<string, ToolHandler> = {
     const window = requireAttached();
     const capture = captureWindowRGB(window.hWnd);
     if (capture !== null && !isNearUniform(capture.rgb)) return imageResult(encodePNG(capture.rgb, capture.width, capture.height), `(${originNote(capture.originX, capture.originY, capture.width, capture.height)})`);
-    const live = await captureWindowLive(window.hWnd);
+    const live = await captureWindowLiveWarm(window.hWnd);
     if (live !== null && !isNearUniform(live.rgb))
       return imageResult(encodePNG(live.rgb, live.width, live.height), `(PrintWindow was blank — Windows.Graphics.Capture live frame of the GPU/occluded surface; ${originNote(live.originX, live.originY, live.width, live.height)})`);
     // A minimized window has no surface — both PrintWindow and WGC came back blank. Steer to the cursor-free restore
@@ -2173,10 +2242,10 @@ const HANDLERS: Record<string, ToolHandler> = {
   },
   capture_window: async (args) => {
     const hWnd = resolveHwnd(args);
-    const live = await captureWindowLive(hWnd);
+    const live = await captureWindowLiveWarm(hWnd);
     if (live === null) {
       if (isMinimized(hWnd)) return errorResult(minimizedCaptureSteer(hWnd, 'capture_window'));
-      return errorResult('Windows.Graphics.Capture could not capture this window (protected/DRM content, or WGC unavailable)');
+      return errorResult(captureUnavailable('capture_window'));
     }
     return imageResult(encodePNG(live.rgb, live.width, live.height), `(${originNote(live.originX, live.originY, live.width, live.height)})`);
   },
@@ -2618,10 +2687,10 @@ const HANDLERS: Record<string, ToolHandler> = {
         : errorResult('copy_image: could not set the clipboard image');
     }
     const hWnd = resolveHwnd(args);
-    const live = await captureWindowLive(hWnd);
+    const live = await captureWindowLiveWarm(hWnd);
     if (live === null) {
       if (isMinimized(hWnd)) return errorResult(minimizedCaptureSteer(hWnd, 'copy_image'));
-      return errorResult('copy_image: Windows.Graphics.Capture could not capture this window (protected/DRM content, or WGC unavailable)');
+      return errorResult(captureUnavailable('copy_image'));
     }
     return uia.writeClipboardImage(live)
       ? textResult(`copied a ${live.width}×${live.height} window image to the clipboard — paste it (Ctrl+V / the paste tool) into the target app`)
@@ -2862,6 +2931,8 @@ async function dispatch(request: JsonRpcRequest): Promise<void> {
       const tool = TOOLS.find((entry) => entry.name === name);
       if (tool === undefined) return fail(-32602, `unknown tool: ${name}`);
       if (!toolAllowed(tool)) {
+        // Forensic trail: a refused privilege-escalation probe is exactly the intrusion-detection signal an audit must keep.
+        auditDenied(name, tool.category, record(callParams.arguments));
         // Category-accurate remedy: BUN_UIA_OS=1 enables only os/fs; input/window need a profile bump or an allow-list entry.
         const remedy = tool.category === 'os' || tool.category === 'fs' ? `BUN_UIA_OS=1 (or BUN_UIA_PROFILE=full), or BUN_UIA_ALLOW=${name}` : `BUN_UIA_PROFILE=safe or full, or BUN_UIA_ALLOW=${name}`;
         return reply(errorResult(`tool "${name}" is disabled by the server policy (category "${tool.category}"). Enable it with ${remedy}.`));

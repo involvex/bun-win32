@@ -1,7 +1,9 @@
 /**
  * mcp-security-floor — the deployment-surface security floor the MCP server owes a deployer:
  *   1. AUDIT: every mutating tool call leaves a structured stderr trail (default-on; only widen-able) — set_clipboard
- *      is recorded, with its secret-bearing `text` arg masked to a length, not logged verbatim.
+ *      is recorded, with its secret-bearing `text` arg masked to a length, not logged verbatim. A POLICY-REFUSED call
+ *      is audited too (ok:false, "DENIED by policy") for EVERY category — a denied privilege probe is the intrusion
+ *      signal a least-privilege audit must keep; the explicit BUN_UIA_AUDIT=off opt-out silences denials as well.
  *   2. CLIPBOARD LEAST-PRIVILEGE: read_clipboard is category 'input' (NOT 'read'), so the readonly profile does NOT
  *      expose it — a least-privilege agent cannot exfiltrate the global clipboard (passwords / 2FA / API keys).
  *   3. REDACTION: under an acting profile, read_clipboard masks a planted secret shape (an AKIA… key) instead of
@@ -67,6 +69,21 @@ function spawnServer(env: Record<string, string>): Driver {
 
 const textOf = (m: Rpc): string => m.result?.content?.[0]?.text ?? '';
 
+// Parse the structured forensic audit lines out of stderr (one JSON object per `[bun-uia-audit] {…}` line), so the
+// assertions compare fields, not a brittle key-order regex (the args `{}` would otherwise break a `[^}]*` match).
+type AuditLine = { tool?: string; category?: string; ok?: boolean; error?: string };
+function auditLines(stderr: string): AuditLine[] {
+  const lines: AuditLine[] = [];
+  for (const line of stderr.split('\n')) {
+    const marker = line.indexOf('[bun-uia-audit] ');
+    if (marker < 0) continue;
+    try {
+      lines.push(JSON.parse(line.slice(marker + '[bun-uia-audit] '.length)) as AuditLine);
+    } catch {}
+  }
+  return lines;
+}
+
 let failures = 0;
 function assert(condition: boolean, message: string): void {
   if (condition) console.log(`  ok: ${message}`);
@@ -104,8 +121,36 @@ try {
   assert(!names.includes('read_clipboard'), 'readonly profile does NOT list read_clipboard (no clipboard exfiltration under least-privilege)');
   const blocked = await ro.call('tools/call', { name: 'read_clipboard', arguments: {} });
   assert(blocked.result?.isError === true && /disabled by the server policy/.test(textOf(blocked)), 'read_clipboard is REFUSED under readonly (steered to BUN_UIA_ALLOW=read_clipboard / a higher profile)');
+  await Bun.sleep(50); // let the refusal's audit line flush to stderr
+  const denied = auditLines(ro.stderr()).find((line) => line.tool === 'read_clipboard');
+  assert(denied !== undefined, 'a POLICY-REFUSED tools/call leaves a forensic audit line on stderr (a denied privilege probe is the intrusion signal an audit must keep)');
+  assert(denied?.ok === false && denied?.error === 'DENIED by policy', 'the refused-call audit line records ok:false with a "DENIED by policy" reason');
 } finally {
   ro.kill();
+}
+
+// 2b — a denied READ under a deny-list is signal too: auditDenied logs ALL categories, unlike auditCall (reads skipped unless verbose).
+const deny = spawnServer({ BUN_UIA_PROFILE: 'safe', BUN_UIA_DENY: 'list_windows' });
+try {
+  await deny.call('initialize', init);
+  const blocked = await deny.call('tools/call', { name: 'list_windows', arguments: {} });
+  assert(blocked.result?.isError === true && /disabled by the server policy/.test(textOf(blocked)), 'a deny-listed read tool (list_windows) is REFUSED');
+  await Bun.sleep(50);
+  const deniedRead = auditLines(deny.stderr()).find((line) => line.tool === 'list_windows');
+  assert(deniedRead?.ok === false, 'a denied READ-category tool is STILL audited (deny-list refusals of read tools are logged, not dropped)');
+} finally {
+  deny.kill();
+}
+
+// 2c — the explicit BUN_UIA_AUDIT=off opt-out silences denial lines too (no silent-on for denials).
+const denyOff = spawnServer({ BUN_UIA_PROFILE: 'readonly', BUN_UIA_AUDIT: 'off' });
+try {
+  await denyOff.call('initialize', init);
+  await denyOff.call('tools/call', { name: 'click', arguments: { ref: 'e1' } });
+  await Bun.sleep(50);
+  assert(!/\[bun-uia-audit\]/.test(denyOff.stderr()), 'with BUN_UIA_AUDIT=off, a refused call emits NO audit line (the explicit opt-out is honored for denials too)');
+} finally {
+  denyOff.kill();
 }
 
 // 4 — readonly + BUN_UIA_OS=1: instructions must reflect the LIVE os/fs reach, not the READ-ONLY banner.
@@ -133,5 +178,5 @@ try {
   roAuditOff.kill();
 }
 
-console.log(failures === 0 ? '\nPASS — audit trail on, clipboard least-privilege + redacted + fenced, readonly+OS instructions consistent.' : `\nFAILED — ${failures} assertion(s)`);
+console.log(failures === 0 ? '\nPASS — audit trail on (calls AND policy-refusals), clipboard least-privilege + redacted + fenced, readonly+OS instructions consistent.' : `\nFAILED — ${failures} assertion(s)`);
 process.exit(failures === 0 ? 0 : 1);

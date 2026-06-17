@@ -6,12 +6,13 @@
  *
  * Proof: minimize a window cursor-free, then assert screenshot / capture_window / ocr / click_text each return the
  * MINIMIZED restore steer (not a sliver image or a bare error); restore it cursor-free and assert screenshot no longer
- * reports minimized. The window is closed in teardown.
+ * reports minimized. Also asserts the COLD-FRAME path: the FIRST capture_window of a freshly-visible window yields a
+ * frame (the one-shot warm retry), not the misleading "protected/DRM, or WGC unavailable" error. Window closed in teardown.
  *
  * bun test is broken repo-wide — runnable harness (MCP subprocess + a spawned, UWP, Calculator):
  * Run: bun run example/capture-minimized-steer.integration.test.ts
  */
-import { closeWindow, minimizeWindow, restoreWindow, uia } from '@bun-win32/uia';
+import { closeWindow, isMinimized, minimizeWindow, restoreWindow, uia } from '@bun-win32/uia';
 
 type Rpc = { id?: number; result?: { isError?: boolean; content?: { type?: string; text?: string }[] } };
 const proc = Bun.spawn(['bun', 'run', `${import.meta.dir}/../mcp.ts`], { stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', env: { ...Bun.env, BUN_UIA_PROFILE: 'safe' } });
@@ -66,8 +67,19 @@ try {
   await call('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'capture-min', version: '1' } });
   await Bun.sleep(800);
   await call('tools/call', { name: 'attach', arguments: { hWnd: hx } });
+
+  // Cold-frame: the FIRST capture_window of the freshly-launched, still-visible window must NOT mis-report DRM/unavailable.
+  // A cold Direct3D11CaptureFramePool routinely misses its first frame inside the 500ms default — without the one-shot
+  // warm retry this returned null and the handler emitted the misleading "protected/DRM content, or WGC unavailable".
+  if (!isMinimized(calc.hWnd)) {
+    const cold = await call('tools/call', { name: 'capture_window', arguments: { hWnd: hx } });
+    assert(isImage(cold) || !/protected\/DRM|unavailable/i.test(textOf(cold)), `first capture_window warms past a cold pool to a frame, not a misleading DRM/unavailable error: ${isImage(cold) ? 'image' : textOf(cold).slice(0, 40)}`);
+  } else {
+    console.log('  skip: window came up minimized — cold-frame check needs a visible window');
+  }
+
   minimizeWindow(calc.hWnd);
-  await Bun.sleep(500);
+  for (let waited = 0; !isMinimized(calc.hWnd) && waited < 2000; waited += 100) await Bun.sleep(100); // poll, not a fixed sleep — UWP Calc minimizes slowly
   const steers = (m: Rpc): boolean => m.result?.isError === true && /MINIMIZED/i.test(textOf(m)) && /restore/i.test(textOf(m));
 
   const shot = await call('tools/call', { name: 'screenshot', arguments: {} });
@@ -88,5 +100,5 @@ try {
   uia.uninitialize();
 }
 
-console.log(failures === 0 ? '\nPASS — capture/OCR tools steer a minimized window to the cursor-free restore instead of dead-ending.' : `\nFAILED — ${failures} assertion(s)`);
+console.log(failures === 0 ? '\nPASS — capture/OCR tools steer a minimized window to restore; the first capture of a fresh window warms past a cold frame.' : `\nFAILED — ${failures} assertion(s)`);
 process.exit(failures === 0 ? 0 : 1);
