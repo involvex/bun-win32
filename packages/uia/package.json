@@ -128,6 +128,7 @@
     "example:grid-cell": "bun ./example/grid-cell.integration.test.ts",
     "example:harness-asserted-guard": "bun ./example/harness-asserted-guard.integration.test.ts",
     "example:hello-uia": "bun ./example/hello-uia.ts",
+    "example:hresult-named": "bun ./example/hresult-named.integration.test.ts",
     "example:inline-state": "bun ./example/inline-state.integration.test.ts",
     "example:inspector": "bun ./example/inspector.ts",
     "example:integrity-level": "bun ./example/integrity-level.integration.test.ts",

@@ -4,7 +4,17 @@ import { CFunction, FFIType, type Pointer, read } from 'bun:ffi';
 
 import Combase from '@bun-win32/combase';
 
-import { IUNKNOWN_RELEASE, S_OK } from './constants';
+import { IUNKNOWN_RELEASE, S_OK, UIA_E_ELEMENTNOTAVAILABLE, UIA_E_ELEMENTNOTENABLED, UIA_E_NOCLICKABLEPOINT, UIA_E_NOTSUPPORTED, UIA_E_PROXYASSEMBLYNOTLOADED } from './constants';
+
+// The five well-known UI Automation HRESULTs (SDK um/UIAutomationCore.h), each paired with the exact
+// next step a cold LLM should take — so a COM failure names its own recovery instead of leaking raw hex.
+const UIA_HRESULTS = new Map<number, string>([
+  [UIA_E_ELEMENTNOTENABLED, 'UIA_E_ELEMENTNOTENABLED (the control is disabled — wait_for {state:{enabled:true}} or pick an enabled target)'],
+  [UIA_E_ELEMENTNOTAVAILABLE, 'UIA_E_ELEMENTNOTAVAILABLE (the element/window no longer exists — call list_windows then attach a live window)'],
+  [UIA_E_NOCLICKABLEPOINT, 'UIA_E_NOCLICKABLEPOINT (no clickable point — act by pattern via invoke/select, or click_point at its bounds)'],
+  [UIA_E_PROXYASSEMBLYNOTLOADED, 'UIA_E_PROXYASSEMBLYNOTLOADED (the legacy-control proxy failed to load — inspect_element and act by a supported pattern)'],
+  [UIA_E_NOTSUPPORTED, 'UIA_E_NOTSUPPORTED (this control does not support that pattern — inspect_element to see its can: list and pick a supported verb)'],
+]);
 
 // Keyed by the resolved method pointer (a plain number — user-mode addresses fit 2^53 and number
 // Map keys hash faster than bigint in JSC). A COM method has exactly one signature, so the method
@@ -62,9 +72,11 @@ export function guid(text: string): Buffer {
   return out;
 }
 
-/** Format an HRESULT as `0xXXXXXXXX`. */
+/** Format an HRESULT as `0xXXXXXXXX`, appending the name + recovery hint for the five well-known UIA codes. */
 export function hresult(hr: number): string {
-  return `0x${(hr >>> 0).toString(16).padStart(8, '0')}`;
+  const hex = `0x${(hr >>> 0).toString(16).padStart(8, '0')}`;
+  const named = UIA_HRESULTS.get(hr | 0);
+  return named === undefined ? hex : `${hex} ${named}`;
 }
 
 /** Test hook: the number of memoized per-method CFunction invokers. The perf-regression gate asserts a

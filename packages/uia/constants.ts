@@ -10,8 +10,16 @@
 
 export const S_OK = 0x0000_0000;
 export const S_FALSE = 0x0000_0001;
+/** The control is disabled — its pattern method refuses to act. */
+export const UIA_E_ELEMENTNOTENABLED = 0x8004_0200 | 0;
 /** An element pointer that has outlived its provider (apartment affinity / app closed). Tolerate it. */
 export const UIA_E_ELEMENTNOTAVAILABLE = 0x8004_0201 | 0;
+/** No on-screen clickable point exists (occluded / zero-size / virtualized). */
+export const UIA_E_NOCLICKABLEPOINT = 0x8004_0202 | 0;
+/** The UIA proxy provider assembly for this legacy control failed to load. */
+export const UIA_E_PROXYASSEMBLYNOTLOADED = 0x8004_0203 | 0;
+/** The element does not support the requested control pattern. */
+export const UIA_E_NOTSUPPORTED = 0x8004_0204 | 0;
 
 /** IUnknown::Release — vtable slot 2 on every COM interface. */
 export const IUNKNOWN_RELEASE = 2;
@@ -245,8 +253,13 @@ export const SLOT = {
   // IUIAutomationElementArray
   get_Length: 3, // PROVEN
   GetElement: 4, // PROVEN
-  // IUIAutomationTreeWalker
+  // IUIAutomationTreeWalker (verified vs UIAutomationClient.h IUIAutomationTreeWalkerVtbl: GetParentElement 3,
+  // GetFirstChildElement 4, GetLastChildElement 5, GetNextSiblingElement 6, GetPreviousSiblingElement 7,
+  // NormalizeElement 8, then the *BuildCache variants 9-13 in the same order — GetFirstChildElementBuildCache 10,
+  // GetNextSiblingElementBuildCache 12). The BuildCache child/sibling enumeration is the budget-bounded snapshot walk.)
   GetParentElement: 3,
+  GetFirstChildElementBuildCache: 10,
+  GetNextSiblingElementBuildCache: 12,
   // IUIAutomationInvokePattern
   Invoke: 3, // PROVEN (Calculator 5+3=8)
   // IUIAutomationValuePattern + IUIAutomationRangeValuePattern (SetValue/get_CurrentValue share slot numbers)
