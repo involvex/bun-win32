@@ -33,7 +33,7 @@ function assert(condition: boolean, message: string): void {
   }
 }
 
-// --- pure layer (no window) ---
+// pure layer (no window)
 console.log('\n[1] pure layer');
 assert(needsSubtreeFilter({ has: { name: 'Five' } }) === true, 'needsSubtreeFilter true for { has }');
 assert(needsSubtreeFilter({ hasText: 'Five' }) === true, 'needsSubtreeFilter true for { hasText }');

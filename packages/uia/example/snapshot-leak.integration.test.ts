@@ -32,7 +32,7 @@ for (let attempt = 0; attempt < 40 && notepad === 0n; attempt += 1) {
 }
 
 // instrument Element.prototype: count releases + materialized children, and inject a throw mid-walk.
-const proto = Element.prototype as unknown as { release(): void; readonly cachedChildren: Element[]; readonly cachedControlType: number };
+const proto = Element.prototype;
 const releaseDescriptor = Object.getOwnPropertyDescriptor(proto, 'release');
 const childrenDescriptor = Object.getOwnPropertyDescriptor(proto, 'cachedChildren');
 const controlTypeDescriptor = Object.getOwnPropertyDescriptor(proto, 'cachedControlType');
@@ -48,7 +48,7 @@ try {
     await Bun.sleep(500);
     const win = uia.attach(notepad);
     Object.defineProperty(proto, 'release', { configurable: true, value() { if (armed) releases += 1; return releaseDescriptor!.value.call(this); } });
-    Object.defineProperty(proto, 'cachedChildren', { configurable: true, get() { const kids = childrenDescriptor!.get!.call(this) as Element[]; if (armed) materialized += kids.length; return kids; } });
+    Object.defineProperty(proto, 'cachedChildren', { configurable: true, get() { const kids: Element[] = childrenDescriptor!.get!.call(this); if (armed) materialized += kids.length; return kids; } });
     Object.defineProperty(proto, 'cachedControlType', { configurable: true, get() { if (armed && ++controlTypeReads === THROW_AT) throw new Error('injected mid-walk fault'); return controlTypeDescriptor!.get!.call(this); } });
 
     armed = true;

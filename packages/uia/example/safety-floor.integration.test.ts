@@ -18,7 +18,7 @@
  */
 import { captureWindowLive, closeWindow, disposeWgc, Element, findWindow, msaaTree, uia, vcall, wgcAvailable } from '@bun-win32/uia';
 
-// --- child mode: the WGC lifecycle loop, run in a subprocess so a segfault surfaces as a non-zero exit ---
+// child mode: the WGC lifecycle loop, run in a subprocess so a segfault surfaces as a non-zero exit
 if (Bun.env.SAFETY_CHILD === 'wgc') {
   uia.initialize();
   const available = wgcAvailable(); // build + cache the device bundle (false on a locked/headless box)
@@ -49,7 +49,7 @@ function assert(condition: boolean, message: string): void {
   }
 }
 
-// --- B. null interface pointer → catchable Error, not a crash (in-process; the guard makes it safe) ---
+// B. null interface pointer → catchable Error, not a crash (in-process; the guard makes it safe)
 console.log('\n[B] null interface pointer guard');
 let vcallThrew = '';
 try {
@@ -68,7 +68,7 @@ try {
 }
 assert(getterThrew.includes('null interface pointer'), 'Element(0n).name throws via the vcall chokepoint (not a segfault)');
 
-// --- C. MSAA accChildCount clamp (arithmetic + the real walk still works) ---
+// C. MSAA accChildCount clamp (arithmetic + the real walk still works)
 console.log('\n[C] MSAA child-count clamp');
 assert(Math.min(0x7fff_ffff, 0x0001_0000) === 0x0001_0000, 'a 2.1B child count clamps to 65536 (a 1 MB alloc, not ~34 GB)');
 uia.initialize();
@@ -83,13 +83,13 @@ assert(tree !== null, 'msaaTree still returns a tree (the hoisted IID did not br
 if (calcHwnd !== 0n) closeWindow(calcHwnd); // close the throwaway Calculator
 uia.uninitialize();
 
-// --- A. WGC bundle lifecycle subprocess: init → capture → uninitialize → capture ×3, clean + rebuilt ---
+// A. WGC bundle lifecycle subprocess: init → capture → uninitialize → capture ×3, clean + rebuilt
 console.log('\n[A] WGC bundle lifecycle (subprocess; exit-code asserted)');
 const child = Bun.spawn([process.execPath, import.meta.path], { env: { ...Bun.env, SAFETY_CHILD: 'wgc' }, stdout: 'ignore', stderr: 'inherit' });
 const childExit = await child.exited;
 assert(childExit === 0, `init→capture→uninitialize→capture ×3 stayed clean and the post-uninitialize bundle rebuilt (exit ${childExit}; crash→non-zero, stale-bundle failure→2)`);
 
-// --- D. slot-gate green with WGC/MSAA coverage ---
+// D. slot-gate green with WGC/MSAA coverage
 console.log('\n[D] slot-gate green + WGC/MSAA coverage');
 const gate = Bun.spawn(['bun', 'test', 'slot-gate.test.ts'], { cwd: import.meta.dir.replace(/[/\\]example$/, ''), stdout: 'pipe', stderr: 'pipe' });
 const gateOut = `${await new Response(gate.stdout).text()}${await new Response(gate.stderr).text()}`;

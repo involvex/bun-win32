@@ -24,13 +24,13 @@ function assert(condition: boolean, message: string): void {
 
 uia.initialize();
 try {
-  // --- process table (toolhelp32) ---
+  // process table (toolhelp32)
   const processes = uia.listProcesses();
   assert(processes.length > 10 && processes.some((process) => /explorer\.exe/i.test(process.name)), `listProcesses enumerated ${processes.length} processes (incl. explorer.exe)`);
   const explorerPid = await uia.waitForProcess('explorer.exe', { timeout: 4000 });
   assert(explorerPid > 0, `waitForProcess('explorer.exe') resolved (pid ${explorerPid}, already running)`);
 
-  // --- window lifecycle + focus hook ---
+  // window lifecycle + focus hook
   const events: string[] = [];
   const watcher = uia.watchWindows((event) => {
     if (event.className === 'Notepad' || /Notepad/.test(event.title)) events.push(event.type);
