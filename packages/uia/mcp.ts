@@ -41,6 +41,7 @@ import {
   isSecureDesktopActive,
   isWindow,
   isWindowVisible,
+  javaTree,
   listMonitors,
   maximizeWindow,
   middleClickAt,
@@ -70,6 +71,7 @@ import {
   raiseWindow,
   type RefNode,
   renderDiff,
+  renderJavaTree,
   renderSnapshot,
   renderWindowTree,
   restoreWindow,
@@ -558,12 +560,12 @@ function snapshotText(maxDepth?: number, rootName?: string): string {
     // can narrow with {maxDepth}/{root}).
     if (root === undefined && body === lastSnapshotBody && !body.includes('more nodes — narrow with'))
       return stampRefs(
-        `${header}\n(no UI change since the last snapshot — refs unchanged)${coldTreeNote(current?.marks.length ?? 0, attached !== null && isMinimized(attached.hWnd), attached !== null && isUipiWalled(attached.hWnd), attached !== null ? cloakReason(attached.hWnd) : 0, maxDepth)}${foregroundNudge()}`,
+        `${header}\n(no UI change since the last snapshot — refs unchanged)${coldTreeNote(current?.marks.length ?? 0, attached !== null && isMinimized(attached.hWnd), attached !== null && isUipiWalled(attached.hWnd), attached !== null ? cloakReason(attached.hWnd) : 0, maxDepth, attached?.className ?? '')}${foregroundNudge()}`,
       ); // coldTreeNote is '' for a warm tree; on a still-COLD re-snapshot it re-surfaces the restore/activate/elevate steer the bare line would have suppressed (or a maxDepth-cap steer)
     lastSnapshotBody = body;
     refGen += 1; // an explicit re-ground renumbers refs — invalidate any the model still holds
     return stampRefs(
-      `${header}\n${body}${root === undefined ? coldTreeNote(current?.marks.length ?? 0, attached !== null && isMinimized(attached.hWnd), attached !== null && isUipiWalled(attached.hWnd), attached !== null ? cloakReason(attached.hWnd) : 0, maxDepth) + foregroundNudge() : ''}`,
+      `${header}\n${body}${root === undefined ? coldTreeNote(current?.marks.length ?? 0, attached !== null && isMinimized(attached.hWnd), attached !== null && isUipiWalled(attached.hWnd), attached !== null ? cloakReason(attached.hWnd) : 0, maxDepth, attached?.className ?? '') + foregroundNudge() : ''}`,
     );
   } finally {
     root?.release();
@@ -661,7 +663,7 @@ function withSnapshot(message: string): object {
   const bodyUnchanged = body === lastSnapshotBody;
   const noUiChange = (): object =>
     textResult(
-      `${message}\n\n${header}\n(no UI change since the last snapshot — refs unchanged)${coldTreeNote(current?.marks.length ?? 0, attached !== null && isMinimized(attached.hWnd), attached !== null && isUipiWalled(attached.hWnd), attached !== null ? cloakReason(attached.hWnd) : 0)}${foregroundNudge()}`,
+      `${message}\n\n${header}\n(no UI change since the last snapshot — refs unchanged)${coldTreeNote(current?.marks.length ?? 0, attached !== null && isMinimized(attached.hWnd), attached !== null && isUipiWalled(attached.hWnd), attached !== null ? cloakReason(attached.hWnd) : 0, undefined, attached?.className ?? '')}${foregroundNudge()}`,
     ); // refs identical → generation held; coldTreeNote ('' when warm) re-surfaces recovery steer on a still-cold tree
   if (bodyUnchanged && !truncated) return noUiChange();
   if (prior !== null) {
@@ -682,7 +684,7 @@ function withSnapshot(message: string): object {
   refGen += 1; // a full re-dump renumbers refs in traversal order — bump so the model's pre-re-render refs are rejected
   return textResult(
     stampRefs(
-      `${message}\n\n${header}\n${body}${coldTreeNote(current?.marks.length ?? 0, attached !== null && isMinimized(attached.hWnd), attached !== null && isUipiWalled(attached.hWnd), attached !== null ? cloakReason(attached.hWnd) : 0)}${foregroundNudge()}`,
+      `${message}\n\n${header}\n${body}${coldTreeNote(current?.marks.length ?? 0, attached !== null && isMinimized(attached.hWnd), attached !== null && isUipiWalled(attached.hWnd), attached !== null ? cloakReason(attached.hWnd) : 0, undefined, attached?.className ?? '')}${foregroundNudge()}`,
     ),
   );
 }
@@ -1408,6 +1410,16 @@ const TOOLS: McpTool[] = [
     inputSchema: { type: 'object', properties: { hWnd: { type: ['string', 'number'], description: HWND_DESC }, maxDepth: { type: 'number', description: 'Default 8' } } },
   },
   {
+    name: 'java_tree',
+    category: 'read',
+    description:
+      'The Java Access Bridge accessibility tree (role/name/states/bounds) of a Java Swing/AWT (and JavaFX where it bridges to JAB) window — a SunAwtFrame/SunAwtDialog exposes NOTHING to UIA or MSAA (only its bare top-level frame), but the JVM speaks the Access Bridge. Reads it cursor-free / background (no focus theft). Each node reports its screen bounds (@x,y WxH) — to ACT on a control, click_point at the center of its bounds. Returns null with a hint if the window is not a bridge-visible Java window (the JVM needs the Access Bridge enabled: `jabswitch -enable`, or launch with -Djavax.accessibility.assistive_technologies=com.sun.java.accessibility.AccessBridge).',
+    inputSchema: {
+      type: 'object',
+      properties: { hWnd: { type: ['string', 'number'], description: HWND_DESC }, maxDepth: { type: 'number', description: 'Default 24' }, maxNodes: { type: 'number', description: 'Default 2000 — total nodes before truncation' } },
+    },
+  },
+  {
     name: 'list_monitors',
     category: 'read',
     description: 'List the physical monitors (index, full bounds, work area, primary flag) — the geometry an agent needs to place windows or pick a region to screen_capture.',
@@ -1582,7 +1594,7 @@ for (const tool of TOOLS) {
 const BLIND_SPOTS: { test: RegExp; note: string }[] = [
   {
     test: /^SunAwt/,
-    note: 'Java Swing/AWT window — its controls are invisible to UIA and MSAA (you will see only the frame). Java exposes its tree via the Java Access Bridge: run `jabswitch /enable` and RESTART the app, then re-attach. Until then, screen_capture + ocr / click_text is the only way to read/drive it.',
+    note: 'Java Swing/AWT window — its controls are invisible to UIA and MSAA (you will see only the frame). Read its real tree with java_tree (the Java Access Bridge — role/name/states/bounds, cursor-free). If java_tree returns empty, the JVM lacks the Access Bridge: run `jabswitch -enable` and RESTART the app (or launch it with -Djavax.accessibility.assistive_technologies=com.sun.java.accessibility.AccessBridge); failing that, screen_capture + ocr / click_text.',
   },
   { test: /^Tk/, note: 'Tk/Tkinter window — its widgets are custom-drawn with no a11y bridge, invisible to UIA and MSAA (you will see only anonymous panes). screen_capture + ocr / click_text is the only way to read/drive it.' },
   {
@@ -2130,6 +2142,14 @@ const HANDLERS: Record<string, ToolHandler> = {
   msaa_tree: (args) => {
     const tree = uia.msaaTree(resolveHwnd(args), typeof args.maxDepth === 'number' ? args.maxDepth : 8);
     return textResult(tree === null ? '(no MSAA/IAccessible tree for this window)' : formatMsaa(tree));
+  },
+  java_tree: (args) => {
+    const tree = javaTree(resolveHwnd(args), { maxDepth: typeof args.maxDepth === 'number' ? args.maxDepth : 24, maxNodes: typeof args.maxNodes === 'number' ? args.maxNodes : 2000 });
+    return textResult(
+      tree === null
+        ? '(not a bridge-visible Java window — if this is a Swing/AWT/JavaFX app, its JVM must have the Java Access Bridge enabled: run `jabswitch -enable` then restart the app, or launch it with -Djavax.accessibility.assistive_technologies=com.sun.java.accessibility.AccessBridge. Otherwise use ocr / screen_capture for its pixels.)'
+        : renderJavaTree(tree),
+    );
   },
   list_monitors: () =>
     textResult(

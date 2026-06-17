@@ -370,8 +370,13 @@ export function capSnapshot(text: string, maxChars: number): string {
  *  their UIA/a11y tree on demand and tear it down when idle, so a just-attached or long-idle window can read
  *  empty on the first snapshot; a genuinely tree-less surface (game/canvas/custom-draw) also reads empty. The
  *  note tells the agent how to recover rather than give up. Empty string when there ARE controls. */
-export function coldTreeNote(markCount: number, minimized = false, walled = false, cloaked = 0, maxDepth?: number): string {
+export function coldTreeNote(markCount: number, minimized = false, walled = false, cloaked = 0, maxDepth?: number, className = ''): string {
   if (markCount > 0) return '';
+  // A Java window (SunAwt*) exposes NOTHING to UIA/MSAA at ANY depth — re-snapshotting / raising maxDepth / restoring
+  // never builds a tree. The Access Bridge is the real way in, and it reads background/minimized/cloaked alike. (A
+  // UIPI-walled Java window is the exception — UIPI blocks the bridge's SendMessage too, so let the walled steer win.)
+  if (/^SunAwt/.test(className) && !walled)
+    return '\n\n(0 actionable controls — this is a Java window (SunAwt*), invisible to UIA/MSAA. Read its REAL tree with java_tree (the Java Access Bridge — role/name/states/bounds, cursor-free/background; each node carries screen bounds you can click_point). If java_tree returns empty the JVM needs the Access Bridge enabled (`jabswitch -enable` then restart the app, or launch with -Djavax.accessibility.assistive_technologies=com.sun.java.accessibility.AccessBridge); failing that, screen_capture + ocr / click_text.)';
   // A small maxDepth caps the tree ABOVE the window's interactable controls — that is NOT a cold tree, so the generic
   // "re-snapshot to build it" steer would loop forever at the same depth. Steer to raising maxDepth instead. (UIPI /
   // minimized / cloaked are real conditions that take priority — they read empty at any depth.)

@@ -80,6 +80,7 @@ export { type DiffNode, diffTrees, refsRenumbered, type RenameChange, renderDiff
 export { attach, Element, focused, fromHandle, fromPoint, launch, root, Window } from './element';
 export { listProcesses, waitForProcess, waitForWindow, waitForWindowGone, watchWindows, type WindowEvent, type WindowEventType, type WindowMatch, type WindowWatcher } from './events';
 export { type IdleOptions, waitForIdle } from './idle';
+export { isJavaWindow, type JavaNode, javaTree, renderJavaTree } from './jab';
 export {
   clickAt,
   copyFromControl,

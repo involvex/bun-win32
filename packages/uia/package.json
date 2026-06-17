@@ -79,6 +79,7 @@
     "idle.ts",
     "index.ts",
     "input.ts",
+    "jab.ts",
     "marks.ts",
     "match.ts",
     "mcp.ts",
