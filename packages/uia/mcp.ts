@@ -305,6 +305,11 @@ function record(value: unknown): Record<string, unknown> {
 
 function requireString(args: Record<string, unknown>, key: string): string {
   const value = args[key];
+  // `ref` is the single most common cold-start stumble — a model reaches for click/invoke/type by intent before it has
+  // grounded a snapshot. Match the rest of the surface's actionable-error doctrine instead of dead-ending on a bare
+  // "missing argument": point at the snapshot-first path and the by-selector verbs that need no ref.
+  if (key === 'ref' && typeof value !== 'string')
+    throw new Error('missing required argument: ref — a ref comes from a snapshot (attach returns one; or call desktop_snapshot), then pass it VERBATIM (e.g. e5#3). To act by name with no ref, use find_and_act {selector, do} / reveal {selector}.');
   if (typeof value !== 'string') throw new Error(`missing required string argument: ${key}`);
   return value;
 }
