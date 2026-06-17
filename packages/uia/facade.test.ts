@@ -24,3 +24,12 @@ test('formatNoMatch caps the candidate list at eight', () => {
   const message = formatNoMatch({ name: 'x' }, 'W', many);
   expect(message.match(/c\d+/g)?.length).toBe(8);
 });
+
+test('formatNoMatch names the available control types when a controlType missed and nothing ranked by name', () => {
+  const message = formatNoMatch({ controlType: ControlType.Edit }, 'Untitled - Notepad', [], ['Document', 'Text', 'Button']);
+  expect(message).toBe('no element matched { controlType: Edit } in "Untitled - Notepad" (no controlType "Edit" here — this window exposes: Document, Text, Button — retry with one of those, or drop controlType)');
+});
+
+test('formatNoMatch suppresses the controlType clause when names ranked (existing name-miss path is unchanged)', () => {
+  expect(formatNoMatch({ controlType: ControlType.Document }, 'Untitled - Notepad', ['Text editor'], ['Document', 'Text'])).toBe('no element matched { controlType: Document } in "Untitled - Notepad" — nearest: "Text editor"');
+});

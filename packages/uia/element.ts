@@ -461,6 +461,15 @@ export class Element {
     const candidates = this.findAll(selector.controlType !== undefined ? { controlType: selector.controlType } : {});
     const names = candidates.slice(0, 200).map((candidate) => candidate.name); // read a WIDE pool of Names so formatNoMatch can RANK the nearest (it renders only the top 8); a low cap here would hide the relevant candidate on a >20-descendant window. Runs only on the rare no-match error path.
     for (const candidate of candidates) candidate.release();
+    // A controlType filter that matched NOTHING teaches a cold agent nothing — the most universal first move (Edit, to type
+    // into a text box) misses on modern WinUI/Notepad (which expose Document/Text). Run a SECOND unfiltered scan and surface
+    // the DISTINCT control types actually present so the next retry can pick one (or drop controlType). Only on the empty path.
+    if (selector.controlType !== undefined && candidates.length === 0) {
+      const present = this.findAll({});
+      const availableControlTypes = [...new Set(present.slice(0, 200).map((element) => element.controlTypeName))].sort().slice(0, 12);
+      for (const element of present) element.release();
+      return formatNoMatch(selector, this.name, names, availableControlTypes);
+    }
     return formatNoMatch(selector, this.name, names);
   }
 
