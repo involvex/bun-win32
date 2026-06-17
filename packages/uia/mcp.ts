@@ -121,7 +121,7 @@ const PROTOCOL_VERSION = '2025-11-25';
 const SUPPORTED_VERSIONS = new Set(['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']);
 const SERVER_INFO = { name: 'bun-uia', version: '1.8.0' }; // keep in sync with package.json (scripts/published-deps.ts gates this)
 const INSTRUCTIONS =
-  'Drive Windows desktop apps via the UI Automation tree — and beyond it. Call list_windows, then attach (by hWnd or exact title — className is reliable only for single-window classes like Shell_TrayWnd, not the Chromium/Electron family) — attach ALREADY returns a ref-keyed tree, so act on those refs directly; call desktop_snapshot only to RE-ground after refs go stale (e.g. Button "Five" [ref=e49#1]); pass that ref VERBATIM (with its #generation tag) to click/invoke/type/toggle/set_value/inspect_element. Refs are valid ONLY for the most recent snapshot — every action returns a fresh one; re-ground from it. A ref from before a re-render is REJECTED (not silently mis-resolved), so always use the refs from the latest snapshot/delta. To stay cheap, an action that changes little returns just a "Δ" delta (the +/-/~ changes, with refs on appeared/renamed) instead of the full tree — your other refs stay valid; desktop_snapshot {maxDepth} bounds the tree size when a window is large. Prefer invoke/set_value/toggle/scroll (cursor-free — they need no focus and work on a minimized, background, occluded, or locked window — for a classic Win32/HWND app: set_value posts WM_SETTEXT, invoke/toggle on a "Button"-class control post BM_CLICK, all focus-clean — the raw UIA Value/Toggle/Invoke pattern would instead STEAL FOREGROUND to the control via the MSAA bridge, so these tools route around it; a UWP/WinUI store app SUSPENDS its UI tree when minimized or fully backgrounded, so its tree reads empty and posted actions may not land until you restore/raise it) over click. To SEE beyond the attached window (a 2nd monitor, a game/browser, a composited surface, or anything with no window) use screen_capture; to see a SPECIFIC window even when occluded, in the background, or GPU-composited (where a plain screenshot is blank) use capture_window (Windows.Graphics.Capture); turn a pixel into a control with inspect_point. screenshot auto-falls-back PrintWindow → WGC → desktop-region. Read legacy/owner-draw windows with native_tree/msaa_tree. drag and real-cursor clicks move the actual mouse; SendInput-based input (sendKeys, press_key chord, hold_key, drag, and the type/paste fallback for a control with no own HWND) needs an unlocked, foregrounded desktop — the posted cursor-free paths do not: type (WM_CHAR) / paste (WM_PASTE) / press_key {ref} on an own-HWND control, plus set_value/invoke/toggle. launch/run/file tools and manage_window may be disabled by the server policy (BUN_UIA_PROFILE).';
+  'Drive Windows desktop apps via the UI Automation tree — and beyond it. Call list_windows, then attach (by hWnd or exact title — className is reliable only for single-window classes like Shell_TrayWnd, not the Chromium/Electron family) — attach ALREADY returns a ref-keyed tree, so act on those refs directly; call desktop_snapshot only to RE-ground after refs go stale (e.g. Button "Five" [ref=e49#1]); pass that ref VERBATIM (with its #generation tag) to click/invoke/type/toggle/set_value/inspect_element. Refs are valid ONLY for the most recent snapshot — every action returns a fresh one; re-ground from it. A ref from before a re-render is REJECTED (not silently mis-resolved), so always use the refs from the latest snapshot/delta. To stay cheap, an action that changes little returns just a "Δ" delta (the +/-/~ changes, with refs on appeared/renamed) instead of the full tree — your other refs stay valid; for a HIGH-DENSITY window (a non-virtualized LOB grid / toolbar / icon-wall with thousands of sibling controls) pass desktop_snapshot {maxNodes} (default 1500) to bound the walk — maxDepth caps DEPTH only and does NOT bound a flat/wide tree — or {root} to scope into one subtree. Prefer invoke/set_value/toggle/scroll (cursor-free — they need no focus and work on a minimized, background, occluded, or locked window — for a classic Win32/HWND app: set_value posts WM_SETTEXT, invoke/toggle on a "Button"-class control post BM_CLICK, all focus-clean — the raw UIA Value/Toggle/Invoke pattern would instead STEAL FOREGROUND to the control via the MSAA bridge, so these tools route around it; a UWP/WinUI store app SUSPENDS its UI tree when minimized or fully backgrounded, so its tree reads empty and posted actions may not land until you restore/raise it) over click. To SEE beyond the attached window (a 2nd monitor, a game/browser, a composited surface, or anything with no window) use screen_capture; to see a SPECIFIC window even when occluded, in the background, or GPU-composited (where a plain screenshot is blank) use capture_window (Windows.Graphics.Capture); turn a pixel into a control with inspect_point. screenshot auto-falls-back PrintWindow → WGC → desktop-region. Read legacy/owner-draw windows with native_tree/msaa_tree. drag and real-cursor clicks move the actual mouse; SendInput-based input (sendKeys, press_key chord, hold_key, drag, and the type/paste fallback for a control with no own HWND) needs an unlocked, foregrounded desktop — the posted cursor-free paths do not: type (WM_CHAR) / paste (WM_PASTE) / press_key {ref} on an own-HWND control, plus set_value/invoke/toggle. launch/run/file tools and manage_window may be disabled by the server policy (BUN_UIA_PROFILE).';
 // Shown instead of INSTRUCTIONS when the policy enables no 'input' category — so the system-prompt guidance never
 // describes action tools that tools/list does not expose (a readonly/restricted profile).
 const INSTRUCTIONS_READONLY =
@@ -509,16 +509,17 @@ function resolveHwnd(args: Record<string, unknown>): bigint {
 const SNAPSHOT_COLD_REFS = 5; // a Chromium window with web roots but fewer refs than this is a cold / torn-down a11y tree
 const SNAPSHOT_WARMUP_MAX = 6; // bounded re-queries to warm a cold Chromium tree
 const SNAPSHOT_WARMUP_INTERVAL = 200; // ms between warm-up re-queries
+const SNAPSHOT_MAX_NODES = 1_500; // default node budget — a dense non-virtualized panel (LOB grid/toolbar/icon-wall) costs O(this), not O(N); matches jab.ts's 2000-class cap and keeps a flat-tree snapshot ~sub-second instead of ~7s
 
 /** Build one ref-keyed snapshot of the whole window, splicing in any Chromium web roots; retries once on a
  *  transient cache fail. Also reports whether the window is Chromium (has web roots) for the cold-tree warm-up. */
-function buildWindowSnapshot(window: Window, maxDepth?: number): { snapshot: Snapshot; chromium: boolean } {
+function buildWindowSnapshot(window: Window, maxDepth?: number, maxNodes: number = SNAPSHOT_MAX_NODES): { snapshot: Snapshot; chromium: boolean } {
   for (let attempt = 0; ; attempt += 1) {
     // Chromium/Electron host their web/editor DOM in a child fragment the top-level walk misses — splice it in.
     const webRoots = window.webRoots();
     const chromium = webRoots.length > 0;
     try {
-      return { snapshot: uia.snapshot(window, { ...(maxDepth !== undefined ? { maxDepth } : {}), extraRoots: webRoots }), chromium };
+      return { snapshot: uia.snapshot(window, { ...(maxDepth !== undefined ? { maxDepth } : {}), maxNodes, extraRoots: webRoots }), chromium };
     } catch (error) {
       if (attempt >= 1) throw error;
       Bun.sleepSync(150);
@@ -531,16 +532,16 @@ function buildWindowSnapshot(window: Window, maxDepth?: number): { snapshot: Sna
 /** Rebuild the ref-keyed snapshot of the attached window, releasing the prior generation. Retries once after a
  *  short settle: BuildUpdatedCache can transiently fail while the view is mid-render. Leaves `current` null (not
  *  a dangling disposed snapshot) and rethrows if it cannot rebuild. */
-function rebuildSnapshot(maxDepth?: number, root?: Element): { header: string; tree: RefNode } {
+function rebuildSnapshot(maxDepth?: number, root?: Element, maxNodes: number = SNAPSHOT_MAX_NODES): { header: string; tree: RefNode } {
   const window = requireAttached();
   current?.dispose();
   current = null;
   let snapshot: Snapshot;
   if (root !== undefined) {
     // Scoped re-grounding on a sub-element: just that subtree, no window-level web-root splice.
-    snapshot = uia.snapshot(root, maxDepth !== undefined ? { maxDepth } : {});
+    snapshot = uia.snapshot(root, { maxNodes, ...(maxDepth !== undefined ? { maxDepth } : {}) });
   } else {
-    let { snapshot: built, chromium } = buildWindowSnapshot(window, maxDepth);
+    let { snapshot: built, chromium } = buildWindowSnapshot(window, maxDepth, maxNodes);
     current = built; // hold a disposable handle so a throw mid-warm-up can't orphan it (the next rebuild disposes it; dispose is idempotent)
     // Chromium/Electron build their a11y tree on demand and tear it down when idle, so a just-attached or
     // long-idle browser's first snapshot can be sparse. Re-querying triggers the rebuild; poll (bounded) until
@@ -548,7 +549,7 @@ function rebuildSnapshot(maxDepth?: number, root?: Element): { header: string; t
     if (chromium && built.marks.length < SNAPSHOT_COLD_REFS) {
       for (let attempt = 0; attempt < SNAPSHOT_WARMUP_MAX; attempt += 1) {
         Bun.sleepSync(SNAPSHOT_WARMUP_INTERVAL);
-        const next = buildWindowSnapshot(window, maxDepth).snapshot;
+        const next = buildWindowSnapshot(window, maxDepth, maxNodes).snapshot;
         if (next.marks.length <= built.marks.length) {
           next.dispose();
           break;
@@ -658,7 +659,7 @@ async function pollForNewPopup(before: Set<bigint>, attempts: number, ownerProce
   }
 }
 
-function snapshotText(maxDepth?: number, rootName?: string): string {
+function snapshotText(maxDepth?: number, rootName?: string, maxNodes?: number): string {
   const window = requireAttached();
   let root: Element | undefined;
   if (rootName !== undefined && rootName.length > 0) {
@@ -668,7 +669,7 @@ function snapshotText(maxDepth?: number, rootName?: string): string {
     if (root === undefined) throw new Error(`desktop_snapshot: no element named or automationId ${JSON.stringify(rootName)} under the attached window — omit root, or pick a name/id from a full snapshot`);
   }
   try {
-    const { header, tree } = rebuildSnapshot(maxDepth, root);
+    const { header, tree } = rebuildSnapshot(maxDepth, root, maxNodes);
     const body = renderTree(tree);
     lastSnapshotTree = tree;
     // A defensive unscoped re-ground that finds the tree BYTE-IDENTICAL must NOT re-dump it or bump refGen: the
@@ -1411,12 +1412,13 @@ const TOOLS: McpTool[] = [
     name: 'desktop_snapshot',
     category: 'read',
     description:
-      'Capture the attached window as a compact ref-keyed UIA tree (e.g. Button "Five" [ref=e49#1]). Better than a screenshot for acting; every interactable node carries a [ref=eN#G] you pass VERBATIM to action tools. Refs are valid ONLY until the next re-render — a stale-generation ref is rejected, not mis-resolved.',
+      'Capture the attached window as a compact ref-keyed UIA tree (e.g. Button "Five" [ref=e49#1]). Better than a screenshot for acting; every interactable node carries a [ref=eN#G] you pass VERBATIM to action tools. Refs are valid ONLY until the next re-render — a stale-generation ref is rejected, not mis-resolved. maxNodes (default 1500) bounds a HIGH-DENSITY window — a non-virtualized LOB grid / toolbar / icon-wall with thousands of sibling controls — so the walk stays fast; the tree then ends with "(… more omitted; raise maxNodes …)". maxDepth bounds DEPTH only and does NOT bound a flat (wide) tree — use maxNodes for that, or {root} to scope into one subtree.',
     inputSchema: {
       type: 'object',
       properties: {
-        maxDepth: { type: 'number', description: 'Cap tree depth (default 40)' },
-        root: { type: 'string', description: "Re-ground on just one element's subtree (zoom into a large window): the name or automationId of a node from a prior snapshot. Combine with maxDepth." },
+        maxDepth: { type: 'number', description: 'Cap tree DEPTH (default 40). Does NOT bound a flat/wide tree — use maxNodes for a high-density window.' },
+        maxNodes: { type: 'number', description: 'Cap TOTAL nodes walked (default 1500) — the lever for a dense window with thousands of sibling controls; the tree is truncated with a "raise maxNodes" hint when hit.' },
+        root: { type: 'string', description: "Re-ground on just one element's subtree (zoom into a large window): the name or automationId of a node from a prior snapshot. Combine with maxDepth/maxNodes." },
       },
     },
   },
@@ -2119,7 +2121,7 @@ const HANDLERS: Record<string, ToolHandler> = {
     lastSnapshotTree = null;
     return withSnapshot(`attached to ${JSON.stringify(next.name)}${blindSpotNote(next.className)}`);
   },
-  desktop_snapshot: (args) => textResult(snapshotText(typeof args.maxDepth === 'number' ? args.maxDepth : undefined, typeof args.root === 'string' ? args.root : undefined)),
+  desktop_snapshot: (args) => textResult(snapshotText(typeof args.maxDepth === 'number' ? args.maxDepth : undefined, typeof args.root === 'string' ? args.root : undefined, typeof args.maxNodes === 'number' ? args.maxNodes : undefined)),
   find_and_act: async (args) => {
     const action = requireString(args, 'do');
     const baseline = current?.marks.length ?? 0; // captured before the action so an expand can settle for its revealed in-process items

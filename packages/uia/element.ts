@@ -10,9 +10,12 @@ import { AutomationElementMode, type CacheRequest, createCacheRequest } from './
 import { comRelease, hresult, vcall } from './com';
 import { type CompiledCondition, compileCondition, type ElementProperties, formatNoMatch, matches, needsSubtreeFilter, type Selector, selectorToString } from './condition';
 import { ControlType, PropertyId, S_OK, SLOT, TreeScope } from './constants';
-import { postClickToHwnd } from './coords';
+import { ownerHwnd, postClickToHwnd } from './coords';
 import { clickAt, type as inputType } from './input';
-import { listWindows, renderWidgetHandles, screenshot as windowScreenshot, windowForProcess } from './window';
+import { type OcrText, ocrBitmap } from './ocr';
+import { type Bitmap, cropBitmap } from './screen';
+import { captureWindowLive } from './wgc';
+import { captureWindowRGB, listWindows, renderWidgetHandles, screenshot as windowScreenshot, windowForProcess } from './window';
 import {
   addToSelection,
   canMove,
@@ -78,6 +81,8 @@ export interface StateExpectation {
   timeout?: number;
   interval?: number;
 }
+
+const GA_ROOT = 2; // GetAncestor: the top-level WGC-capturable window of an element's own/ancestor HWND
 
 // Reused scratch for out-parameters in the tree-search path. Each value is read out immediately.
 const scratch8 = Buffer.alloc(8);
@@ -679,6 +684,28 @@ export class Element {
    *  right read for a huge terminal / editor (text() pulls the whole scrollback). '' if unsupported / nothing visible. */
   visibleText(): string {
     return readVisibleText(this.ptr);
+  }
+
+  /** Capture JUST this control's pixels, OCCLUSION-CORRECT (FlaUI Capture.Element / Playwright locator.screenshot) —
+   *  a <canvas>/chart/WebGL/custom-draw control that exposes no text. Captures the element's OWN top-level window via
+   *  WGC (captureWindowLive: occluded/background/GPU-composited), falling back to PrintWindow (captureWindowRGB), then
+   *  crops to this element's window-local bounds — so overlapping windows can NEVER leak in (unlike a screen-region
+   *  grab, which blits whatever is topmost at those pixels). Returns the cropped Bitmap (origin = screen-absolute) or
+   *  null if the owner window has no surface (minimized / protected / off-screen). */
+  async capture(): Promise<Bitmap | null> {
+    const owner = User32.GetAncestor(ownerHwnd(this), GA_ROOT);
+    if (owner === 0n) return null;
+    const window = (await captureWindowLive(owner)) ?? captureWindowRGB(owner);
+    if (window === null) return null;
+    const bounds = this.boundingRectangle;
+    return cropBitmap({ rgb: window.rgb, width: window.width, height: window.height, originX: window.originX, originY: window.originY }, bounds.x - window.originX, bounds.y - window.originY, bounds.width, bounds.height);
+  }
+
+  /** OCR JUST this control's pixels (the see-pixels read for a no-a11y surface), OCCLUSION-CORRECT via capture():
+   *  per-word/line boxes are SCREEN-absolute (postClick a box centre). Null if the control has no capturable surface. */
+  async ocr(options?: { timeoutMs?: number }): Promise<OcrText | null> {
+    const bitmap = await this.capture();
+    return bitmap === null ? null : ocrBitmap(bitmap, options);
   }
 
   /** Open this control's context menu CURSOR-FREE (IUIAutomationElement3::ShowContextMenu) — the provider raises its

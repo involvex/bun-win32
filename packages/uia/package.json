@@ -118,6 +118,7 @@
     "example:cursor-free-copy": "bun ./example/cursor-free-copy.integration.test.ts",
     "example:desktop-mcp": "bun ./example/desktop-mcp.ts",
     "example:drive-in-the-dark": "bun ./example/drive-in-the-dark.ts",
+    "example:element-capture-occlusion": "bun ./example/element-capture-occlusion.integration.test.ts",
     "example:expand-range": "bun ./example/expand-range.integration.test.ts",
     "example:explorer-in-the-dark": "bun ./example/explorer-in-the-dark.integration.test.ts",
     "example:filter-has-hastext": "bun ./example/filter-has-hastext.integration.test.ts",

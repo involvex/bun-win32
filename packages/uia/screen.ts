@@ -61,6 +61,26 @@ export function captureScreen(region?: Partial<Rect>): Bitmap {
   return { rgb, width, height, originX, originY };
 }
 
+/** Crop a Bitmap to a sub-rectangle given in the SOURCE bitmap's local pixels (0,0 = its top-left). The crop is
+ *  clamped to the source bounds; the returned Bitmap carries the correct screen origin (source origin + crop x/y) so
+ *  per-word OCR boxes stay screen-absolute. Returns null if the clamped rectangle is empty (off-bitmap / zero-size).
+ *  The occlusion-correct primitive behind Element.capture(): crop a WHOLE-WINDOW capture to one control's bounds. */
+export function cropBitmap(source: Bitmap, x: number, y: number, width: number, height: number): Bitmap | null {
+  const left = Math.max(0, Math.round(x));
+  const top = Math.max(0, Math.round(y));
+  const right = Math.min(source.width, Math.round(x) + Math.round(width));
+  const bottom = Math.min(source.height, Math.round(y) + Math.round(height));
+  const cropWidth = right - left;
+  const cropHeight = bottom - top;
+  if (cropWidth <= 0 || cropHeight <= 0) return null;
+  const rgb = new Uint8Array(cropWidth * cropHeight * 3);
+  for (let row = 0; row < cropHeight; row += 1) {
+    const sourceStart = ((top + row) * source.width + left) * 3;
+    rgb.set(source.rgb.subarray(sourceStart, sourceStart + cropWidth * 3), row * cropWidth * 3);
+  }
+  return { rgb, width: cropWidth, height: cropHeight, originX: source.originX + left, originY: source.originY + top };
+}
+
 /** Capture the screen (or a region) and encode it as PNG bytes. */
 export function screenshotScreen(region?: Partial<Rect>): Uint8Array {
   const bitmap = captureScreen(region);
