@@ -118,6 +118,7 @@
     "example:drive-in-the-dark": "bun ./example/drive-in-the-dark.ts",
     "example:expand-range": "bun ./example/expand-range.integration.test.ts",
     "example:explorer-in-the-dark": "bun ./example/explorer-in-the-dark.integration.test.ts",
+    "example:filter-has-hastext": "bun ./example/filter-has-hastext.integration.test.ts",
     "example:find-cached": "bun ./example/find-cached.integration.test.ts",
     "example:find-text": "bun ./example/find-text.integration.test.ts",
     "example:get-variant": "bun ./example/get-variant.integration.test.ts",
@@ -133,6 +134,7 @@
     "example:menu-drive": "bun ./example/menu-drive.integration.test.ts",
     "example:multi-select": "bun ./example/multi-select.integration.test.ts",
     "example:ocr-text": "bun ./example/ocr-text.integration.test.ts",
+    "example:ocr-window": "bun ./example/ocr-window.integration.test.ts",
     "example:perf-gate": "bun ./example/perf-gate.integration.test.ts",
     "example:popup-windows": "bun ./example/popup-windows.integration.test.ts",
     "example:read-table": "bun ./example/read-table.integration.test.ts",
@@ -144,14 +146,19 @@
     "example:snapshot-fallback": "bun ./example/snapshot-fallback.integration.test.ts",
     "example:snapshot-leak": "bun ./example/snapshot-leak.integration.test.ts",
     "example:snapshot-scope": "bun ./example/snapshot-scope.integration.test.ts",
+    "example:terminal-scrollback": "bun ./example/terminal-scrollback.integration.test.ts",
     "example:text-content": "bun ./example/text-content.integration.test.ts",
+    "example:type-cursorfree": "bun ./example/type-cursorfree.integration.test.ts",
     "example:uia-report": "bun ./example/uia-report.ts",
     "example:uwp-content": "bun ./example/uwp-content.integration.test.ts",
     "example:vcall-safety": "bun ./example/vcall-safety.integration.test.ts",
     "example:virtual-desktop": "bun ./example/virtual-desktop.integration.test.ts",
     "example:visible-text": "bun ./example/visible-text.integration.test.ts",
+    "example:wait-for-state": "bun ./example/wait-for-state.integration.test.ts",
     "example:web-content": "bun ./example/web-content.integration.test.ts",
+    "example:wgc-occluded": "bun ./example/wgc-occluded.integration.test.ts",
     "example:window-events": "bun ./example/window-events.integration.test.ts",
-    "example:window-spy": "bun ./example/window-spy.ts"
+    "example:window-spy": "bun ./example/window-spy.ts",
+    "example:wpf-hwndwrapper-input": "bun ./example/wpf-hwndwrapper-input.integration.test.ts"
   }
 }

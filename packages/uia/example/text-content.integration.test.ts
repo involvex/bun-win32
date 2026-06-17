@@ -66,7 +66,7 @@ try {
     assert(best > 0, `read a live terminal's buffer text via TextPattern (${best} chars)`);
     win.dispose();
   } else {
-    console.log('  skip: no terminal running for the live read');
+    console.log('  skip: no terminal running for the live read (deterministic terminal proof: terminal-scrollback.integration.test.ts)');
   }
 } finally {
   const notepadPid = notepad !== 0n ? windowProcessId(notepad) : 0;
@@ -75,5 +75,5 @@ try {
   uia.uninitialize();
 }
 
-console.log(failures === 0 ? '\nPASS — TextPattern content (editor/terminal) reads cursor-free; inspect_element surfaces it.' : `\nFAILED — ${failures} assertion(s)`);
+console.log(failures === 0 ? '\nPASS — editor TextPattern content reads cursor-free; inspect_element surfaces it (terminal read is opportunistic — see terminal-scrollback.integration.test.ts for the deterministic terminal proof).' : `\nFAILED — ${failures} assertion(s)`);
 process.exit(failures === 0 ? 0 : 1);

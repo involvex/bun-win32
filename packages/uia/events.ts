@@ -2,6 +2,15 @@
 // pumped on the MAIN thread, the callback fires synchronously on the pumping thread — no foreign-thread hazard
 // under Bun. Process creation has no WinEvent, so it is polled via a toolhelp32 snapshot diff. The pump yields
 // with `await Bun.sleep`, so timers and the rest of the event loop keep running while a watcher is active.
+//
+// UIA property/structure event SUBSCRIPTION (IUIAutomation::AddPropertyChangedEventHandler / AddStructureChanged-
+// EventHandler / AddAutomationEventHandler) is deliberately NOT bound: UIA invokes those COM callbacks on its own
+// internal worker thread, not the STA thread that registered them, and a Bun JSCallback trampoline driven from a
+// foreign native thread segfaults (the repo-wide foreign-thread hazard). That is exactly why WINEVENT_OUTOFCONTEXT
+// is safe here — it POSTS messages back to the registering thread instead of calling a callback on a foreign one.
+// The supported substitute for "notice a property/subtree change" is polling: waitFor (element.ts) / waitForIdle
+// (idle.ts) sample one cached round-trip per interval on this same STA thread. This is a settled design choice,
+// not an unfinished feature.
 
 import { FFIType, JSCallback } from 'bun:ffi';
 
