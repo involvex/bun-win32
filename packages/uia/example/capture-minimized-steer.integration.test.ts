@@ -14,54 +14,29 @@
  */
 import { closeWindow, isMinimized, minimizeWindow, restoreWindow, uia } from '@bun-win32/uia';
 
-type Rpc = { id?: number; result?: { isError?: boolean; content?: { type?: string; text?: string }[] } };
-const proc = Bun.spawn(['bun', 'run', `${import.meta.dir}/../mcp.ts`], { stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', env: { ...Bun.env, BUN_UIA_PROFILE: 'safe' } });
-const reader = proc.stdout.getReader();
-const decoder = new TextDecoder();
-let buffer = '';
-const pending = new Map<number, (message: Rpc) => void>();
-void (async () => {
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let index: number;
-    while ((index = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, index).trim();
-      buffer = buffer.slice(index + 1);
-      if (line.length === 0) continue;
-      try {
-        const message = JSON.parse(line) as Rpc;
-        if (typeof message.id === 'number' && pending.has(message.id)) {
-          pending.get(message.id)!(message);
-          pending.delete(message.id);
-        }
-      } catch {}
-    }
-  }
-})();
-let nextId = 1;
-const call = (method: string, params: unknown): Promise<Rpc> => {
-  const id = nextId++;
-  proc.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
-  proc.stdin.flush();
-  return new Promise((resolve) => pending.set(id, resolve));
-};
-const textOf = (m: Rpc): string => m.result?.content?.[0]?.text ?? '';
+import { assert, finish, spawnServer, type Rpc } from './_harness';
+
+const { call, kill, textOf } = spawnServer();
 const isImage = (m: Rpc): boolean => m.result?.content?.[0]?.type === 'image';
 
-let failures = 0;
-function assert(condition: boolean, message: string): void {
-  if (condition) console.log(`  ok: ${message}`);
-  else {
-    console.error(`  FAIL: ${message}`);
-    failures += 1;
-  }
-}
-
 uia.initialize();
-const priorCalc = new Set(uia.windows({ includeUntitled: true }).filter((window) => /Calcul/i.test(window.title)).map((window) => window.hWnd));
-const calc = await uia.launch(['cmd', '/c', 'start', 'calc'], { title: 'Calculator' });
+const priorCalc = new Set(
+  uia
+    .windows({ includeUntitled: true })
+    .filter((window) => /Calcul/i.test(window.title))
+    .map((window) => window.hWnd),
+);
+// Cold-start guard (finding/34): a wedged single-instance Calculator app model leaves `start calc` re-activating a
+// headless zombie that never gets a titled window, so `launch` throws. That throw happens BEFORE the try below, so
+// without this guard the `finally` never runs and the MCP subprocess (kill) leaks. SKIP clean instead, killing it.
+const calc = await uia.launch(['cmd', '/c', 'start', 'calc'], { title: 'Calculator' }).catch(() => null);
+if (calc === null) {
+  kill();
+  console.log('SKIP — Calculator app model wedged/unavailable (single-instance); cannot prove the minimized capture steers here (finding/34).');
+  for (const window of uia.windows({ includeUntitled: true }).filter((w) => /Calcul/i.test(w.title) && !priorCalc.has(w.hWnd))) closeWindow(window.hWnd);
+  uia.uninitialize();
+  process.exit(0);
+}
 const hx = `0x${calc.hWnd.toString(16)}`;
 try {
   await call('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'capture-min', version: '1' } });
@@ -91,14 +66,13 @@ try {
   restoreWindow(calc.hWnd);
   await Bun.sleep(500);
   const after = await call('tools/call', { name: 'screenshot', arguments: {} });
-  assert(!(/MINIMIZED/i.test(textOf(after))), 'after a cursor-free restore, screenshot no longer reports minimized (the steer unblocked it)');
+  assert(!/MINIMIZED/i.test(textOf(after)), 'after a cursor-free restore, screenshot no longer reports minimized (the steer unblocked it)');
 } finally {
-  proc.kill();
+  kill();
   closeWindow(calc.hWnd);
   calc.dispose();
   for (const window of uia.windows({ includeUntitled: true }).filter((w) => /Calcul/i.test(w.title) && !priorCalc.has(w.hWnd))) closeWindow(window.hWnd);
   uia.uninitialize();
 }
 
-console.log(failures === 0 ? '\nPASS — capture/OCR tools steer a minimized window to restore; the first capture of a fresh window warms past a cold frame.' : `\nFAILED — ${failures} assertion(s)`);
-process.exit(failures === 0 ? 0 : 1);
+finish('PASS — capture/OCR tools steer a minimized window to restore; the first capture of a fresh window warms past a cold frame.');
