@@ -10,6 +10,11 @@
  * "checked" state; javaInvoke(list item) -> the item transitions to the "selected" state; javaInvoke(button) -> the
  * title becomes "ACT_CLICKED". The Java process is killed + window closed in finally. SKIPS cleanly if no JDK is present.
  *
+ * MCP layer (the 4th engine surfaced as first-class tools): the java_tree / java_set_text / java_invoke HANDLERS add
+ * real logic the library functions don't (hWnd resolution, arg parsing, the appended re-grounding, the rendered tree),
+ * so a short JSON-RPC subprocess block drives all three over the wire against the SAME live window — java_tree renders
+ * a tree containing "actButton"; java_set_text lands the field (title → ACT_TEXT_…); java_invoke flips it to ACT_CLICKED.
+ *
  * bun test is broken repo-wide — runnable harness (compiles + spawns a Java Swing app):
  * Run: bun run example/jab-java-act.integration.test.ts
  */
@@ -122,6 +127,60 @@ try {
         // setTextContents on a non-editable control (the button) → the bridge rejects it → false
         assert(javaSetText(hWnd, { name: 'actButton' }, 'x') === false, 'javaSetText on a non-text control (button) returns false');
         assert(windowTitle(hWnd) === 'ACT_CLICKED', 'the failed javaSetText left the button title unchanged (no stray effect)');
+
+        // MCP-LAYER coverage: drive java_tree / java_set_text / java_invoke over JSON-RPC against the SAME window, so the
+        // handlers' hWnd resolution + arg parsing + rendered tree are proven (not just the library functions they wrap).
+        type Rpc = { id?: number; result?: { isError?: boolean; content?: { text?: string }[] } };
+        const mcp = Bun.spawn(['bun', 'run', `${import.meta.dir}/../mcp.ts`], { stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', env: { ...Bun.env, BUN_UIA_PROFILE: 'safe' } });
+        const reader = mcp.stdout.getReader();
+        const decoder = new TextDecoder();
+        let mcpBuffer = '';
+        const pending = new Map<number, (message: Rpc) => void>();
+        void (async () => {
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            mcpBuffer += decoder.decode(value, { stream: true });
+            let index: number;
+            while ((index = mcpBuffer.indexOf('\n')) >= 0) {
+              const line = mcpBuffer.slice(0, index).trim();
+              mcpBuffer = mcpBuffer.slice(index + 1);
+              if (line.length === 0) continue;
+              try {
+                const message = JSON.parse(line) as Rpc;
+                if (typeof message.id === 'number' && pending.has(message.id)) {
+                  pending.get(message.id)!(message);
+                  pending.delete(message.id);
+                }
+              } catch {}
+            }
+          }
+        })();
+        let nextId = 1;
+        const call = (method: string, params: unknown): Promise<Rpc> => {
+          const id = nextId++;
+          mcp.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+          mcp.stdin.flush();
+          return new Promise((resolve) => pending.set(id, resolve));
+        };
+        const textOf = (m: Rpc): string => m.result?.content?.[0]?.text ?? '';
+        try {
+          await call('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'jabact', version: '1' } });
+          const hx = `0x${hWnd.toString(16)}`;
+          const tree = await call('tools/call', { name: 'java_tree', arguments: { hWnd: hx } });
+          assert(tree.result?.isError !== true && /"actButton"/.test(textOf(tree)), `java_tree (MCP) renders the bridge tree with "actButton" (got: ${JSON.stringify(textOf(tree).slice(0, 90))})`);
+
+          const setText = await call('tools/call', { name: 'java_set_text', arguments: { hWnd: hx, name: 'actField', text: 'via mcp' } });
+          await Bun.sleep(350);
+          assert(setText.result?.isError !== true && windowTitle(hWnd) === 'ACT_TEXT_via mcp', `java_set_text (MCP) landed the field (title="${windowTitle(hWnd)}", expected "ACT_TEXT_via mcp")`);
+
+          const invoke = await call('tools/call', { name: 'java_invoke', arguments: { hWnd: hx, name: 'actButton' } });
+          await Bun.sleep(350);
+          assert(invoke.result?.isError !== true && /invoked .*actButton.* via the Java Access Bridge/.test(textOf(invoke)), `java_invoke (MCP) reports the cursor-free success (got: ${JSON.stringify(textOf(invoke).slice(0, 90))})`);
+          assert(windowTitle(hWnd) === 'ACT_CLICKED', `java_invoke (MCP) fired the button's action (title="${windowTitle(hWnd)}", expected "ACT_CLICKED")`);
+        } finally {
+          mcp.kill();
+        }
       }
     }
   }

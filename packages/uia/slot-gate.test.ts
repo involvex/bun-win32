@@ -7,9 +7,11 @@
 // headers, proves no drift between the gated slots and the engines' actual vcall call sites, and carries one
 // window-free perf-regression invariant (the TrueCondition memoization) so a lost memoization fails `bun test`.
 import { describe, expect, test } from 'bun:test';
+import { FFIType } from 'bun:ffi';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 
 import { automation, compileCondition, trueCondition, uninitialize } from './index';
+import { comRelease, invokerCacheSize, vcall } from './com';
 import { SLOT } from './constants';
 
 const SDK_INCLUDE = 'C:/Program Files (x86)/Windows Kits/10/Include';
@@ -404,6 +406,20 @@ describe('slot-gate coverage ↔ engine call sites (no drift)', () => {
       expect({ file, dead }).toEqual({ file, dead: [] }); // a gated-but-uncalled slot is stale curation (the MoveWindowToDesktop drift)
     });
   }
+
+  // patterns.ts is the ONE engine file excluded from GATED_SLOTS_BY_FILE above: its only raw-literal vcall slot,
+  // TEXTRANGE_SELECT, collides by name with SelectionItem.Select=3, so it lives as a local const (patterns.ts)
+  // instead of in SLOT. The VTBL block above verifies the HARDCODED value 16 against UIAutomationClient.h's
+  // IUIAutomationTextRange.Select — but nothing tied that header-verified value to patterns.ts's actual literal,
+  // so a 16->17 typo (= TextRange.AddToSelection) or a 16->a-different-arity slot (= reads params from garbage
+  // registers -> crash) passed the whole gate. This pins the literal to the gated value: it parses patterns.ts's
+  // own `const TEXTRANGE_SELECT = <n>` and asserts n === the slot the VTBL block verifies against the header (16).
+  test('patterns.ts TEXTRANGE_SELECT literal matches the header-verified IUIAutomationTextRange.Select slot (16)', () => {
+    const source = readFileSync(`${ENGINE}/patterns.ts`, 'utf8');
+    const textRangeSelect = constValues(source).get('TEXTRANGE_SELECT');
+    expect(textRangeSelect).not.toBeUndefined(); // the const must exist and be parseable (a sanity check on the parser)
+    expect(textRangeSelect).toBe(16); // 16 = the slot the VTBL block above verifies vs UIAutomationClient.h IUIAutomationTextRange.Select; a wrong literal fails loudly here
+  });
 });
 
 // Perf-regression guard (the seat-mandated automated perf gate). The package's two highest-value perf wins are
@@ -423,6 +439,33 @@ describe('perf-regression: TrueCondition memoization (no window)', () => {
       const compiled = compileCondition(client, {}); // an empty selector → the shared TrueCondition
       expect(compiled.owned).toBe(false); // owned=false means callers do NOT release it (it is the shared singleton)
       expect(compiled.condition).toBe(first); // and it IS the same pointer — no per-call CreateTrueCondition round-trip
+    } finally {
+      uninitialize();
+    }
+  });
+
+  // Behavioral guard for com.ts's per-method CFunction invoker cache (com.ts:invokers) — the single hottest
+  // per-call cost in the package. CFunction construction is orders of magnitude more expensive than the Map
+  // lookup, so a regression that drops invokers.get/set (rebuilding a CFunction on every vcall) would be
+  // invisible to every other automated check. This drives two REAL vcalls per method on the in-process client
+  // (no window) and asserts the cache: a repeated call to the SAME method adds nothing, two DISTINCT methods
+  // add exactly one entry each. Measured as deltas so it is independent of which other vcalls ran first.
+  test('com.ts invoker cache memoizes per method (a repeated vcall does NOT rebuild the CFunction)', () => {
+    try {
+      const client = automation(); // in-process CUIAutomation COM server — no window
+      const out = Buffer.alloc(8);
+      // First vcall to CreateTrueCondition (slot 21) — binds and caches one CFunction for that method pointer.
+      expect(vcall(client, SLOT.CreateTrueCondition, [FFIType.ptr], [out.ptr!])).toBe(0); // S_OK
+      comRelease(out.readBigUInt64LE(0)); // release the created condition (CreateTrueCondition allocates a fresh one)
+      const afterFirst = invokerCacheSize();
+      // Second vcall to the SAME method — the resolved method pointer is identical, so the cache MUST be reused.
+      expect(vcall(client, SLOT.CreateTrueCondition, [FFIType.ptr], [out.ptr!])).toBe(0);
+      comRelease(out.readBigUInt64LE(0));
+      expect(invokerCacheSize()).toBe(afterFirst); // a rebuilt-per-call CFunction would grow this — the regression
+      // A DISTINCT method (CreateFalseCondition, slot 22) is a different method pointer -> exactly one new entry.
+      expect(vcall(client, SLOT.CreateFalseCondition, [FFIType.ptr], [out.ptr!])).toBe(0);
+      comRelease(out.readBigUInt64LE(0));
+      expect(invokerCacheSize()).toBe(afterFirst + 1);
     } finally {
       uninitialize();
     }

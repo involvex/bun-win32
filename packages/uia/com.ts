@@ -63,3 +63,9 @@ export function guid(text: string): Buffer {
 export function hresult(hr: number): string {
   return `0x${(hr >>> 0).toString(16).padStart(8, '0')}`;
 }
+
+/** Test hook: the number of memoized per-method CFunction invokers. The perf-regression gate asserts a
+ *  repeated vcall to the SAME method does not grow this (the CFunction is reused, not rebuilt per call). */
+export function invokerCacheSize(): number {
+  return invokers.size;
+}

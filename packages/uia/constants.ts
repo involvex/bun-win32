@@ -227,6 +227,7 @@ export const SLOT = {
   ShowContextMenu: 91, // IUIAutomationElement3 (extends Element) — verified vs UIAutomationClient.h IUIAutomationElement3Vtbl
 
   get_CurrentBoundingRectangle: 43, // PROVEN (RECT = 4x LONG, 16 bytes; matches GetWindowRect)
+  get_CurrentLabeledBy: 44, // IUIAutomationElement (returns the label element*; backs the Selector labeledBy / getByLabel relational lookup)
   GetClickablePoint: 84, // PROVEN (returned point lands inside the control's bounds)
   get_CachedControlType: 53,
   get_CachedName: 55,

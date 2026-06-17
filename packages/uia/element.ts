@@ -107,6 +107,20 @@ function subtreeMatches(ptr: bigint, selector: Selector): boolean {
     if (inner === null) return false;
     inner.release();
   }
+  // labeledBy (Playwright getByLabel / FlaUI LabeledBy): read the candidate's UIA LabeledBy property — the element
+  // that LABELS it (e.g. the Text control naming an empty-Name edit) — and keep the candidate only when that label's
+  // Name equals the requested string. get_CurrentLabeledBy returns an owned IUIAutomationElement* (or 0n when the
+  // provider exposes no label); the borrowed `candidate` wrapper is never released (the loop owns ptr), but the
+  // returned label Element IS released here. A control with no LabeledBy never matches a labeledBy selector.
+  if (selector.labeledBy !== undefined) {
+    if (vcall(ptr, SLOT.get_CurrentLabeledBy, [FFIType.ptr], [scratch8.ptr!]) !== S_OK) return false;
+    const labelPointer = scratch8.readBigUInt64LE(0);
+    if (labelPointer === 0n) return false;
+    const label = new Element(labelPointer);
+    const matched = label.name === selector.labeledBy;
+    label.release();
+    if (!matched) return false;
+  }
   return true;
 }
 

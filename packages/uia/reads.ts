@@ -63,12 +63,12 @@ export type VariantValue = string | number | boolean | null;
  *  decoding the 24-byte x64 VARIANT by its `vt` tag (NOT condition.ts's 16-byte input VARIANT). Always
  *  VariantClear's it — frees a returned BSTR (copied out first, never freed twice) / releases an interface. */
 function readVariantProperty(ptr: bigint, slot: number, propertyId: number): VariantValue {
-  scratch24.fill(0, 0, 24); // clear vt + value first — a failed call or a prior VT_BSTR must not leave a stale vt for VariantClear to mis-free
+  scratch24.writeUInt16LE(0, 0); // clear only the vt tag — UIA writes the full value on S_OK; VariantClear keys off vt; value bytes are never read after a scalar return, so a failed call / prior VT_BSTR can't leave a stale vt for VariantClear to mis-free
   if (vcall(ptr, slot, [FFIType.i32, FFIType.ptr], [propertyId, scratch24.ptr!]) !== S_OK) return null;
   const vt = scratch24.readUInt16LE(0);
   // A scalar VARIANT (I4/R8/BOOL) owns no resource, so VariantClear is a no-op for it (MSDN) — skip the cross-DLL FFI
   // call and return directly. These are ~94% of cached state reads (toggle/selected/password bools, scroll percents),
-  // so skipping VariantClear here is the snapshot hot-path win; the next call's scratch24.fill(0) clears the slot anyway.
+  // so skipping VariantClear here is the snapshot hot-path win; the scalar value bytes are never read again (the next call re-clears vt and UIA rewrites the value).
   if (vt === VT_I4) return scratch24.readInt32LE(8);
   if (vt === VT_R8) return scratch24.readDoubleLE(8);
   if (vt === VT_BOOL) return scratch24.readInt16LE(8) !== 0; // VARIANT_BOOL: 0 false, -1 true

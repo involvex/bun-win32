@@ -178,5 +178,18 @@ try {
   roAuditOff.kill();
 }
 
-console.log(failures === 0 ? '\nPASS — audit trail on (calls AND policy-refusals), clipboard least-privilege + redacted + fenced, readonly+OS instructions consistent.' : `\nFAILED — ${failures} assertion(s)`);
+// 5 — error-text parity: a THROWN handler error (desktop_snapshot with nothing attached) carries the RAW message, not an
+// `Error: ` prefix, so it reads identically to the errorResult() sites — isError:true already signals failure (no GUI window).
+const errParity = spawnServer({ BUN_UIA_PROFILE: 'readonly' });
+try {
+  await errParity.call('initialize', init);
+  const thrown = await errParity.call('tools/call', { name: 'desktop_snapshot', arguments: {} });
+  const text = textOf(thrown);
+  assert(thrown.result?.isError === true && /^no window attached/.test(text), `a thrown handler error returns the RAW message (no \`Error: \` prefix) — matching the errorResult() sites (got: ${JSON.stringify(text.slice(0, 40))})`);
+  assert(!/^Error: /.test(text), 'a thrown handler error is NOT prefixed with `Error: ` (uniform with the 40 errorResult() sites; isError:true is the failure signal)');
+} finally {
+  errParity.kill();
+}
+
+console.log(failures === 0 ? '\nPASS — audit trail on (calls AND policy-refusals), clipboard least-privilege + redacted + fenced, readonly+OS instructions consistent, thrown-error text un-prefixed.' : `\nFAILED — ${failures} assertion(s)`);
 process.exit(failures === 0 ? 0 : 1);

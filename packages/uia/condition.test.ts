@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 
-import { matches } from './condition';
+import { matches, needsSubtreeFilter, selectorToString } from './condition';
 import { ControlType } from './constants';
 
 const button = { name: 'Five', controlType: ControlType.Button, automationId: 'num5Button', className: 'Button' };
@@ -46,4 +46,15 @@ test('multi-field AND', () => {
 
 test('empty selector matches everything', () => {
   expect(matches(button, {})).toBe(true);
+});
+
+// labeledBy (Playwright getByLabel / FlaUI relational) is a live-element filter: matches() must IGNORE it (never reject
+// on it — element.ts subtreeMatches folds in the live LabeledBy read), needsSubtreeFilter must FLAG it so the client
+// pass runs, and selectorToString must render it. Without the field these all behave as for an unknown key.
+test('labeledBy is a live-element filter (pure layer)', () => {
+  expect(needsSubtreeFilter({ labeledBy: 'Username' })).toBe(true);
+  expect(needsSubtreeFilter({ name: 'Five' })).toBe(false);
+  expect(matches(button, { controlType: ControlType.Button, labeledBy: 'whatever' })).toBe(true); // ignored — folded in live
+  expect(matches(button, { controlType: ControlType.Edit, labeledBy: 'whatever' })).toBe(false); // still rejects a real property mismatch
+  expect(selectorToString({ controlType: ControlType.Edit, labeledBy: 'Username' })).toContain('labeledBy: "Username"');
 });

@@ -30,6 +30,12 @@ export interface Selector {
   index?: number;
   /** Pick the LAST match instead of the first (sugar for the highest index). `index` wins when both are set. */
   last?: boolean;
+  /** Relational selector (Playwright `getByLabel` / FlaUI LabeledBy): keep only a candidate whose associated label —
+   *  the element named by its UIA LabeledBy property — has this exact Name. The targeting path for the common unnamed
+   *  edit box that a separate Text label describes ("the field labeled Username"), where the edit's own Name is empty.
+   *  Client-side, resolved per surviving candidate by reading the live element's LabeledBy (element.ts subtreeMatches),
+   *  off the hot server path — engaged only when set, exactly like `has`/`hasText`. */
+  labeledBy?: string;
   /** Exact string (server-side) or a regular expression (client-side). */
   name?: RegExp | string;
   /** Substring of the name (client-side). */
@@ -71,6 +77,7 @@ export function selectorToString(selector: Selector): string {
   if (selector.className !== undefined) parts.push(`className: ${JSON.stringify(selector.className)}`);
   if (selector.has !== undefined) parts.push(`has: ${selectorToString(selector.has)}`);
   if (selector.hasText !== undefined) parts.push(`hasText: ${JSON.stringify(selector.hasText)}`);
+  if (selector.labeledBy !== undefined) parts.push(`labeledBy: ${JSON.stringify(selector.labeledBy)}`);
   if (selector.index !== undefined) parts.push(`index: ${selector.index}`);
   if (selector.last === true) parts.push('last: true');
   return `{ ${parts.join(', ')} }`;
@@ -88,7 +95,7 @@ function nameRelevance(candidate: string, want: string): number {
 /** Build the actionable "no element matched … nearest were …" message (the gripe→error design). Candidates are
  *  de-duplicated and ranked by relevance to the requested name, and when a candidate's name CONTAINS the requested
  *  exact name (so a name-exact match failed but a substring would hit) the message steers to {nameContains}. */
-export function formatNoMatch(selector: Selector, windowName: string, candidateNames: readonly string[]): string {
+export function formatNoMatch(selector: Selector, windowName: string, candidateNames: readonly string[], availableControlTypes: readonly string[] = []): string {
   const want = (typeof selector.name === 'string' ? selector.name : (selector.nameContains ?? '')).toLowerCase();
   const unique = [...new Set(candidateNames.filter((candidate) => candidate.trim().length > 0))];
   const ranked =
@@ -104,19 +111,26 @@ export function formatNoMatch(selector: Selector, windowName: string, candidateN
     want.length > 0 && typeof selector.name === 'string' && unique.some((candidate) => candidate.toLowerCase().includes(want))
       ? ` (a control's name CONTAINS ${JSON.stringify(selector.name)} — retry with {nameContains:${JSON.stringify(selector.name)}})`
       : '';
-  return `no element matched ${selectorToString(selector)} in "${windowName}"${tail}${containsHint}`;
+  // controlType missed and nothing ranked by name: teach the cold agent which control types this window actually exposes
+  // (its reach for Edit on modern WinUI hits Document/Text instead) — without it the error only echoes what it already typed.
+  const controlTypeHint =
+    selector.controlType !== undefined && nearest.length === 0 && availableControlTypes.length > 0
+      ? ` (no controlType ${JSON.stringify(ControlType[selector.controlType] ?? selector.controlType)} here — this window exposes: ${availableControlTypes.join(', ')} — retry with one of those, or drop controlType)`
+      : '';
+  return `no element matched ${selectorToString(selector)} in "${windowName}"${tail}${containsHint}${controlTypeHint}`;
 }
 
-/** Whether the selector carries a descendant-scoped filter (`has`/`hasText`) that `matches()` cannot decide from
- *  properties alone — it needs the live candidate's subtree. The caller (element.ts), which holds the Element, runs
- *  the Subtree find when this is true; `matches()` stays a pure property check that never rejects on `has`/`hasText`. */
+/** Whether the selector carries a live-element filter (`has`/`hasText` subtree, or `labeledBy` relational lookup) that
+ *  `matches()` cannot decide from properties alone — it needs the live candidate. The caller (element.ts), which holds
+ *  the Element, runs the Subtree find / LabeledBy read when this is true; `matches()` stays a pure property check that
+ *  never rejects on `has`/`hasText`/`labeledBy`. */
 export function needsSubtreeFilter(selector: Selector): boolean {
-  return selector.has !== undefined || selector.hasText !== undefined;
+  return selector.has !== undefined || selector.hasText !== undefined || selector.labeledBy !== undefined;
 }
 
 /** Match a (already-read) element against a selector — all fields AND together (controlTypes is an internal OR). Pure logic.
- *  `has`/`hasText` are NOT checked here (they need the live subtree, not just properties) — the caller folds them in via
- *  a Subtree find after this passes; matches() neither evaluates nor rejects on them. */
+ *  `has`/`hasText`/`labeledBy` are NOT checked here (they need the live element, not just properties) — the caller folds
+ *  them in via a Subtree find / LabeledBy read after this passes; matches() neither evaluates nor rejects on them. */
 export function matches(element: ElementProperties, selector: Selector): boolean {
   if (selector.controlType !== undefined && element.controlType !== selector.controlType) return false;
   if (selector.controlTypes !== undefined && !selector.controlTypes.includes(element.controlType)) return false;
@@ -248,7 +262,7 @@ export function compileCondition(pAutomation: bigint, selector: Selector): Compi
     else needsClientFilter = true;
   }
   if (selector.nameContains !== undefined) needsClientFilter = true;
-  if (needsSubtreeFilter(selector)) needsClientFilter = true; // has/hasText is decided per-candidate from the live subtree (element.ts), never server-side — force the client pass that runs it
+  if (needsSubtreeFilter(selector)) needsClientFilter = true; // has/hasText/labeledBy is decided per-candidate from the live element (element.ts), never server-side — force the client pass that runs it
   if (parts.length === 0) return { condition: trueCondition(), needsClientFilter, owned: false }; // empty selector → TrueCondition matches everything server-side, no client pass (needsClientFilter stays true only for a regex/substring-only selector)
   let condition = parts[0]!;
   for (let index = 1; index < parts.length; index += 1) {

@@ -176,6 +176,12 @@ function fenceUntrusted(text: string, source: string): string {
 }
 /** Above this many delta lines an action returns the full pruned tree instead of the change list. */
 const DIFF_MAX_CHANGES = 8;
+// Playwright auto-waits for the target to EXIST before every action; mirror that on find_and_act's act path — when a
+// selector matches nothing yet, re-query on this cadence up to ACT_WAIT_DEFAULT_MS before throwing describeNoMatch (an
+// in-flight render / a just-clicked navigation that hasn't painted the control yet is the flake this absorbs). The
+// agent overrides the budget with {timeout} and disables the wait entirely with {timeout:0} (immediate throw).
+const ACT_WAIT_DEFAULT_MS = 2_000;
+const ACT_WAIT_INTERVAL_MS = 100;
 
 console.log = console.error; // hard guard: nothing but JSON-RPC ever reaches stdout
 
@@ -251,6 +257,14 @@ const redactCustom = (() => {
 // Deployer-gated trace journal: when set, every tools/call appends one JSON line {ts,tool,args(masked),ok,diff,observation}
 // to this path — a replayable/debuggable agent trace. Off (undefined) means zero overhead. Sensitive args are masked.
 const tracePath = Bun.env.BUN_UIA_TRACE !== undefined && Bun.env.BUN_UIA_TRACE.length > 0 ? resolve(Bun.env.BUN_UIA_TRACE) : undefined;
+// Playwright-trace-class artifacts (opt-in, on top of BUN_UIA_TRACE): with BUN_UIA_TRACE_SNAPSHOTS=1, every tools/call
+// ALSO persists the PRE-action ref-keyed snapshot TEXT (the tree the agent saw when it decided to act) and a PrintWindow
+// PNG of the attached window next to the JSONL (in <trace>.artifacts/), and the journal line REFERENCES them — so a
+// failed headless run is re-groundable post-mortem (the tree + pixels at the failing step), not just a masked call-log.
+// Default-off → zero overhead; the snapshot text is already in hand (lastSnapshotBody), the PNG is cursor-free PrintWindow.
+const traceSnapshots = tracePath !== undefined && Bun.env.BUN_UIA_TRACE_SNAPSHOTS === '1';
+const traceArtifactDir = tracePath !== undefined ? `${tracePath}.artifacts` : undefined;
+let traceSeq = 0; // monotonic per-call counter naming the artifact files (so they sort in call order alongside the JSONL)
 const fsRoot = Bun.env.BUN_UIA_FS_ROOT !== undefined ? resolve(Bun.env.BUN_UIA_FS_ROOT) : undefined;
 // The root canonicalized past any reparse points, so the sandbox check compares REAL paths.
 const fsRootReal =
@@ -723,20 +737,65 @@ function resultText(result: object): string {
   const first = content.find((block): block is { type: string; text: string } => typeof block === 'object' && block !== null && (block as { type?: unknown }).type === 'text');
   return first?.text ?? '';
 }
-/** Append one JSON line per tool call to BUN_UIA_TRACE (when set): {ts,tool,args(masked),ok,diff,observation}. The
- *  observation is the result's first line (capped) and `diff` is the `Δ N` change count an action result self-reports;
- *  a trace write never throws — a journal hiccup must not fail the tool call it is recording. */
-async function traceCall(tool: string, args: Record<string, unknown>, result: object): Promise<void> {
+/** The artifacts a single tool call records: a per-call sequence number and the relative paths of its PRE-action
+ *  snapshot text + PrintWindow PNG (each undefined when BUN_UIA_TRACE_SNAPSHOTS is off or that capture failed). */
+interface TraceArtifacts {
+  seq: number;
+  snapshot?: string;
+  screenshot?: string;
+}
+/** Capture this call's PRE-action artifacts (BUN_UIA_TRACE_SNAPSHOTS=1) — called by dispatch BEFORE the handler runs, so
+ *  the persisted tree+pixels are the state the agent SAW when it decided to act (an action handler rebuilds the snapshot,
+ *  mutating lastSnapshotBody, so a post-hoc read would capture the WRONG, after-state). Persists the ref-keyed snapshot
+ *  TEXT already in hand (lastSnapshotBody) and a cursor-free PrintWindow PNG of the attached window into <trace>.artifacts/,
+ *  named by the per-call sequence so they sort alongside the JSONL. Both are best-effort — a capture/write hiccup must
+ *  never fail or delay the recorded call (the PNG especially: PrintWindow comes back blank for a GPU window, just skip it). */
+async function captureTraceArtifacts(tool: string): Promise<TraceArtifacts> {
+  const seq = traceSeq++;
+  if (!traceSnapshots || traceArtifactDir === undefined) return { seq };
+  const stem = `${String(seq).padStart(6, '0')}-${tool}`;
+  const artifacts: TraceArtifacts = { seq };
+  if (lastSnapshotBody.length > 0) {
+    const file = `${stem}.snapshot.txt`;
+    try {
+      await Bun.write(`${traceArtifactDir}/${file}`, lastSnapshotBody);
+      artifacts.snapshot = file;
+    } catch (error) {
+      log('trace snapshot write failed:', (error as Error).message);
+    }
+  }
+  if (attached !== null) {
+    try {
+      const capture = captureWindowRGB(attached.hWnd); // PrintWindow — cursor-free, no foreground; null on a blank/failed grab
+      if (capture !== null) {
+        const file = `${stem}.png`;
+        await Bun.write(`${traceArtifactDir}/${file}`, encodePNG(capture.rgb, capture.width, capture.height));
+        artifacts.screenshot = file;
+      }
+    } catch (error) {
+      log('trace screenshot write failed:', (error as Error).message);
+    }
+  }
+  return artifacts;
+}
+/** Append one JSON line per tool call to BUN_UIA_TRACE (when set): {seq,ts,tool,args(masked),ok,diff,observation}, plus
+ *  the PRE-action snapshot/screenshot artifact paths (under BUN_UIA_TRACE_SNAPSHOTS=1, captured by captureTraceArtifacts
+ *  before the handler ran). The observation is the result's first line (capped) and `diff` is the `Δ N` change count an
+ *  action result self-reports; a trace write never throws — a journal hiccup must not fail the tool call it records. */
+async function traceCall(tool: string, args: Record<string, unknown>, result: object, artifacts: TraceArtifacts): Promise<void> {
   if (tracePath === undefined) return;
   const text = resultText(result);
   const diffMatch = /Δ (\d+) change/.exec(text);
   const line = {
+    seq: artifacts.seq,
     ts: new Date().toISOString(),
     tool,
     args: maskArgs(args),
     ok: (result as { isError?: unknown }).isError !== true,
     diff: diffMatch !== null ? Number(diffMatch[1]) : undefined,
     observation: text.split('\n', 1)[0]?.slice(0, 200) ?? '',
+    snapshot: artifacts.snapshot,
+    screenshot: artifacts.screenshot,
   };
   try {
     await appendFile(tracePath, `${JSON.stringify(line)}\n`);
@@ -984,6 +1043,20 @@ function withPopupNote(run: () => string): string {
   const message = run();
   const popup = newPopup(before);
   return popup !== undefined ? `${message} — it opened a flyout/menu in its OWN window: [hWnd=0x${popup.hWnd.toString(16)}] [class=${popup.className}] — attach it (attach {hWnd}) to drive its items.` : message;
+}
+
+// The mutating verbs Playwright's actionability gate covers — refuse them on a DISABLED control instead of acting with a
+// confident success (a posted click / invoke on a greyed-out button no-ops; set_value/type write nothing). focus/select/
+// expand/collapse and read are NOT gated: focus is valid on a disabled control, and read owes no actionability check.
+const ACTIONABILITY_GATED = new Set(['click', 'invoke', 'set_value', 'toggle', 'type']);
+/** Playwright's enabled-actionability gate at the verb the agent calls: refuse a mutating verb on a DISABLED control with
+ *  an actionable steer to the auto-retrying wait_for, rather than the silent no-op a posted click / pattern invoke on a
+ *  greyed-out control is. One IsEnabled read; only the mutating verbs (ACTIONABILITY_GATED) reach here. */
+function assertActionable(element: Element, verb: string): void {
+  if (element.isEnabled) return;
+  throw new Error(
+    `cannot ${verb} ${named(element)} — the control is DISABLED (greyed out / not accepting input), so ${verb} would no-op with a false success. Wait for it to enable first: wait_for {selector, state:{enabled:true}} (it auto-retries up to the timeout), then ${verb}; or target a control that is enabled.`,
+  );
 }
 
 function act(element: Element, action: string, text: string | undefined, submit = false): string {
@@ -1296,7 +1369,7 @@ const TOOLS: McpTool[] = [
     name: 'attach',
     category: 'read',
     description:
-      'Attach to a top-level window as the active root for snapshots and actions. Prefer an hWnd from list_windows or an exact title. className attaches only to the single VISIBLE window of that class — reliable for single-window classes (e.g. Shell_TrayWnd, the taskbar + system tray) but it refuses or asks you to disambiguate for the Chromium/Electron family (Discord, Slack, VS Code, Teams, Edge — all Chrome_WidgetWin_1), where it would otherwise grab an invisible helper. Provide a title (matched exactly, or as a case-insensitive substring when no exact match — ambiguous substrings list candidates to pick by hWnd), a className, an hWnd, or a processId. Works on a minimized/background window. Returns a fresh ref-keyed snapshot immediately — act on those refs; no follow-up desktop_snapshot is needed.',
+      'Attach to a top-level window as the active root for snapshots and actions. Prefer an hWnd from list_windows or an exact title; also accepts a title substring (ambiguous substrings list candidates to pick by hWnd), a className, or a processId. className attaches only to the single VISIBLE window of that class — reliable for single-window classes (e.g. Shell_TrayWnd, the taskbar) but it refuses / asks you to disambiguate the Chromium/Electron family (Discord, Slack, VS Code, Teams, Edge — all Chrome_WidgetWin_1), where it would otherwise grab an invisible helper. Returns a fresh ref-keyed snapshot immediately — act on those refs; no follow-up desktop_snapshot needed.',
     inputSchema: {
       type: 'object',
       properties: { title: { type: 'string' }, hWnd: { type: ['string', 'number'], description: 'Handle as a decimal/0x-hex string or a JSON number' }, processId: { type: 'number' }, className: { type: 'string' } },
@@ -1319,7 +1392,7 @@ const TOOLS: McpTool[] = [
     name: 'find_and_act',
     category: 'input',
     description:
-      'Find a control and act in one call. Target by ref (from the latest snapshot) OR selector. A selector acts on the FIRST match — if it could be ambiguous, pass a ref or a tighter selector (add automationId/controlType). Action is invoke|click|focus|type|set_value|toggle|expand|collapse|select|read (select = cursor-free SelectionItem for a tab/radio/list-item; focus = UIA SetFocus).',
+      'Find a control and act in one call. Target by ref (from the latest snapshot) OR selector. A selector acts on the FIRST match — if it could be ambiguous, pass a ref or a tighter selector (add automationId/controlType). Action is invoke|click|focus|type|set_value|toggle|expand|collapse|select|read (select = cursor-free SelectionItem for a tab/radio/list-item; focus = UIA SetFocus). Playwright-style AUTO-WAIT: a selector that matches nothing YET is re-queried for up to 2s (override with timeout, set timeout:0 to fail immediately) before reporting no match — so acting on a control that has not painted yet just waits instead of flaking. The mutating verbs (invoke/click/type/set_value/toggle) also refuse a DISABLED target rather than no-op with a false success — wait_for {state:{enabled:true}} first.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1329,6 +1402,7 @@ const TOOLS: McpTool[] = [
         do: { type: 'string', enum: ['invoke', 'click', 'type', 'set_value', 'toggle', 'expand', 'collapse', 'select', 'focus', 'read'] },
         text: { type: 'string', description: 'Text for type / set_value' },
         submit: { type: 'boolean', description: 'Press Enter after a type' },
+        timeout: { type: 'number', description: 'Auto-wait budget in ms for a not-yet-present selector (default 2000; 0 = no wait, fail immediately). Ignored when targeting by ref.' },
       },
       required: ['do'],
     },
@@ -1337,7 +1411,7 @@ const TOOLS: McpTool[] = [
     name: 'reveal',
     category: 'input',
     description:
-      'Scroll a VIRTUALIZED / off-screen list, grid, or tree item into view by selector, then optionally act on it. Use when a desktop_snapshot omits an item because it is scrolled out of view (Explorer folders, long lists, data grids, horizontal carousels) — those rows are not in the a11y tree until realized. Scans the container vertically (primary) and, when it only scrolls horizontally, along the horizontal axis. Cursor-free, no focus. do = invoke|click|focus|type|set_value|toggle|select|read (select = cursor-free SelectionItem; focus = UIA SetFocus); omit do to just bring it into the next snapshot (it then has a ref).',
+      'Scroll a VIRTUALIZED / off-screen list, grid, or tree item into view by selector, then optionally act on it. Use when a desktop_snapshot omits an item because it is scrolled out of view (Explorer folders, long lists, data grids, horizontal carousels) — those rows are not in the a11y tree until realized. Scans the container vertically (primary), then horizontally when it only scrolls sideways. Cursor-free. do = invoke|click|focus|type|set_value|toggle|select|read; omit do to just bring it into the next snapshot (it then has a ref).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1354,7 +1428,7 @@ const TOOLS: McpTool[] = [
     name: 'click',
     category: 'input',
     description:
-      "Click a control. CURSOR-FREE by default for EVERY button (left/right/middle) and doubleClick — for a left single-click: UIA invoke, else the semantic activation the control actually supports (toggle a checkbox/switch, select a radio/list/tab item), else a posted WM_*BUTTON to the control's own window — so a click on a no-own-HWND WinUI ToggleSwitch/radio truly fires (not a silently-dropped coordinate click that falsely reports success). Reports what it did (invoked / toggled / selected / posted). A control that ONLY opens a dropdown/flyout (a WinUI/WPF combobox or expander — ExpandCollapse only, no Invoke) is NOT opened by click; use the dedicated expand/collapse verb cursor-free. Works on a background/minimized/occluded/locked window with no real cursor. Pass cursor:true to FORCE the real SendInput mouse (needs an unlocked, foregrounded desktop); the real mouse is also the automatic fallback when no cursor-free path applies.",
+      'Click a control (cursor-free for left/right/middle + doubleClick). A left single-click resolves to UIA invoke, else the semantic activation the control supports (toggle a checkbox/switch, select a radio/list/tab item), else a posted WM_*BUTTON — so a no-own-HWND WinUI ToggleSwitch/radio truly fires (not a silently-dropped coordinate click). Reports what it did (invoked / toggled / selected / posted). A control that ONLY opens a dropdown/flyout (a WinUI/WPF combobox or expander — ExpandCollapse, no Invoke) is NOT opened by click; use expand/collapse. cursor:true FORCES the real SendInput mouse (also the auto fallback when no cursor-free path applies).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1377,22 +1451,21 @@ const TOOLS: McpTool[] = [
   {
     name: 'invoke',
     category: 'input',
-    description:
-      "Invoke a control via the UIA Invoke pattern (buttons, links) — cursor-free, works on a background/locked window. If it opens a flyout/menu in its OWN window, that popup's hWnd is returned automatically — attach it to drive its items.",
+    description: "Invoke a control via the UIA Invoke pattern (buttons, links) — cursor-free. If it opens a flyout/menu in its OWN window, that popup's hWnd is returned automatically — attach it to drive its items.",
     inputSchema: { type: 'object', properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC } }, required: ['ref'] },
   },
   {
     name: 'focus',
     category: 'input',
     description:
-      'Move keyboard focus to a control by ref (UIA SetFocus) — CURSOR-FREE (no SendInput), works under BUN_UIA_CURSOR=never and on a WinUI/WPF/Electron sub-control with NO own window handle. A subsequent press_key chord / Tab / arrow then lands on the focused control via SendInput, so that step needs an unlocked, foregrounded desktop (under BUN_UIA_CURSOR=never a no-own-HWND control has NO key path — drive it by intent: invoke / select / set_value instead). Prefer invoke/set_value/toggle when a pattern exists.',
+      'Move keyboard focus to a control by ref (UIA SetFocus) — CURSOR-FREE, even for a WinUI/WPF/Electron sub-control with NO own window handle. A subsequent press_key chord / Tab / arrow then lands on the focused control via SendInput (under BUN_UIA_CURSOR=never a no-own-HWND control has NO key path — drive it by intent: invoke / select / set_value instead). Prefer invoke/set_value/toggle when a pattern exists.',
     inputSchema: { type: 'object', properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC } }, required: ['ref'] },
   },
   {
     name: 'type',
     category: 'input',
     description:
-      'Type Unicode text into an editable control. Cursor-free when the control has its own window handle (WM_CHAR — no focus, works minimized/background/locked); falls back to SendInput keystrokes for a WinUI/WPF/Chromium sub-control with no own HWND (that path needs an unlocked desktop and is refused under BUN_UIA_CURSOR=never). Prefer set_value when the control supports the Value pattern.',
+      'Type Unicode text into an editable control. Cursor-free (WM_CHAR) when the control has its own window handle; falls back to SendInput keystrokes for a WinUI/WPF/Chromium sub-control with no own HWND. Prefer set_value when the control supports the Value pattern.',
     inputSchema: {
       type: 'object',
       properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC }, text: { type: 'string' }, submit: { type: 'boolean', description: 'Press Enter after' } },
@@ -1429,7 +1502,7 @@ const TOOLS: McpTool[] = [
     name: 'select',
     category: 'input',
     description:
-      'Select a list/grid/tree item via the UIA SelectionItem pattern — cursor-free, works on a background/locked window. mode: replace (default, clears other selections), add (multi-select — keeps the others), remove (deselect). The returned snapshot marks selected refs (selected).',
+      'Select a list/grid/tree item via the UIA SelectionItem pattern — cursor-free. mode: replace (default, clears other selections), add (multi-select — keeps the others), remove (deselect). The returned snapshot marks selected refs (selected).',
     inputSchema: {
       type: 'object',
       properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC }, mode: { type: 'string', enum: ['replace', 'add', 'remove'] } },
@@ -1451,7 +1524,7 @@ const TOOLS: McpTool[] = [
     name: 'wait_for',
     category: 'read',
     description:
-      'Wait until a control matching the selector APPEARS in the attached window (or, with gone:true, until it DISAPPEARS — the spinner / "Loading…" / progress-bar / just-dismissed-modal gate), then return a fresh snapshot. Pass state to instead retry until the matching control reaches a STATE — the desktop analogue of Playwright expect(locator).toBeChecked()/toHaveValue()/toBeEnabled(): CONFIRM an action landed (a toggle is now on, a set value stuck, an item is now selected/expanded/enabled) without hand-rolling snapshot → parse → sleep → re-snapshot. On timeout, throws quoting the nearest candidates (appear), the still-present selector (gone), or the last-seen state (state).',
+      'Wait until a control matching the selector APPEARS in the attached window (or, with gone:true, until it DISAPPEARS — the spinner / "Loading…" / progress-bar / just-dismissed-modal gate), then return a fresh snapshot. Pass state to instead retry until the match reaches a STATE (toggle on, value stuck, selected/expanded/enabled) — the desktop expect(locator).toBeChecked()/toHaveValue(), so you confirm an action landed without hand-rolling snapshot → parse → sleep → re-snapshot. On timeout, throws quoting the nearest candidates (appear), the still-present selector (gone), or the last-seen state (state).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1485,13 +1558,14 @@ const TOOLS: McpTool[] = [
     name: 'wait_for_window',
     category: 'read',
     description:
-      'Wait until a top-level window matching title (substring) / className / process appears ANYWHERE on the desktop — driven by a SetWinEventHook event hook, not polling — then return its title/className/processId/hWnd. Resolves immediately if one is already open. Use to gate on a dialog, a just-launched app, or a page finishing navigation. Omit all fields to wait for any new window. Pass {gone:true} to instead wait until a matching window CLOSES/disappears (a dialog dismissed, a splash/progress window finishing, an app exiting) — resolves immediately if none is open.',
+      'Wait until a top-level window matching title (substring) / className / process appears ANYWHERE on the desktop — driven by a SetWinEventHook event hook, not polling — then return its title/className/processId/hWnd. Resolves immediately if one is already open. Use to gate on a dialog, a just-launched app, or a page finishing navigation. Omit all fields to wait for any new window. Pass {attach:true} to attach to the matched window and return its snapshot in ONE call (like launch_app) — the common gate-then-drive loop without a follow-up attach. Pass {gone:true} to instead wait until a matching window CLOSES/disappears (a dialog dismissed, a splash/progress window finishing, an app exiting) — resolves immediately if none is open.',
     inputSchema: {
       type: 'object',
       properties: {
         title: { type: 'string' },
         className: { type: 'string' },
         process: { type: 'number' },
+        attach: { type: 'boolean', description: 'Attach to the matched window and return its snapshot in one call (ignored with gone:true)' },
         gone: { type: 'boolean', description: 'Wait for a matching window to CLOSE/disappear instead of appear' },
         timeout: { type: 'number', description: 'Milliseconds (default 30000)' },
       },
@@ -1501,8 +1575,12 @@ const TOOLS: McpTool[] = [
     name: 'wait_for_process',
     category: 'read',
     description:
-      'Wait until a process whose image name contains the given text is running (e.g. "chrome.exe"), then return its pid. Resolves immediately if already running. Use to trigger work the moment a process the agent is waiting on spawns.',
-    inputSchema: { type: 'object', properties: { name: { type: 'string' }, timeout: { type: 'number', description: 'Milliseconds (default 30000)' } }, required: ['name'] },
+      'Wait until a process whose image name contains the given text is running (e.g. "chrome.exe"), then return its pid. Resolves immediately if already running. Use to trigger work the moment a process the agent is waiting on spawns. Pass {attach:true} to attach to the process\'s window and return its snapshot in ONE call (like launch_app) — falls back to the pid + a steer if its window has not painted yet.',
+    inputSchema: {
+      type: 'object',
+      properties: { attach: { type: 'boolean', description: "Attach to the process's window and return its snapshot in one call" }, name: { type: 'string' }, timeout: { type: 'number', description: 'Milliseconds (default 30000)' } },
+      required: ['name'],
+    },
   },
   {
     name: 'list_processes',
@@ -1645,7 +1723,7 @@ const TOOLS: McpTool[] = [
     name: 'java_tree',
     category: 'read',
     description:
-      "The Java Access Bridge accessibility tree (role/name/states/bounds) of a Java Swing/AWT (and JavaFX where it bridges to JAB) window — a SunAwtFrame/SunAwtDialog exposes NOTHING to UIA or MSAA (only its bare top-level frame), but the JVM speaks the Access Bridge. Reads it cursor-free / background (no focus theft). To ACT on a control by its name, use java_invoke (buttons / check boxes / menu items) or java_set_text (text fields) — both cursor-free / background; click_point at a node's bounds center is the pixel fallback. Returns null with a hint if the window is not a bridge-visible Java window (the JVM needs the Access Bridge enabled: `jabswitch -enable`, or launch with -Djavax.accessibility.assistive_technologies=com.sun.java.accessibility.AccessBridge).",
+      "The Java Access Bridge accessibility tree (role/name/states/bounds) of a Java Swing/AWT (and JAB-bridged JavaFX) window — a SunAwtFrame/SunAwtDialog exposes NOTHING to UIA or MSAA (only its bare frame), but the JVM speaks the Access Bridge; cursor-free / background. To ACT on a node by its name use java_invoke (buttons / checkboxes / menu items) or java_set_text (text fields); click_point at a node's bounds center is the pixel fallback. Returns null with a hint if the window is not a bridge-visible Java window (the JVM needs the Access Bridge: `jabswitch -enable`, or launch with -Djavax.accessibility.assistive_technologies=com.sun.java.accessibility.AccessBridge).",
     inputSchema: {
       type: 'object',
       properties: { hWnd: { type: ['string', 'number'], description: HWND_DESC }, maxDepth: { type: 'number', description: 'Default 24' }, maxNodes: { type: 'number', description: 'Default 2000 — total nodes before truncation' } },
@@ -1655,7 +1733,7 @@ const TOOLS: McpTool[] = [
     name: 'java_invoke',
     category: 'input',
     description:
-      'Invoke a control in a Java Swing/AWT window by its name — push button, check box, radio button, menu item, or JList item (a list row is SELECTED by invoking it) — cursor-free / background via the Java Access Bridge (doAccessibleActions, the JVM\'s own "click"; no cursor, no foreground, no focus theft). Call java_tree FIRST to get exact names. Targets the first AccessibleName match; optionally narrow by {role} (an en_US role substring, e.g. "check box") when two controls share a name — if two share name AND role, act via click_point at that node\'s java_tree bounds center instead. CAVEAT: a JComboBox / JTree item may report success WITHOUT changing the selection (the item\'s action does not always select) — confirm via the appended tree\'s "selected" state rather than trusting the boolean, and if it did not take, fall back to click_point at the item\'s java_tree bounds center. Returns whether the action succeeded (false if no match or not a bridge-visible Java window) and appends the resulting java tree.',
+      'Invoke a control in a Java Swing/AWT window by its name — push button, check box, radio button, menu item, or JList item (a list row is SELECTED by invoking it) — cursor-free / background via the Java Access Bridge (doAccessibleActions). Call java_tree FIRST for exact names. Targets the first AccessibleName match; narrow by {role} (en_US role substring, e.g. "check box") when names collide — if name AND role both collide, use click_point at the node\'s java_tree bounds center. CAVEAT: a JComboBox / JTree item may report success WITHOUT changing the selection — confirm via the appended tree\'s "selected" state, and if it did not take, click_point at the item\'s bounds center. Returns whether it succeeded (false if no match / not a bridge-visible Java window) and appends the java tree.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1693,14 +1771,14 @@ const TOOLS: McpTool[] = [
     name: 'press_key',
     category: 'input',
     description:
-      'Send a key or chord, e.g. "Enter", "Control+S", "Control+Shift+Tab", "F4". With a ref AND a single key (no chord), posts the key to that control cursor-free (background/occluded/locked OK, no focus). On a control with its OWN window handle the everyday edit chords are ALSO cursor-free — Control+A/C/X/V/Z map to posted EM_SETSEL/WM_COPY/WM_CUT/WM_PASTE/EM_UNDO (no focus, locked/background OK). Any other chord with a ref FOCUSES it first (cursor-free UIA SetFocus) then sends synthetic input (needs an unlocked foregrounded desktop). With no ref, the key/chord goes to whatever currently holds focus.',
+      'Send a key or chord, e.g. "Enter", "Control+S", "Control+Shift+Tab", "F4". With a ref AND a single key (no chord), posts the key to that control cursor-free. On an own-HWND control the everyday edit chords are ALSO cursor-free — Control+A/C/X/V/Z map to posted EM_SETSEL/WM_COPY/WM_CUT/WM_PASTE/EM_UNDO. Any other chord with a ref FOCUSES it first (cursor-free UIA SetFocus) then sends synthetic input. With no ref, the key/chord goes to whatever currently holds focus.',
     inputSchema: { type: 'object', properties: { key: { type: 'string' }, element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC } }, required: ['key'] },
   },
   {
     name: 'scroll',
     category: 'input',
     description:
-      "Scroll a control (cursor-free; works on a locked/background/minimized window). direction up/down/left/right scrolls the nearest usable ScrollPattern container by `amount` small steps; with NO usable ScrollPattern it posts a wheel cursor-free — to a classic ScrollPattern-less own-HWND control (ListView/Edit/TreeView), OR to a Chromium/Electron web page whose ScrollPattern FALSELY reports not-scrollable (the wheel goes to the page's browser host window — this is how you scroll a browser/VS Code/Discord page). direction top/bottom jumps to the start/end, page-up/page-down/page-left/page-right move one page (×`amount`) — these need a GENUINELY scrollable ScrollPattern (a Chromium page is refused here; use a directional scroll instead). `to` (0-100) jumps to that percent (vertical unless direction is left/right). Without a direction or `to`, scrolls the ref into view via the ScrollItem pattern.",
+      "Scroll a control (cursor-free). direction up/down/left/right scrolls the nearest usable ScrollPattern container by `amount` small steps; with NO usable ScrollPattern it posts a wheel — to a ScrollPattern-less own-HWND control (ListView/Edit/TreeView), OR a Chromium/Electron web page whose ScrollPattern FALSELY reports not-scrollable (wheel goes to the page's browser host window — this is how you scroll a browser/VS Code/Discord page). top/bottom jump to start/end, page-up/down/left/right move one page (×`amount`) — these need a GENUINELY scrollable ScrollPattern (a Chromium page is refused; use a directional scroll). `to` (0-100) jumps to that percent (vertical unless direction is left/right). Without direction or `to`, scrolls the ref into view via ScrollItem.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -1717,7 +1795,7 @@ const TOOLS: McpTool[] = [
     name: 'drag',
     category: 'input',
     description:
-      'Press-drag-release. By DEFAULT uses the REAL mouse (drag-drop an icon/file, move a slider) — needs an unlocked, foregrounded desktop. {select:true} instead does a CURSOR-FREE drag (text selection / marquee-select) by posting mouse messages to a {ref} control with its OWN window handle (classic Edit/RichEdit/ListView) — works background/occluded/locked, but it cannot drag-DROP (for a drop use the real-mouse default). Target raw points {fromX,fromY,toX,toY} or a ref start {ref,toX,toY}. Under BUN_UIA_CURSOR=never a real drag is disabled, but a {ref} with its own window handle auto-falls-back to the cursor-free drag-select.',
+      'Press-drag-release. By DEFAULT uses the REAL mouse (drag-drop an icon/file, move a slider). {select:true} instead does a CURSOR-FREE drag (text selection / marquee-select) by posting mouse messages to an own-HWND {ref} control (classic Edit/RichEdit/ListView) — but it cannot drag-DROP (for a drop use the real-mouse default). Target raw points {fromX,fromY,toX,toY} or a ref start {ref,toX,toY}. Under BUN_UIA_CURSOR=never the real drag is disabled, but an own-HWND {ref} auto-falls-back to the cursor-free drag-select.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1736,7 +1814,7 @@ const TOOLS: McpTool[] = [
     name: 'hold_key',
     category: 'input',
     description:
-      'Press and hold a key for durationMs, then release (e.g. an arrow-repeat or a game key). With a ref to a control that has its OWN window handle, the hold is posted cursor-free (a WM_KEYDOWN autorepeat stream — no focus, background/occluded/locked OK); without a ref (or for a sub-control with no own HWND) it uses SendInput to the focused window, which needs an unlocked foregrounded desktop.',
+      'Press and hold a key for durationMs, then release (e.g. an arrow-repeat or a game key). With a ref to a control that has its OWN window handle, the hold is posted cursor-free (a WM_KEYDOWN autorepeat stream); without a ref (or for a sub-control with no own HWND) it uses SendInput to the focused window.',
     inputSchema: {
       type: 'object',
       properties: { key: { type: 'string' }, durationMs: { type: 'number', description: 'Default 1000' }, element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC } },
@@ -1796,7 +1874,7 @@ const TOOLS: McpTool[] = [
     name: 'paste',
     category: 'input',
     description:
-      'Paste text via the clipboard — the reliable large-text path. With a ref whose control has its own window handle it is cursor-free (sets the clipboard, then WM_PASTE — no focus, works minimized/background/locked); otherwise it focuses + Ctrl+V via SendInput (needs an unlocked desktop, refused under BUN_UIA_CURSOR=never). Omit text to paste the current clipboard. Prefer set_value when the control supports the Value pattern.',
+      'Paste text via the clipboard — the reliable large-text path. With a ref whose control has its own window handle it is cursor-free (sets the clipboard, then WM_PASTE); otherwise it focuses + Ctrl+V via SendInput. Omit text to paste the current clipboard. Prefer set_value when the control supports the Value pattern.',
     inputSchema: {
       type: 'object',
       properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC }, text: { type: 'string', description: 'Text to paste (omit to paste the current clipboard)' } },
@@ -1813,7 +1891,7 @@ const TOOLS: McpTool[] = [
     name: 'cut',
     category: 'input',
     description:
-      "Cut a control's text to the clipboard and return it. Cursor-free for a classic Edit with its own window handle (select-all when nothing is selected, then WM_CUT — no focus, works minimized/background/locked); for a WinUI/Chromium sub-control with no own HWND it focuses + Ctrl+X via SendInput (needs an unlocked desktop, refused under BUN_UIA_CURSOR=never). Refuses a password field.",
+      "Cut a control's text to the clipboard and return it. Cursor-free for a classic Edit with its own window handle (select-all when nothing is selected, then WM_CUT); for a WinUI/Chromium sub-control with no own HWND it focuses + Ctrl+X via SendInput. Refuses a password field.",
     inputSchema: { type: 'object', properties: { element: { type: 'string', description: ELEMENT_DESC }, ref: { type: 'string', description: REF_DESC } }, required: ['ref'] },
   },
   {
@@ -1983,7 +2061,7 @@ const HANDLERS: Record<string, ToolHandler> = {
     return withSnapshot(`attached to ${JSON.stringify(next.name)}${blindSpotNote(next.className)}`);
   },
   desktop_snapshot: (args) => textResult(snapshotText(typeof args.maxDepth === 'number' ? args.maxDepth : undefined, typeof args.root === 'string' ? args.root : undefined)),
-  find_and_act: (args) => {
+  find_and_act: async (args) => {
     const action = requireString(args, 'do');
     const baseline = current?.marks.length ?? 0; // captured before the action so an expand can settle for its revealed in-process items
     const observe = (message: string): object => (action === 'read' ? textResult(message) : withActSnapshot(action, message, baseline)); // a pure read owes no full re-grounding snapshot; an expand settles for revealed items
@@ -1991,7 +2069,18 @@ const HANDLERS: Record<string, ToolHandler> = {
     rejectElementOnlyTarget(args);
     const window = requireAttached();
     const selector = selectorFrom(args.selector);
-    const matches = window.findAll(selector); // findAll, not find — so an AMBIGUOUS selector is caught, not silently acted on
+    // Playwright auto-waits for the target to EXIST before acting; mirror it — when the selector matches NOTHING yet,
+    // re-query on the wait cadence until it appears or the budget (default ACT_WAIT_DEFAULT_MS, overridable {timeout},
+    // {timeout:0} disables it) elapses, THEN throw describeNoMatch. A first-poll match (the common case) costs nothing.
+    const waitBudget = typeof args.timeout === 'number' ? Math.max(0, args.timeout) : ACT_WAIT_DEFAULT_MS;
+    let matches = window.findAll(selector); // findAll, not find — so an AMBIGUOUS selector is caught, not silently acted on
+    if (matches.length === 0 && waitBudget > 0) {
+      const start = Bun.nanoseconds();
+      while (matches.length === 0 && (Bun.nanoseconds() - start) / 1e6 < waitBudget) {
+        await Bun.sleep(ACT_WAIT_INTERVAL_MS);
+        matches = requireAttached().findAll(selector); // re-resolve the window each poll: a re-render can swap the attached Element out from under a held reference
+      }
+    }
     if (matches.length === 0) throw new Error(window.describeNoMatch(selector));
     try {
       // A destructive verb on >1 matches would hit an arbitrary control with a confident success — refuse and list
@@ -2023,6 +2112,7 @@ const HANDLERS: Record<string, ToolHandler> = {
   },
   click: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
+    assertActionable(element, 'click'); // Playwright-class enabled gate — a posted click on a greyed-out control silently no-ops
     const button = args.button === 'right' ? 'right' : args.button === 'middle' ? 'middle' : 'left';
     const outcome = clickElement(element, button, args.doubleClick === true, args.cursor === true);
     return withSnapshot(`${outcome} ${named(element)}`);
@@ -2078,7 +2168,8 @@ const HANDLERS: Record<string, ToolHandler> = {
   },
   type: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
-    const text = requireString(args, 'text');
+    const text = requireString(args, 'text'); // read BEFORE the actionability gate so a missing-text SCHEMA error is not masked by the disabled-control steer
+    assertActionable(element, 'type'); // Playwright-class enabled gate — typing into a disabled field writes nothing
     const target = named(element);
     const handle = element.nativeWindowHandle;
     if (handle !== 0n) {
@@ -2188,12 +2279,36 @@ const HANDLERS: Record<string, ToolHandler> = {
       return textResult(`window gone: no window matching ${JSON.stringify(match)} is open anymore`);
     }
     const info = await uia.waitForWindow(match, { timeout });
-    return textResult(`window: ${JSON.stringify(info.title)} [${info.className}] pid=${info.processId} hWnd=0x${info.hWnd.toString(16)} — attach by hWnd to drive it`);
+    if (args.attach !== true) return textResult(`window: ${JSON.stringify(info.title)} [${info.className}] pid=${info.processId} hWnd=0x${info.hWnd.toString(16)} — attach by hWnd to drive it`);
+    // One-call gate→attach→snapshot (mirrors launch_app): dispose-after-success ordering, then settle the fresh window's tree.
+    const window = uia.attach(info.hWnd);
+    current?.dispose();
+    current = null;
+    attached?.dispose();
+    attached = window;
+    lastSnapshotBody = '';
+    lastSnapshotTree = null;
+    return withLaunchSettledSnapshot(`window appeared — attached to ${JSON.stringify(window.name)}${blindSpotNote(window.className)}`);
   },
   wait_for_process: async (args) => {
     const name = requireString(args, 'name');
     const pid = await uia.waitForProcess(name, { timeout: typeof args.timeout === 'number' ? args.timeout : 30000 });
-    return textResult(`process running: ${name} pid=${pid}`);
+    if (args.attach !== true) return textResult(`process running: ${name} pid=${pid}`);
+    // One-call gate→attach→snapshot. attachByProcess throws if the process has no visible window YET (it spawned but
+    // its UI is still painting) — report the pid + steer to wait_for_window {process} so the agent gates on the window.
+    let window: Window;
+    try {
+      window = attachByProcess(pid);
+    } catch (error) {
+      return errorResult(`process running: ${name} pid=${pid}, but could not attach: ${error instanceof Error ? error.message : String(error)} — gate on its window with wait_for_window {process:${pid}, attach:true}`);
+    }
+    current?.dispose();
+    current = null;
+    attached?.dispose();
+    attached = window;
+    lastSnapshotBody = '';
+    lastSnapshotTree = null;
+    return withLaunchSettledSnapshot(`process ${name} (pid=${pid}) running — attached to ${JSON.stringify(window.name)}${blindSpotNote(window.className)}`);
   },
   list_processes: (args) => {
     const filter = typeof args.filter === 'string' ? args.filter.toLowerCase() : null;
@@ -2208,12 +2323,12 @@ const HANDLERS: Record<string, ToolHandler> = {
     let result: { text: string; lines: { text: string; bounds: { x: number; y: number; width: number; height: number } }[] };
     let origin: string;
     if (region !== null && typeof region === 'object' && !Array.isArray(region)) {
-      const r = region as Record<string, unknown>;
+      const regionRecord = record(region);
       result = await uia.ocrScreen({
-        x: typeof r.x === 'number' ? r.x : undefined,
-        y: typeof r.y === 'number' ? r.y : undefined,
-        width: typeof r.width === 'number' ? r.width : undefined,
-        height: typeof r.height === 'number' ? r.height : undefined,
+        x: typeof regionRecord.x === 'number' ? regionRecord.x : undefined,
+        y: typeof regionRecord.y === 'number' ? regionRecord.y : undefined,
+        width: typeof regionRecord.width === 'number' ? regionRecord.width : undefined,
+        height: typeof regionRecord.height === 'number' ? regionRecord.height : undefined,
       });
       origin = 'screen region';
     } else {
@@ -2566,9 +2681,7 @@ const HANDLERS: Record<string, ToolHandler> = {
       return withSnapshot(`focused ${named(element)} then pressed ${keyShown} — the ref has no native window handle, so the key was delivered with synthetic input to the now-focused control`);
     }
     if (cursorDenied)
-      return errorResult(
-        `a key chord like ${keyShown} is delivered with synthetic input (SendInput) to the focused control — disabled by BUN_UIA_CURSOR=never. Post a single key to a control by ref (press_key {ref,key}) instead.`,
-      );
+      return errorResult(`a key chord like ${keyShown} is delivered with synthetic input (SendInput) to the focused control — disabled by BUN_UIA_CURSOR=never. Post a single key to a control by ref (press_key {ref,key}) instead.`);
     // A chord with a ref: focus that control first (cursor-free SetFocus) so the synthetic chord lands on IT — without
     // this the ref was silently ignored and the chord hit whatever happened to hold focus.
     if (typeof args.ref === 'string') {
@@ -2965,7 +3078,7 @@ async function dispatch(request: JsonRpcRequest): Promise<void> {
       const protocolVersion = typeof requested === 'string' && SUPPORTED_VERSIONS.has(requested) ? requested : PROTOCOL_VERSION;
       uia.initialize();
       log(
-        `profile: ${(Bun.env.BUN_UIA_PROFILE ?? 'safe').toLowerCase()} → categories {${[...enabledCategories].join(',')}}; ${TOOLS.filter(toolAllowed).length}/${TOOLS.length} tools enabled${tracePath !== undefined ? `; trace → ${tracePath}` : ''}`,
+        `profile: ${(Bun.env.BUN_UIA_PROFILE ?? 'safe').toLowerCase()} → categories {${[...enabledCategories].join(',')}}; ${TOOLS.filter(toolAllowed).length}/${TOOLS.length} tools enabled${tracePath !== undefined ? `; trace → ${tracePath}${traceSnapshots ? ` (+snapshots/screenshots → ${traceArtifactDir})` : ''}` : ''}`,
       );
       // Report the security floor so a deployer's forensic-trace + redaction assumptions are auditable at startup: the
       // audit trail is default-on (BUN_UIA_AUDIT=off is the EXPLICIT opt-out, never silent), clipboard redaction is
@@ -3000,14 +3113,18 @@ async function dispatch(request: JsonRpcRequest): Promise<void> {
         return reply(errorResult(`tool "${name}" is disabled by the server policy (category "${tool.category}"). Enable it with ${remedy}.`));
       }
       const callArgs = record(callParams.arguments);
+      // Capture the PRE-action trace artifacts (snapshot text + PNG) BEFORE the handler runs — an action handler rebuilds
+      // the snapshot, so capturing after would persist the wrong, post-action state. No-op (just bumps seq) when tracing
+      // is off or BUN_UIA_TRACE_SNAPSHOTS is unset, so it stays zero-cost on the default path.
+      const traceArtifacts = await captureTraceArtifacts(name);
       let result: object;
       try {
         result = await HANDLERS[name]!(callArgs);
       } catch (error) {
-        result = errorResult(`Error: ${(error as Error).message}`);
+        result = errorResult((error as Error).message);
       }
       auditCall(name, tool.category, callArgs, result);
-      await traceCall(name, callArgs, result);
+      await traceCall(name, callArgs, result, traceArtifacts);
       return reply(result);
     }
     default:

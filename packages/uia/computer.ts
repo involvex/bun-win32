@@ -6,7 +6,7 @@
 // one — erasing the coordinate-hallucination, downscaling click-miss, and scroll-no-op failure modes
 // that the computer-use literature attributes to screenshot-only grounding.
 
-import { ownerHwnd, postClickAt, postClickToHwnd, postDoubleClickAt, postTripleClickAt, scrollAt } from './coords';
+import { ownerHwnd, postClickAt, postClickToHwnd, postDoubleClickAt, postDragToHwnd, postTripleClickAt, scrollAt } from './coords';
 import { focused, fromPoint, type Window } from './element';
 import { clickAt, cursorPosition, doubleClickAt, dragTo, holdKey, middleClickAt, mouseDown, mouseUp, moveTo, postHoldKey, postKey, postText, rightClickAt, scrollWheel, sendKeys, type as typeText } from './input';
 
@@ -170,8 +170,28 @@ export async function dispatch(window: Window, action: ComputerAction, options: 
         return { ok: true };
       case 'left_click_drag': {
         const start = action.startCoordinate ?? action.coordinate;
-        if (start !== undefined && action.coordinate !== undefined) dragTo(start[0], start[1], action.coordinate[0], action.coordinate[1]);
-        return { ok: true };
+        if (start === undefined || action.coordinate === undefined) return { ok: true };
+        // Honor cursorless (the doctrine): resolve the owner HWND of the START point (fromPoint → ownerHwnd, mirroring
+        // semanticClick) and post a cursor-free drag-SELECT (text selection / marquee) to it — works background/occluded/
+        // locked, real mouse unmoved. This is NOT an OLE drag-DROP (that genuinely needs the real cursor — an inherent
+        // wall), exactly as the MCP `drag` tool documents. Falls back to the real-cursor dragTo when no owner resolves.
+        if (cursorless) {
+          let owner = 0n;
+          try {
+            const element = fromPoint(start[0], start[1]);
+            try {
+              owner = ownerHwnd(element);
+            } finally {
+              element.release();
+            }
+          } catch {
+            // no element at the start point — fall through to the real-cursor drag
+          }
+          if (owner !== 0n && postDragToHwnd(owner, start[0], start[1], action.coordinate[0], action.coordinate[1]))
+            return { ok: true, output: `drag-selected ${start[0]},${start[1]} → ${action.coordinate[0]},${action.coordinate[1]} (cursor-free; text/marquee SELECT, not an OLE drag-drop)` };
+        }
+        dragTo(start[0], start[1], action.coordinate[0], action.coordinate[1]);
+        return { ok: true, output: `dragged ${start[0]},${start[1]} → ${action.coordinate[0]},${action.coordinate[1]} (real cursor)` };
       }
       case 'key': {
         const combo = normalizeKey(action.text ?? '');
