@@ -33,7 +33,7 @@ function assert(condition: boolean, message: string): void {
   console.log(`  ok: ${message}`);
 }
 
-// ---- D. synthetic prune rule (deterministic; no app) ---------------------------------------------
+// D. synthetic prune rule (deterministic; no app)
 function syntheticPrune(): void {
   console.log('\n[D] prune rule (synthetic)');
   const tree: RefNode = {
@@ -56,7 +56,7 @@ function syntheticPrune(): void {
   assert(!pruned.children.some((child) => child.role === 'Pane'), 'unnamed ref-less non-interactive Pane dropped');
 }
 
-// ---- B0. ref-churn guard (synthetic; deterministic) ----------------------------------------------
+// B0. ref-churn guard (synthetic; deterministic)
 function syntheticChurn(): void {
   console.log('\n[B0] ref-churn guard (synthetic)');
   const base: RefNode = {
@@ -92,7 +92,7 @@ function syntheticChurn(): void {
   assert(!stateChurn && stateDelta.count === 1 && /\(off\) → \(on\)/.test(stateDelta.text), 'a state-only change (off→on) is ONE Δ line, no churn → cheap delta, not a full dump');
 }
 
-// ---- C. budget cap (deterministic; no app) -------------------------------------------------------
+// C. budget cap (deterministic; no app)
 function budgetCap(): void {
   console.log('\n[C] size budget (synthetic)');
   const huge: RefNode = { role: 'Window', name: 'Big', children: [] };
@@ -118,7 +118,7 @@ function measurePrune(label: string, tree: RefNode): { unprunedLines: number; pr
   return { unprunedLines: unpruned.split('\n').length, prunedLines: pruned.split('\n').length, refsBefore: before.size };
 }
 
-// ---- A + B. live -------------------------------------------------------------------
+// A + B. live
 async function live(): Promise<void> {
   uia.initialize();
   const calc = await uia.launch(['cmd', '/c', 'start', 'calc'], { title: 'Calculator' });
