@@ -97,6 +97,16 @@ try {
     const stale = await call('tools/call', { name: 'invoke', arguments: { element: 'Five (stale ref)', ref: oldFive } });
     assert(isErr(stale) && /earlier snapshot generation/.test(textOf(stale)), 'a stale-generation ref is REJECTED with a re-ground message');
 
+    // A' — a FABRICATED id wearing a stale generation tag must NOT claim "re-grounded since" (which implies it once
+    // existed and will reappear on re-snapshot); it never existed, so it gets the truthful "not in the current
+    // snapshot" wording, distinct from the genuinely-stale case above. (oldFive's #gen is provably non-current.)
+    const fakeGen = oldFive.slice(oldFive.indexOf('#'));
+    const fabricated = await call('tools/call', { name: 'invoke', arguments: { element: 'hallucinated', ref: `e99999${fakeGen}` } });
+    assert(
+      isErr(fabricated) && /not in the current snapshot/.test(textOf(fabricated)) && !/earlier snapshot generation/.test(textOf(fabricated)),
+      'a fabricated id with a stale-gen tag reports "not in the current snapshot" (NOT a misleading "re-grounded since")',
+    );
+
     // B — the fresh ref works. (This first digit may add the Clear-Entry control → a full re-dump → new generation,
     // which is a CORRECT renumber, so we re-ground afterward for the delta test.)
     const fresh = await call('tools/call', { name: 'invoke', arguments: { element: 'Five', ref: newFive } });
