@@ -2710,7 +2710,7 @@ const HANDLERS: Record<string, ToolHandler> = {
           else cutFromControl(handle);
           // Only trust the clipboard if WM_COPY/CUT actually moved the counter; else the control ignored it — fall
           // through to the SendInput chord path rather than claim a stale clipboard.
-          if (clipboardSequence() !== before) return withSnapshot(`${chord === 'control+c' ? 'copied' : 'cut'} ${named(element)} to the clipboard cursor-free — ${JSON.stringify(capText(uia.readClipboard()))}`);
+          if (clipboardSequence() !== before) return withSnapshot(`${chord === 'control+c' ? 'copied' : 'cut'} ${named(element)} to the clipboard cursor-free — ${JSON.stringify(capText(redactSecrets(uia.readClipboard())))}`);
         }
       }
     }
@@ -2975,7 +2975,7 @@ const HANDLERS: Record<string, ToolHandler> = {
       const selected = element.getSelectedText(); // cursor-free: TextPattern selection, no focus, works locked/background
       if (selected.length > 0) {
         uia.writeClipboard(selected);
-        return textResult(capText(selected));
+        return textResult(capText(redactSecrets(selected)));
       }
       // No TextPattern selection — for a classic Edit with its OWN HWND, select-all + WM_COPY cursor-free (no focus,
       // works minimized/background/locked), the path TextPattern-less Win32 Edits need.
@@ -2988,7 +2988,7 @@ const HANDLERS: Record<string, ToolHandler> = {
         // not this control's content; fall through to the honest "select first" message rather than leak a stale value.
         if (clipboardSequence() !== before) {
           const text = uia.readClipboard();
-          if (text.length > 0) return textResult(capText(text));
+          if (text.length > 0) return textResult(capText(redactSecrets(text)));
         }
       }
       // No selection and no own-HWND Edit — do NOT silently Ctrl+C the FOCUSED control and pass its clipboard off as
@@ -3004,7 +3004,7 @@ const HANDLERS: Record<string, ToolHandler> = {
       return textResult(
         '(Ctrl+C changed nothing — likely no selection; not returning the existing clipboard, which may be unrelated. Read it explicitly with read_clipboard, or select text first with find_text {ref, text} then copy {ref}.)',
       );
-    return textResult(capText(copied) || '(no selection / clipboard empty)');
+    return textResult(capText(redactSecrets(copied)) || '(no selection / clipboard empty)');
   },
   cut: (args) => {
     const element = resolveRef(requireString(args, 'ref'));
@@ -3019,13 +3019,13 @@ const HANDLERS: Record<string, ToolHandler> = {
       // WM_CUT is synchronous; if the clipboard counter did not move the control ignored it (not a classic Edit / nothing to cut) — do not report a stale clipboard as the cut text.
       if (clipboardSequence() === before)
         return errorResult(`nothing was cut from ${target} — it did not honor WM_CUT (not a classic Edit, or nothing selected). Select text first (find_text {ref, text}), or target a classic Edit control.`);
-      return withSnapshot(`cut ${target} to the clipboard cursor-free — ${JSON.stringify(capText(uia.readClipboard()))}`);
+      return withSnapshot(`cut ${target} to the clipboard cursor-free — ${JSON.stringify(capText(redactSecrets(uia.readClipboard())))}`);
     }
     // WinUI/WPF/Chromium sub-control with no own HWND — only SendInput Ctrl+X reaches it.
     if (cursorDenied) return errorResult('this control has no native window handle for the cursor-free WM_CUT path, so cut would need SendInput Ctrl+X — disabled by BUN_UIA_CURSOR=never');
     element.focus();
     uia.sendKeys('Control+X');
-    return withSnapshot(`cut ${target} (SendInput Ctrl+X) — ${JSON.stringify(capText(uia.readClipboard()))}`);
+    return withSnapshot(`cut ${target} (SendInput Ctrl+X) — ${JSON.stringify(capText(redactSecrets(uia.readClipboard())))}`);
   },
   launch_app: async (args) => {
     const command = requireString(args, 'command');
