@@ -94,6 +94,7 @@ import {
   undoControl,
   virtualScreen,
   type Window,
+  type WindowInfo,
   wgcAvailable,
   windowOnCurrentDesktop,
   windowProcessId,
@@ -1933,7 +1934,7 @@ const TOOLS: McpTool[] = [
     name: 'launch_app',
     category: 'os',
     description:
-      'Start a program by name (notepad, calc) OR an App-Paths / Store-alias exe a bare $PATH spawn can\'t find (mspaint, winword, excel, wt) — it falls back to ShellExecuteW automatically. With a title/className, waits for its window and attaches (returns a snapshot); otherwise just spawns it. Gated — disabled unless the server policy enables the "os" category.',
+      'Start a program by name (notepad, calc) OR an App-Paths / Store-alias exe a bare $PATH spawn can\'t find (mspaint, winword, excel, wt) — it falls back to ShellExecuteW automatically. With a title/className, waits for the NEWLY-appeared window THIS launch created (ignoring same-titled windows already open, preferring the spawned pid) and attaches (returns a snapshot); otherwise just spawns it. To gate on / attach to an ALREADY-open window use wait_for_window. Gated — disabled unless the server policy enables the "os" category.',
     inputSchema: {
       type: 'object',
       properties: { command: { type: 'string', description: 'Executable + args, space-separated (e.g. "notepad.exe")' }, title: { type: 'string' }, className: { type: 'string' }, timeout: { type: 'number' } },
@@ -3027,11 +3028,32 @@ const HANDLERS: Record<string, ToolHandler> = {
   launch_app: async (args) => {
     const command = requireString(args, 'command');
     const timeout = typeof args.timeout === 'number' ? args.timeout : 8000;
+    const target: { title?: string; className?: string } = {};
+    if (typeof args.title === 'string') target.title = args.title;
+    if (typeof args.className === 'string') target.className = args.className;
+    // Substring/case-insensitive title + exact className — mirrors events.ts toPredicate so the in-handler "new window"
+    // poll resolves exactly what waitForWindow would, just restricted to a window THIS launch created.
+    const matchTarget = (window: WindowInfo): boolean => {
+      if (target.title !== undefined && !window.title.toLowerCase().includes(target.title.toLowerCase())) return false;
+      if (target.className !== undefined && window.className !== target.className) return false;
+      return true;
+    };
+    // Snapshot already-open same-target windows BEFORE spawning. A bare waitForWindow({title}) returns ANY existing match
+    // immediately (substring title), so with a user's Notepad/browser/Explorer already open launch_app would attach to the
+    // STALE window and confidently report success — the worst failure for an autonomous agent. Excluding `before` makes
+    // launch_app resolve only a GENUINELY NEW window (the one this launch produced).
+    const before = new Set(
+      uia
+        .windows({ includeUntitled: true })
+        .filter(matchTarget)
+        .map((window) => window.hWnd),
+    );
     // $PATH spawn first; on failure fall back to ShellExecuteW, which resolves App-Paths registry entries + Store
     // execution aliases (winword, excel, wt, mspaint, …) that a bare CreateProcess on $PATH cannot find.
+    let childPid = 0;
     let spawned = true;
     try {
-      Bun.spawn(command.split(' '), { stdout: 'ignore', stderr: 'ignore' });
+      childPid = Bun.spawn(command.split(' '), { stdout: 'ignore', stderr: 'ignore' }).pid;
     } catch {
       spawned = false;
     }
@@ -3039,21 +3061,25 @@ const HANDLERS: Record<string, ToolHandler> = {
       return errorResult(`could not launch ${JSON.stringify(command)} — not on PATH and ShellExecuteW could not resolve it. Check the name, pass a full path, or use run_program for a command line with arguments.`);
     const via = spawned ? '' : ' (via shell — App-Paths/alias)';
     if (typeof args.title !== 'string' && typeof args.className !== 'string') return textResult(`launched${via}: ${command}`);
-    const target: { title?: string; className?: string } = {};
-    if (typeof args.title === 'string') target.title = args.title;
-    if (typeof args.className === 'string') target.className = args.className;
-    try {
-      const info = await uia.waitForWindow(target, { timeout });
-      const window = uia.attach(info.hWnd);
-      current?.dispose();
-      current = null;
-      attached?.dispose();
-      lastSnapshotBody = '';
-      lastSnapshotTree = null;
-      attached = window;
-      return withLaunchSettledSnapshot(`launched${via} and attached to ${JSON.stringify(window.name)}`);
-    } catch {
-      return errorResult(`launched${via} ${JSON.stringify(command)} but no window matching ${JSON.stringify(target)} appeared within ${timeout}ms — call list_windows / wait_for_window, then attach by hWnd.`);
+    // Poll for the first matching window NOT in `before`. When the direct CreateProcess spawn succeeded prefer one whose
+    // processId === the spawned pid; UWP/ShellExecute reparent into a host process, so fall back to any not-in-before match.
+    const start = Bun.nanoseconds();
+    for (;;) {
+      const fresh = uia.windows({ includeUntitled: true }).filter((window) => matchTarget(window) && !before.has(window.hWnd));
+      const info = (spawned ? fresh.find((window) => window.processId === childPid) : undefined) ?? fresh[0];
+      if (info !== undefined) {
+        const window = uia.attach(info.hWnd);
+        current?.dispose();
+        current = null;
+        attached?.dispose();
+        lastSnapshotBody = '';
+        lastSnapshotTree = null;
+        attached = window;
+        return withLaunchSettledSnapshot(`launched${via} and attached to ${JSON.stringify(window.name)}`);
+      }
+      if ((Bun.nanoseconds() - start) / 1e6 >= timeout)
+        return errorResult(`launched${via} ${JSON.stringify(command)} but no NEW window matching ${JSON.stringify(target)} appeared within ${timeout}ms — call list_windows / wait_for_window, then attach by hWnd.`);
+      await Bun.sleep(64);
     }
   },
   run_program: async (args) => {
