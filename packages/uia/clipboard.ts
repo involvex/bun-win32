@@ -72,6 +72,43 @@ export function readClipboardFiles(): readonly string[] {
   }
 }
 
+/** Put file paths on the clipboard as CF_HDROP (a DROPFILES drop) — the inverse of readClipboardFiles, so an agent can
+ *  "copy" files for an Explorer (or any drop-target) Ctrl+V/paste, exactly like a human's Ctrl+C in Explorer. Pass real
+ *  backslash paths. Returns true on success; false for an empty list. Zero new bindings. */
+export function writeClipboardFiles(paths: readonly string[]): boolean {
+  if (paths.length === 0) return false;
+  // DROPFILES (x64): DWORD pFiles@0 (offset to the list = 20), POINT pt@4 (8B), BOOL fNC@12, BOOL fWide@16 (=1, wide);
+  // then a double-NUL-terminated UTF-16LE path list.
+  const list = Buffer.from(`${paths.join('\0')}\0\0`, 'utf16le');
+  const blob = Buffer.alloc(20 + list.length);
+  blob.writeUInt32LE(20, 0); // pFiles
+  blob.writeUInt32LE(1, 16); // fWide = TRUE
+  list.copy(blob, 20);
+  const handle = Kernel32.GlobalAlloc(GMEM_MOVEABLE, BigInt(blob.length));
+  if (handle === 0n) return false;
+  const pointer = Kernel32.GlobalLock(handle);
+  if (pointer === null) {
+    Kernel32.GlobalFree(handle);
+    return false;
+  }
+  new Uint8Array(toArrayBuffer(pointer as Pointer, 0, blob.length)).set(blob);
+  Kernel32.GlobalUnlock(handle);
+  if (User32.OpenClipboard(0n) === 0) {
+    Kernel32.GlobalFree(handle);
+    return false;
+  }
+  try {
+    User32.EmptyClipboard();
+    if (User32.SetClipboardData(CF_HDROP, handle) === 0n) {
+      Kernel32.GlobalFree(handle); // ownership not transferred on failure
+      return false;
+    }
+    return true; // on success the system owns `handle` — do not free it
+  } finally {
+    User32.CloseClipboard();
+  }
+}
+
 /** Pack a top-down RGB bitmap into a CF_DIB blob: a 40-byte BITMAPINFOHEADER + bottom-up 24-bit BGR rows padded to a
  *  4-byte stride (the canonical clipboard bitmap format every app pastes). */
 function encodeDib(image: { rgb: Uint8Array; width: number; height: number }): Buffer {

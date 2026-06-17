@@ -2,14 +2,16 @@
  * clipboard-files — read_clipboard used to report the Explorer copy/paste workflow as "(clipboard empty or not text)":
  * Ctrl+C on files puts CF_HDROP (a file-drop list), not CF_UNICODETEXT, so a text-only read saw nothing. read_clipboard
  * now parses CF_HDROP (DROPFILES struct, zero new bindings) and lists the copied file paths, then falls back to text.
+ * writeClipboardFiles is the WRITE inverse — an agent can "copy" files for an Explorer / drop-target Ctrl+V.
  *
- * Proof: seed a CF_HDROP file list (PowerShell Set-Clipboard -Path), then readClipboardFiles() returns the paths and the
- * MCP read_clipboard tool lists them; setting text clears the file list (text read wins again). No windows spawned.
+ * Proof: (a) writeClipboardFiles(paths) → readClipboardFiles() returns the same paths exactly (self-contained round-trip);
+ * (b) seed a CF_HDROP file list (PowerShell Set-Clipboard -Path), then readClipboardFiles() returns the paths and the MCP
+ * read_clipboard tool lists them; setting text clears the file list (text read wins again). No windows spawned.
  *
  * bun test is broken repo-wide — runnable harness (MCP subprocess + the OS clipboard):
  * Run: bun run example/clipboard-files.integration.test.ts
  */
-import { readClipboard, readClipboardFiles } from '@bun-win32/uia';
+import { readClipboard, readClipboardFiles, writeClipboardFiles } from '@bun-win32/uia';
 
 type Rpc = { id?: number; result?: { isError?: boolean; content?: { text?: string }[] } };
 const proc = Bun.spawn(['bun', 'run', `${import.meta.dir}/../mcp.ts`], { stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', env: { ...Bun.env, BUN_UIA_PROFILE: 'safe' } });
@@ -58,6 +60,16 @@ function assert(condition: boolean, message: string): void {
 try {
   await call('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'clipboard-files', version: '1' } });
 
+  // (a) writeClipboardFiles round-trip — self-contained, no PowerShell needed (the WRITE inverse of readClipboardFiles).
+  const written = ['C:\\Windows\\notepad.exe', 'C:\\Windows\\System32\\calc.exe'];
+  assert(writeClipboardFiles(written), 'writeClipboardFiles put a 2-file drop on the clipboard (CF_HDROP)');
+  const roundTrip = readClipboardFiles();
+  assert(roundTrip.length === 2 && roundTrip[0] === written[0] && roundTrip[1] === written[1], `written file paths round-trip exactly (${JSON.stringify(roundTrip)})`);
+  assert(writeClipboardFiles(['C:\\Windows\\notepad.exe']), 'writeClipboardFiles put a single-file drop on the clipboard');
+  const singleRoundTrip = readClipboardFiles();
+  assert(singleRoundTrip.length === 1 && singleRoundTrip[0] === 'C:\\Windows\\notepad.exe', 'a single-file drop round-trips exactly');
+  assert(writeClipboardFiles([]) === false, 'writeClipboardFiles([]) returns false (no-op, does not clobber)');
+
   // Seed a CF_HDROP file list the way Explorer's Ctrl+C does.
   const seed = Bun.spawnSync(['powershell.exe', '-NoProfile', '-Command', "Set-Clipboard -Path 'C:\\Windows\\System32\\notepad.exe','C:\\Windows\\System32\\calc.exe'"]);
   await Bun.sleep(200);
@@ -80,5 +92,5 @@ try {
   proc.kill();
 }
 
-console.log(failures === 0 ? '\nPASS — read_clipboard surfaces copied files (CF_HDROP) and still reads text.' : `\nFAILED — ${failures} assertion(s)`);
+console.log(failures === 0 ? '\nPASS — file paths round-trip through CF_HDROP (write + read); read_clipboard surfaces copied files and still reads text.' : `\nFAILED — ${failures} assertion(s)`);
 process.exit(failures === 0 ? 0 : 1);
