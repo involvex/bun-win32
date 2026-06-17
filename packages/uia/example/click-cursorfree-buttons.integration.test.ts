@@ -68,7 +68,7 @@ try {
   await call('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'click-cf', version: '1' } });
   const tools = (await call('tools/list', {})).result?.tools ?? [];
   const desc = tools.find((tool) => tool.name === 'click')?.description ?? '';
-  assert(/CURSOR-FREE by default for EVERY button/i.test(desc) && !/\(or right\/middle\/doubleClick\) to move the REAL/.test(desc), `click description advertises cursor-free for every button (got: ${JSON.stringify(desc.slice(0, 90))})`);
+  assert(/cursor-free for left\/right\/middle \+ doubleClick/i.test(desc) && /cursor:true FORCES the real SendInput mouse/i.test(desc), `click description advertises cursor-free for every button (got: ${JSON.stringify(desc.slice(0, 90))})`);
 
   if (charmap === null) console.log('  skip(live): Character Map did not launch');
   else {
