@@ -9,7 +9,9 @@ import Kernel32 from '@bun-win32/kernel32';
 import User32 from '@bun-win32/user32';
 
 import { sendKeys } from './input';
+import type { Bitmap } from './screen';
 
+const CF_DIB = 8;
 const CF_HDROP = 15;
 const CF_UNICODETEXT = 13;
 const GMEM_MOVEABLE = 0x0002;
@@ -65,6 +67,115 @@ export function readClipboardFiles(): readonly string[] {
     } finally {
       Kernel32.GlobalUnlock(handle);
     }
+  } finally {
+    User32.CloseClipboard();
+  }
+}
+
+/** Pack a top-down RGB bitmap into a CF_DIB blob: a 40-byte BITMAPINFOHEADER + bottom-up 24-bit BGR rows padded to a
+ *  4-byte stride (the canonical clipboard bitmap format every app pastes). */
+function encodeDib(image: { rgb: Uint8Array; width: number; height: number }): Buffer {
+  const stride = (image.width * 3 + 3) & ~3;
+  const buffer = Buffer.alloc(40 + stride * image.height);
+  buffer.writeUInt32LE(40, 0); // biSize
+  buffer.writeInt32LE(image.width, 4);
+  buffer.writeInt32LE(image.height, 8); // positive ⇒ bottom-up
+  buffer.writeUInt16LE(1, 12); // biPlanes
+  buffer.writeUInt16LE(24, 14); // biBitCount
+  buffer.writeUInt32LE(0, 16); // biCompression = BI_RGB
+  buffer.writeUInt32LE(stride * image.height, 20); // biSizeImage
+  for (let y = 0; y < image.height; y += 1) {
+    const sourceRow = image.height - 1 - y; // bottom-up: DIB row 0 is the source's last row
+    for (let x = 0; x < image.width; x += 1) {
+      const source = (sourceRow * image.width + x) * 3;
+      const target = 40 + y * stride + x * 3;
+      buffer[target] = image.rgb[source + 2]!; // B
+      buffer[target + 1] = image.rgb[source + 1]!; // G
+      buffer[target + 2] = image.rgb[source]!; // R
+    }
+  }
+  return buffer;
+}
+
+/** Decode a packed CF_DIB blob into a top-down RGB Bitmap, handling 24/32-bpp, top-down or bottom-up rows, and any
+ *  palette gap before the pixels. null for an unsupported (compressed / sub-24-bpp) DIB. */
+function decodeDib(view: Buffer): Bitmap | null {
+  if (view.length < 40) return null; // too small for a BITMAPINFOHEADER — bail before any fixed-offset read can throw
+  const headerSize = view.readUInt32LE(0);
+  if (headerSize < 40 || view.readUInt32LE(16) !== 0) return null; // only BITMAPINFOHEADER+ and BI_RGB
+  const width = view.readInt32LE(4);
+  const rawHeight = view.readInt32LE(8);
+  const bitCount = view.readUInt16LE(14);
+  if (bitCount !== 24 && bitCount !== 32) return null;
+  const topDown = rawHeight < 0;
+  const height = Math.abs(rawHeight);
+  // The clipboard blob is UNTRUSTED. width is a SIGNED int32 (negative → RangeError on alloc); an absurd product OOMs.
+  // Reject insane dimensions so readClipboardImage honors its Bitmap|null contract instead of throwing.
+  if (width <= 0 || height <= 0 || width > 0x7fff || height > 0x7fff) return null;
+  const clrUsed = view.readUInt32LE(32);
+  const bytesPerPixel = bitCount / 8;
+  const stride = (width * bytesPerPixel + 3) & ~3;
+  const pixelOffset = headerSize + clrUsed * 4; // CF_DIB has no BITMAPFILEHEADER; palette (clrUsed entries) precedes pixels
+  if (pixelOffset + stride * height > view.length) return null; // truncated / lying DIB — the pixels are not all present
+  const rgb = new Uint8Array(width * height * 3);
+  for (let y = 0; y < height; y += 1) {
+    const sourceRow = topDown ? y : height - 1 - y;
+    for (let x = 0; x < width; x += 1) {
+      const source = pixelOffset + sourceRow * stride + x * bytesPerPixel;
+      const target = (y * width + x) * 3;
+      rgb[target] = view[source + 2]!; // R ← BGR
+      rgb[target + 1] = view[source + 1]!; // G
+      rgb[target + 2] = view[source]!; // B
+    }
+  }
+  return { rgb, width, height, originX: 0, originY: 0 };
+}
+
+/** Read an image off the clipboard (CF_DIB — what Snipping Tool / a browser "copy image" / any Ctrl+C of a picture
+ *  leaves there) as a top-down RGB Bitmap, or null if the clipboard holds no (supported) image. Zero new bindings. */
+export function readClipboardImage(): Bitmap | null {
+  if (User32.OpenClipboard(0n) === 0) return null;
+  try {
+    if (User32.IsClipboardFormatAvailable(CF_DIB) === 0) return null;
+    const handle = User32.GetClipboardData(CF_DIB);
+    if (handle === 0n) return null;
+    const pointer = Kernel32.GlobalLock(handle);
+    if (pointer === null) return null;
+    try {
+      const size = Number(Kernel32.GlobalSize(handle));
+      return decodeDib(Buffer.from(toArrayBuffer(pointer as Pointer, 0, size)));
+    } finally {
+      Kernel32.GlobalUnlock(handle);
+    }
+  } finally {
+    User32.CloseClipboard();
+  }
+}
+
+/** Put a top-down RGB image (e.g. a captureScreen / captureWindowLive result) on the clipboard as CF_DIB, so it can be
+ *  pasted into Paint / Word / chat / email like a human's screenshot copy. Returns true on success. */
+export function writeClipboardImage(image: { rgb: Uint8Array; width: number; height: number }): boolean {
+  const dib = encodeDib(image);
+  const handle = Kernel32.GlobalAlloc(GMEM_MOVEABLE, BigInt(dib.length));
+  if (handle === 0n) return false;
+  const pointer = Kernel32.GlobalLock(handle);
+  if (pointer === null) {
+    Kernel32.GlobalFree(handle);
+    return false;
+  }
+  new Uint8Array(toArrayBuffer(pointer as Pointer, 0, dib.length)).set(dib);
+  Kernel32.GlobalUnlock(handle);
+  if (User32.OpenClipboard(0n) === 0) {
+    Kernel32.GlobalFree(handle);
+    return false;
+  }
+  try {
+    User32.EmptyClipboard();
+    if (User32.SetClipboardData(CF_DIB, handle) === 0n) {
+      Kernel32.GlobalFree(handle); // ownership not transferred on failure
+      return false;
+    }
+    return true; // on success the system owns `handle` — do not free it
   } finally {
     User32.CloseClipboard();
   }

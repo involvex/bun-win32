@@ -1547,10 +1547,20 @@ const TOOLS: McpTool[] = [
     name: 'read_clipboard',
     category: 'read',
     description:
-      'Read the Windows clipboard as text. Pairs with copy (Ctrl+C) to pull selected text from any app, even one with no a11y tree. If the clipboard holds copied FILES instead of text (Explorer Ctrl+C/Cut → CF_HDROP), lists their full paths — so the Explorer copy/paste workflow is visible.',
+      'Read the Windows clipboard. Returns text (pairs with copy/Ctrl+C to pull selected text from any app, even one with no a11y tree); if it holds copied FILES (Explorer Ctrl+C/Cut → CF_HDROP) lists their full paths; if it holds an IMAGE (CF_DIB — a screenshot / copied picture) and no text, returns the image itself.',
     inputSchema: { type: 'object', properties: {} },
   },
   { name: 'set_clipboard', category: 'input', description: 'Set the Windows clipboard text (does not paste).', inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } },
+  {
+    name: 'copy_image',
+    category: 'input',
+    description:
+      'Capture a window (ref / hWnd, or the attached window — live pixels via Windows.Graphics.Capture, occlusion-correct, sees a background/occluded window) or a screen region {x,y,width,height} and put it on the clipboard as an image (CF_DIB), cursor-free — so you can then paste it (Ctrl+V / the paste tool) into Paint / Word / chat / email, exactly like a human copying a screenshot. The region path is a desktop BitBlt — it grabs whatever is VISIBLE at those coords (NOT occlusion-correct); to copy a specific window pass its ref/hWnd. Does not paste.',
+    inputSchema: {
+      type: 'object',
+      properties: { ref: { type: 'string', description: REF_DESC }, hWnd: { type: ['string', 'number'], description: HWND_DESC }, x: { type: 'number' }, y: { type: 'number' }, width: { type: 'number' }, height: { type: 'number' } },
+    },
+  },
   {
     name: 'paste',
     category: 'input',
@@ -2461,9 +2471,33 @@ const HANDLERS: Record<string, ToolHandler> = {
     if (text.length > 0) return textResult(capText(text));
     const files = uia.readClipboardFiles(); // Explorer Ctrl+C / Cut puts CF_HDROP, not text
     if (files.length > 0) return textResult(`${files.length} file${files.length > 1 ? 's' : ''} on the clipboard (CF_HDROP):\n${files.join('\n')}`);
-    return textResult('(clipboard empty or not text)');
+    const image = uia.readClipboardImage(); // a copied screenshot / picture (CF_DIB)
+    if (image !== null) return imageResult(encodePNG(image.rgb, image.width, image.height), `(${image.width}×${image.height} image on the clipboard)`);
+    return textResult('(clipboard empty, or an unsupported format)');
   },
   set_clipboard: (args) => textResult(uia.writeClipboard(requireString(args, 'text')) ? 'clipboard set' : 'failed to set clipboard'),
+  copy_image: async (args) => {
+    if (typeof args.x === 'number' || typeof args.y === 'number' || typeof args.width === 'number' || typeof args.height === 'number') {
+      const bitmap = uia.captureScreen({
+        x: typeof args.x === 'number' ? args.x : undefined,
+        y: typeof args.y === 'number' ? args.y : undefined,
+        width: typeof args.width === 'number' ? args.width : undefined,
+        height: typeof args.height === 'number' ? args.height : undefined,
+      });
+      return uia.writeClipboardImage(bitmap)
+        ? textResult(`copied a ${bitmap.width}×${bitmap.height} screen image to the clipboard — paste it (Ctrl+V / the paste tool) into the target app`)
+        : errorResult('copy_image: could not set the clipboard image');
+    }
+    const hWnd = resolveHwnd(args);
+    const live = await captureWindowLive(hWnd);
+    if (live === null) {
+      if (isMinimized(hWnd)) return errorResult(minimizedCaptureSteer(hWnd, 'copy_image'));
+      return errorResult('copy_image: Windows.Graphics.Capture could not capture this window (protected/DRM content, or WGC unavailable)');
+    }
+    return uia.writeClipboardImage(live)
+      ? textResult(`copied a ${live.width}×${live.height} window image to the clipboard — paste it (Ctrl+V / the paste tool) into the target app`)
+      : errorResult('copy_image: could not set the clipboard image');
+  },
   paste: (args) => {
     if (typeof args.ref === 'string') {
       const element = resolveRef(args.ref);

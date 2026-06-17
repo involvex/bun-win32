@@ -1,6 +1,6 @@
 import { execute } from './agent';
 import { initialize, uninitialize } from './automation';
-import { copy, paste, readClipboard, readClipboardFiles, writeClipboard } from './clipboard';
+import { copy, paste, readClipboard, readClipboardFiles, readClipboardImage, writeClipboard, writeClipboardImage } from './clipboard';
 import { dispatch } from './computer';
 import { elementAt, listMonitors, postClickAt, scrollAt } from './coords';
 import { diffTrees } from './diff';
@@ -48,6 +48,7 @@ export const uia = {
   postText,
   readClipboard,
   readClipboardFiles,
+  readClipboardImage,
   root,
   screenshotScreen,
   scrollAt,
@@ -65,12 +66,13 @@ export const uia = {
   windowTree,
   windows: listWindows,
   writeClipboard,
+  writeClipboardImage,
 };
 
 export { type AgentAction, type AgentActionResult, AGENT_TOOLS, execute, groundingTree, performAgentAction } from './agent';
 export { automation, initialize, trueCondition, uninitialize } from './automation';
 export { AutomationElementMode, CacheRequest, createCacheRequest, DEFAULT_CACHE_PROPERTIES } from './cache';
-export { clipboardSequence, copy, paste, readClipboard, readClipboardFiles, writeClipboard } from './clipboard';
+export { clipboardSequence, copy, paste, readClipboard, readClipboardFiles, readClipboardImage, writeClipboard, writeClipboardImage } from './clipboard';
 export { comRelease, guid, hresult, vcall } from './com';
 export { type ComputerAction, type ComputerResult, dispatch, type DispatchOptions, fromCuaAction, normalizeKey } from './computer';
 export { type CompiledCondition, compileCondition, type ElementProperties, formatNoMatch, matches, selectorToString, type Selector } from './condition';
