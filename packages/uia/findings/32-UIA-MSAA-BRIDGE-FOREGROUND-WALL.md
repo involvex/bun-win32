@@ -56,6 +56,27 @@ End-to-end guard: `example/mcp-pattern-no-raise.integration.test.ts` drives the 
 JSON-RPC against a **minimized** charmap and asserts the foreground is **FULLY UNCHANGED** across
 each call (the stronger outcome the fix delivers), and that each result names the posted path.
 
+## Self-disclosure for the no-own-HWND fallthrough (the only path it has steals)
+
+A no-own-HWND WinUI/WPF/Electron sub-control has **only** the UIA pattern — there is no focus-clean
+posted path, so `invoke`/`toggle`/`set_value` on it WILL steal foreground + un-minimize its window.
+The earlier fix was silent there: the tools returned a bare `invoked` / `toggled (state …)` / `set
+value`, identical to the focus-clean BM_CLICK case, so the agent could not tell the parity wall was
+hit (violating "any path that secretly raises/focuses is a defect unless the wall is disclosed").
+
+The smart wrappers now route the raw-pattern fallthrough through `disclosingPatternAct(message, run,
+suffix?)`: it samples `foregroundWindow()` immediately before/after the pattern call (the bridge
+activates synchronously — proven, the steal is visible on the first post-call sample) and, on a
+change, appends a terse `— ⚠ raised/focused the window (… MSAA bridge … findings/32 — there is NO
+cursor-free path for this control type; before=0x… → after=0x…)` note to the returned string. The
+classic-Button BM_CLICK / WM_SETTEXT branches are untouched (already focus-clean, no note).
+
+Proven live against the PowerToys **Command Palette** (`WinUIDesktopWin32WindowClass`, hWnd
+`0x305f0`): forced a foreign window to the foreground, drove MCP `invoke` on the no-own-HWND
+`"Maximize"` titlebar Button (`nativeWindowHandle=0x0`, `className=""`) → fg `0x64159a` → `0x305f0`
+and the result string carried the ⚠ disclosure citing findings/32. Guard:
+`example/mcp-no-own-hwnd-raise.integration.test.ts` (mirrors mcp-pattern-no-raise's structure).
+
 ## Doctrine
 
 - The raw `Element.{setValue,toggle,invoke}` are the unavoidable-OS-activation path (documented).
