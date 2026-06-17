@@ -167,10 +167,10 @@ export function scrollAt(x: number, y: number, direction: 'up' | 'down' | 'left'
 export function postClickToHwnd(hWnd: bigint, x: number, y: number, button: PostButton = 'left'): boolean {
   if (hWnd === 0n) return false;
   const lParam = clientLParam(hWnd, x, y);
-  const msg = BUTTON_MESSAGES[button];
+  const message = BUTTON_MESSAGES[button];
   User32.PostMessageW(hWnd, WM_MOUSEMOVE, 0n, lParam);
-  User32.PostMessageW(hWnd, msg.down, BigInt(msg.mk), lParam);
-  User32.PostMessageW(hWnd, msg.up, 0n, lParam);
+  User32.PostMessageW(hWnd, message.down, BigInt(message.mk), lParam);
+  User32.PostMessageW(hWnd, message.up, 0n, lParam);
   return true;
 }
 

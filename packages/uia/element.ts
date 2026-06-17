@@ -10,6 +10,7 @@ import { AutomationElementMode, type CacheRequest, createCacheRequest } from './
 import { comRelease, hresult, vcall } from './com';
 import { type CompiledCondition, compileCondition, type ElementProperties, formatNoMatch, matches, type Selector, selectorToString } from './condition';
 import { ControlType, PropertyId, S_OK, SLOT, TreeScope } from './constants';
+import { postClickToHwnd } from './coords';
 import { clickAt, type as inputType } from './input';
 import { listWindows, renderWidgetHandles, screenshot as windowScreenshot, windowForProcess } from './window';
 import {
@@ -17,6 +18,7 @@ import {
   canSelectMultiple,
   collapse,
   doDefaultAction,
+  ExpandCollapseState,
   expand,
   expandCollapseState,
   getCell,
@@ -43,6 +45,7 @@ import {
   setView,
   setWindowVisualState,
   showContextMenu,
+  ToggleState,
   toggle,
   toggleState,
   views,
@@ -53,6 +56,21 @@ import {
   type WindowVisualState,
 } from './patterns';
 import { getBstr, getHandle, getLong, getPropertyValue, getRect, type Rect, type VariantValue } from './reads';
+
+/** A control-STATE expectation for the retrying waitForState — the Playwright web-first-assertion analogue. Every
+ *  field is optional; the wait succeeds when ALL provided fields hold simultaneously. `toggle`/`expanded`/`selected`/
+ *  `enabled` are booleans (the desired on/expanded/selected/enabled-ness); `value` is an exact ValuePattern match and
+ *  `valueContains` a substring. At least one field should be set or the predicate is vacuously true on the first poll. */
+export interface StateExpectation {
+  enabled?: boolean;
+  expanded?: boolean;
+  selected?: boolean;
+  toggle?: boolean;
+  value?: string;
+  valueContains?: string;
+  timeout?: number;
+  interval?: number;
+}
 
 // Reused scratch for out-parameters in the tree-search path. Each value is read out immediately.
 const scratch8 = Buffer.alloc(8);
@@ -153,6 +171,22 @@ function findAllCachedPointers(scopeElement: bigint, scope: number, condition: b
   } finally {
     comRelease(pArray);
   }
+}
+
+/** Whether `element`'s live state satisfies every field set on `expectation` (the waitForState predicate). */
+function stateMatches(element: Element, expectation: StateExpectation): boolean {
+  if (expectation.enabled !== undefined && element.isEnabled !== expectation.enabled) return false;
+  if (expectation.expanded !== undefined && element.expandCollapseState !== (expectation.expanded ? ExpandCollapseState.Expanded : ExpandCollapseState.Collapsed)) return false;
+  if (expectation.selected !== undefined && element.isSelected !== expectation.selected) return false;
+  if (expectation.toggle !== undefined && element.toggleState !== (expectation.toggle ? ToggleState.On : ToggleState.Off)) return false;
+  if (expectation.value !== undefined && element.value !== expectation.value) return false;
+  if (expectation.valueContains !== undefined && !element.value.includes(expectation.valueContains)) return false;
+  return true;
+}
+
+/** A terse one-line dump of the state getters a waitForState predicate reads, for the timeout error. */
+function describeState(element: Element): string {
+  return `enabled=${element.isEnabled} toggle=${element.toggleState} selected=${element.isSelected} expand=${element.expandCollapseState} value=${JSON.stringify(element.value)}`;
 }
 
 export class Element {
@@ -363,6 +397,37 @@ export class Element {
         found.release(); // still present — drop the handle so the poll cannot leak Elements
         const elapsed = (Bun.nanoseconds() - start) / 1e6;
         if (elapsed >= timeout) throw new Error(`timed out after ${Math.round(elapsed)} ms — ${selectorToString(selector)} is still present in ${JSON.stringify(this.name)} (it never disappeared)`);
+        await Bun.sleep(interval);
+      }
+    } finally {
+      if (compiled.owned) comRelease(compiled.condition);
+    }
+  }
+
+  /**
+   * Poll the descendant matching `selector` until its STATE matches `expectation` or `timeout` (ms) elapses — the
+   * desktop analogue of Playwright's retrying web-first assertions (expect(locator).toBeChecked()/toHaveValue()/…).
+   * Use it to CONFIRM an action landed (toggled Wi-Fi is now on, a set value stuck, an item is now selected/expanded/
+   * enabled) instead of hand-rolling snapshot → parse → sleep → re-snapshot. Re-finds the control every poll (so it
+   * survives a control rebuilt by a re-render) and reads the same live getters the snapshot does. Paced by an async
+   * sleep. Returns the matched Element (caller owns it) on success; throws on timeout quoting the last-seen state.
+   */
+  async waitForState(selector: Selector, expectation: StateExpectation): Promise<Element> {
+    const timeout = expectation.timeout ?? 5000;
+    const interval = expectation.interval ?? 100;
+    const start = Bun.nanoseconds();
+    const compiled = compileCondition(automation(), selector); // compile ONCE — reused across every poll
+    try {
+      let lastSeen = 'no matching control';
+      for (;;) {
+        const found = findFirstMatch(this.ptr, compiled, selector, TreeScope.TreeScope_Descendants);
+        if (found !== null) {
+          if (stateMatches(found, expectation)) return found;
+          lastSeen = describeState(found);
+          found.release(); // not yet in the wanted state — drop the handle so the poll cannot leak Elements
+        }
+        const elapsed = (Bun.nanoseconds() - start) / 1e6;
+        if (elapsed >= timeout) throw new Error(`timed out after ${Math.round(elapsed)} ms — ${selectorToString(selector)} in ${JSON.stringify(this.name)} never reached ${JSON.stringify(expectation)} (last seen: ${lastSeen})`);
         await Bun.sleep(interval);
       }
     } finally {
@@ -689,16 +754,20 @@ export class Element {
     return this;
   }
 
-  /** Click the element via SendInput at its GetClickablePoint (bounding-rectangle center fallback). The no-InvokePattern fallback. */
+  /** Click the element at its GetClickablePoint (bounding-rectangle center fallback). The no-InvokePattern fallback:
+   *  posts a cursor-free WM_*BUTTON to the element's own window first (no focus-steal, works on a background window);
+   *  only when that is impossible (no own HWND) AND the target is not already foreground does it raise the window and
+   *  fall back to a real SetCursorPos + SendInput click. */
   click(): this {
     const hWnd = this.nativeWindowHandle;
-    if (hWnd !== 0n) User32.SetForegroundWindow(hWnd);
-    const clickable = this.clickablePoint;
-    if (clickable !== null) clickAt(clickable.x, clickable.y);
-    else {
+    let point = this.clickablePoint;
+    if (point === null) {
       const rect = this.boundingRectangle;
-      clickAt(rect.x + Math.floor(rect.width / 2), rect.y + Math.floor(rect.height / 2));
+      point = { x: rect.x + Math.floor(rect.width / 2), y: rect.y + Math.floor(rect.height / 2) };
     }
+    if (hWnd !== 0n && postClickToHwnd(hWnd, point.x, point.y)) return this; // cursor-free, no raise/flash
+    if (hWnd !== 0n && User32.GetForegroundWindow() !== hWnd) User32.SetForegroundWindow(hWnd); // last resort: only when not already foreground
+    clickAt(point.x, point.y);
     return this;
   }
 }

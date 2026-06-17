@@ -15,6 +15,14 @@ export interface Selector {
   automationId?: string;
   className?: string;
   controlType?: ControlType | number;
+  /** Any-of control types: matches an element whose controlType is in this set (server-side OR of ControlType
+   *  conditions). The agent's "the clickable thing whether it's a Button OR a Hyperlink OR a MenuItem" case. */
+  controlTypes?: readonly (ControlType | number)[];
+  /** Pick the Nth match (0-based) from the candidate list instead of the first — disambiguates N identical twins
+   *  (three "Delete" buttons, 20 unnamed ListItems) without a snapshot round-trip. Out-of-range yields no match. */
+  index?: number;
+  /** Pick the LAST match instead of the first (sugar for the highest index). `index` wins when both are set. */
+  last?: boolean;
   /** Exact string (server-side) or a regular expression (client-side). */
   name?: RegExp | string;
   /** Substring of the name (client-side). */
@@ -29,14 +37,33 @@ export interface ElementProperties {
   name: string;
 }
 
+// A /g- or /y- flagged selector regex carries a stateful lastIndex; reusing it across sibling names via .test()
+// skips every other match. matches() must test a g/y-stripped STATELESS copy — but building that copy per matches()
+// call (once per candidate) recompiles the regex for every one of N candidates (~67× the non-global cost). Memoize
+// the stripped copy per distinct selector regex here: built once, GC-collected with the selector via the WeakMap key,
+// and the caller's RegExp is never mutated (still stateless from matches()' view).
+const STATELESS = new WeakMap<RegExp, RegExp>();
+
+function statelessRegExp(pattern: RegExp): RegExp {
+  if (!pattern.global && !pattern.sticky) return pattern;
+  const cached = STATELESS.get(pattern);
+  if (cached !== undefined) return cached;
+  const stripped = new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, ''));
+  STATELESS.set(pattern, stripped);
+  return stripped;
+}
+
 /** Render a selector as a readable string for error messages. */
 export function selectorToString(selector: Selector): string {
   const parts: string[] = [];
   if (selector.controlType !== undefined) parts.push(`controlType: ${ControlType[selector.controlType] ?? selector.controlType}`);
+  if (selector.controlTypes !== undefined) parts.push(`controlTypes: [${selector.controlTypes.map((controlType) => ControlType[controlType] ?? controlType).join(', ')}]`);
   if (selector.name !== undefined) parts.push(`name: ${selector.name instanceof RegExp ? selector.name.toString() : JSON.stringify(selector.name)}`);
   if (selector.nameContains !== undefined) parts.push(`nameContains: ${JSON.stringify(selector.nameContains)}`);
   if (selector.automationId !== undefined) parts.push(`automationId: ${JSON.stringify(selector.automationId)}`);
   if (selector.className !== undefined) parts.push(`className: ${JSON.stringify(selector.className)}`);
+  if (selector.index !== undefined) parts.push(`index: ${selector.index}`);
+  if (selector.last === true) parts.push('last: true');
   return `{ ${parts.join(', ')} }`;
 }
 
@@ -55,27 +82,43 @@ function nameRelevance(candidate: string, want: string): number {
 export function formatNoMatch(selector: Selector, windowName: string, candidateNames: readonly string[]): string {
   const want = (typeof selector.name === 'string' ? selector.name : (selector.nameContains ?? '')).toLowerCase();
   const unique = [...new Set(candidateNames.filter((candidate) => candidate.trim().length > 0))];
-  const ranked = want.length > 0 ? unique.map((name, index) => ({ name, index })).sort((a, b) => nameRelevance(a.name, want) - nameRelevance(b.name, want) || a.index - b.index).map((entry) => entry.name) : unique;
+  const ranked =
+    want.length > 0
+      ? unique
+          .map((name, index) => ({ name, index }))
+          .sort((a, b) => nameRelevance(a.name, want) - nameRelevance(b.name, want) || a.index - b.index)
+          .map((entry) => entry.name)
+      : unique;
   const nearest = ranked.slice(0, 8);
   const tail = nearest.length > 0 ? ` — nearest: ${nearest.map((candidate) => JSON.stringify(candidate)).join(', ')}` : '';
-  const containsHint = want.length > 0 && typeof selector.name === 'string' && unique.some((candidate) => candidate.toLowerCase().includes(want)) ? ` (a control's name CONTAINS ${JSON.stringify(selector.name)} — retry with {nameContains:${JSON.stringify(selector.name)}})` : '';
+  const containsHint =
+    want.length > 0 && typeof selector.name === 'string' && unique.some((candidate) => candidate.toLowerCase().includes(want))
+      ? ` (a control's name CONTAINS ${JSON.stringify(selector.name)} — retry with {nameContains:${JSON.stringify(selector.name)}})`
+      : '';
   return `no element matched ${selectorToString(selector)} in "${windowName}"${tail}${containsHint}`;
 }
 
-/** Match a (already-read) element against a selector — all fields AND together. Pure logic. */
+/** Match a (already-read) element against a selector — all fields AND together (controlTypes is an internal OR). Pure logic. */
 export function matches(element: ElementProperties, selector: Selector): boolean {
   if (selector.controlType !== undefined && element.controlType !== selector.controlType) return false;
+  if (selector.controlTypes !== undefined && !selector.controlTypes.includes(element.controlType)) return false;
   if (selector.automationId !== undefined && element.automationId !== selector.automationId) return false;
   if (selector.className !== undefined && element.className !== selector.className) return false;
   if (selector.name !== undefined) {
     if (selector.name instanceof RegExp) {
-      // Strip g/y: a stateful lastIndex makes repeated .test() over sibling names skip every other match.
-      const pattern = selector.name.global || selector.name.sticky ? new RegExp(selector.name.source, selector.name.flags.replace(/[gy]/g, '')) : selector.name;
-      if (!pattern.test(element.name)) return false;
+      if (!statelessRegExp(selector.name).test(element.name)) return false; // statelessRegExp strips g/y once per distinct selector regex (a stateful lastIndex would skip every other sibling)
     } else if (element.name !== selector.name) return false;
   }
   if (selector.nameContains !== undefined && !element.name.includes(selector.nameContains)) return false;
   return true;
+}
+
+/** Pick the selector's positional match from an ordered candidate list: `index` (0-based; negative or out-of-range →
+ *  null) wins, else `last` → the final element, else the first. Pure client-side slice — no FFI, no new condition. */
+export function pickIndexed<T>(candidates: readonly T[], selector: Selector): T | null {
+  if (selector.index !== undefined) return selector.index >= 0 && selector.index < candidates.length ? candidates[selector.index]! : null;
+  if (selector.last === true) return candidates.length > 0 ? candidates[candidates.length - 1]! : null;
+  return candidates.length > 0 ? candidates[0]! : null;
 }
 
 function propertyConditionInt(pAutomation: bigint, propertyId: number, value: number): bigint {
@@ -105,6 +148,39 @@ function andCondition(pAutomation: bigint, first: bigint, second: bigint): bigin
   return out.readBigUInt64LE(0);
 }
 
+function orCondition(pAutomation: bigint, first: bigint, second: bigint): bigint {
+  const out = Buffer.alloc(8);
+  if (vcall(pAutomation, SLOT.CreateOrCondition, [FFIType.u64, FFIType.u64, FFIType.ptr], [first, second, out.ptr!]) !== S_OK) return 0n;
+  return out.readBigUInt64LE(0);
+}
+
+/** Build a server-side OR of ControlType property conditions ("Button OR Hyperlink OR MenuItem"), releasing every
+ *  intermediate. Returns 0n if any part or fold fails (the caller then forces the client-side matches() pass). */
+function controlTypesCondition(pAutomation: bigint, controlTypes: readonly number[]): bigint {
+  const parts: bigint[] = [];
+  for (const controlType of controlTypes) {
+    const part = propertyConditionInt(pAutomation, PropertyId.ControlType, controlType);
+    if (part === 0n) {
+      for (const built of parts) comRelease(built);
+      return 0n;
+    }
+    parts.push(part);
+  }
+  if (parts.length === 0) return 0n;
+  let condition = parts[0]!;
+  for (let index = 1; index < parts.length; index += 1) {
+    const combined = orCondition(pAutomation, condition, parts[index]!);
+    comRelease(condition);
+    comRelease(parts[index]!);
+    if (combined === 0n) {
+      for (let rest = index + 1; rest < parts.length; rest += 1) comRelease(parts[rest]!);
+      return 0n;
+    }
+    condition = combined;
+  }
+  return condition;
+}
+
 /** A compiled selector: the server-side condition, whether a client-side `matches` pass is still needed, and
  *  whether the caller owns the condition (must `comRelease` it) — false for the shared TrueCondition singleton. */
 export interface CompiledCondition {
@@ -128,6 +204,11 @@ export function compileCondition(pAutomation: bigint, selector: Selector): Compi
   // WRONG control (or the window root). A built predicate keeps the cheap server-only fast path.
   if (selector.controlType !== undefined) {
     const part = propertyConditionInt(pAutomation, PropertyId.ControlType, selector.controlType);
+    if (part !== 0n) parts.push(part);
+    else needsClientFilter = true;
+  }
+  if (selector.controlTypes !== undefined && selector.controlTypes.length > 0) {
+    const part = controlTypesCondition(pAutomation, selector.controlTypes);
     if (part !== 0n) parts.push(part);
     else needsClientFilter = true;
   }

@@ -76,7 +76,7 @@ export { AutomationElementMode, CacheRequest, createCacheRequest, DEFAULT_CACHE_
 export { clipboardSequence, copy, paste, readClipboard, readClipboardFiles, readClipboardImage, writeClipboard, writeClipboardFiles, writeClipboardImage } from './clipboard';
 export { comRelease, guid, hresult, vcall } from './com';
 export { type ComputerAction, type ComputerResult, dispatch, type DispatchOptions, fromCuaAction, normalizeKey } from './computer';
-export { type CompiledCondition, compileCondition, type ElementProperties, formatNoMatch, matches, selectorToString, type Selector } from './condition';
+export { type CompiledCondition, compileCondition, type ElementProperties, formatNoMatch, matches, pickIndexed, selectorToString, type Selector } from './condition';
 export { ControlType, PatternId, PropertyConditionFlags, PropertyId, SLOT, TreeScope } from './constants';
 export {
   elementAt,
@@ -97,7 +97,7 @@ export {
 } from './coords';
 export { windowDesktopId, windowOnCurrentDesktop } from './desktop';
 export { type DiffNode, diffTrees, refsRenumbered, type RenameChange, renderDiff, type StateChange, type TreeChange, type TreeDiff } from './diff';
-export { attach, Element, focused, fromHandle, fromPoint, launch, root, Window } from './element';
+export { attach, Element, focused, fromHandle, fromPoint, launch, root, type StateExpectation, Window } from './element';
 export { listProcesses, waitForProcess, waitForWindow, waitForWindowGone, watchWindows, type WindowEvent, type WindowEventType, type WindowMatch, type WindowWatcher } from './events';
 export { type IdleOptions, waitForIdle } from './idle';
 export { isJavaWindow, javaInvoke, type JavaNode, javaSetText, type JavaTarget, javaTree, renderJavaTree } from './jab';
@@ -135,7 +135,7 @@ export {
   virtualKeyCode,
 } from './input';
 export { drawMarks, type MarkedScreenshot, type PlacedMark, screenshotWithMarks } from './marks';
-export { findImage, locateOnScreen, type Match } from './match';
+export { findAllImages, findImage, locateAllOnScreen, locateColor, locateOnScreen, type Match } from './match';
 export { accessibleFromWindow, type MsaaNode, msaaTree } from './msaa';
 export { disposeOcr, ocrAvailable, ocrBitmap, ocrScreen, type OcrLine, type OcrText, ocrWindow, type OcrWord } from './ocr';
 export { ExpandCollapseState, NoScroll, ScrollAmount, type ScrollInfo, type TableData, ToggleState, type ViewState, WindowVisualState } from './patterns';
