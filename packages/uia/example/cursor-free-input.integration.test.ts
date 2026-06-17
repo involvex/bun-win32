@@ -45,12 +45,13 @@ try {
     const afterSet = editor.value || editor.text();
     assert(afterSet.includes(setText), `editor reads back the WM_SETTEXT value cursor-free ("${afterSet.slice(0, 40)}")`);
 
+    // A minimized, no-focus control keeps its caret at offset 0, so a bare WM_CHAR PREPENDS. Post `End` first so the
+    // caret moves past the existing text and the WM_CHARs genuinely APPEND — matching `afterAppend` below.
+    assert(postKey(editHwnd, 'End'), 'postKey (WM_KEYDOWN/UP) posts a navigation key (End) to the control cursor-free');
     assert(postText(editHwnd, 'APND'), 'postText (WM_CHAR) reported success on a minimized window');
     await Bun.sleep(150);
     const afterAppend = editor.value || editor.text();
-    assert(afterAppend.includes('APND'), `editor reads back the WM_CHAR-typed text cursor-free ("${afterAppend.slice(0, 40)}")`);
-
-    assert(postKey(editHwnd, 'End'), 'postKey (WM_KEYDOWN/UP) posts a navigation key to the control cursor-free');
+    assert(afterAppend.endsWith('APND'), `editor reads back the WM_CHAR-typed text APPENDED at the caret cursor-free ("${afterAppend.slice(0, 40)}")`);
 
     // Astral (non-BMP) text must post as surrogate-pair WM_CHARs, not be truncated to one out-of-range code point.
     setControlText(editHwnd, '');
