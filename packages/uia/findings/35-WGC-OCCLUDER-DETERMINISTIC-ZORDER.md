@@ -33,6 +33,28 @@ run 1 the new Explorer stayed below and Notepad kept foreground → the load-bea
 ## Landed
 
 - `example/wgc-occluded.integration.test.ts`: `spawnOccluder()` → `spawnOccluder(target)` with the deterministic
-  HWND_BOTTOM/HWND_TOP `SetWindowPos` pair before maximize; precondition `assert` → `skip()` fallback; both call
+  HWND_BOTTOM/HWND_TOP `SetWindowPos` pair before maximize; precondition `assert` → SKIP fallback; both call
   sites (Notepad + Calculator companion) pass their target. tsc 0. Live PASS, occluded frame SEEN, zero leaked
   windows (`closeWindow` teardown unchanged per finding/34).
+
+## Follow-up (Feynman, adversarial) — the SKIP path was a vacuous green PASS
+
+This finding's "skip()-via-`_harness`" claim was aspirational: the shipped test still rolled its OWN `let failures = 0`
+and ended `console.log(failures === 0 ? 'PASS …' : …); process.exit(failures === 0 ? 0 : 1)`. Both occluded-capture
+guards (`notepadHwnd === 0n`; `foregroundWindow() === notepadHwnd` — the very foreground-lock this finding documents)
+were `console.log('SKIP …')`, NOT `_harness.skip`. So when the headline never ran, the test printed the green PASS and
+exited 0 having asserted NOTHING about occlusion — the exact failure `_harness.finish()` (exit 2 on a zero-assertion
+run) exists to forbid. Compounding it, the always-on Calculator companion's `taskkill /F /PID` of a process whose
+composed surface a live WGC/D3D session still referenced segfaulted the process at exit (exit 3), so a CI greping for
+`PASS` saw neither PASS nor FAILED on that run.
+
+Fixed (test-only, no source/binding change):
+- Import `assert`/`skip`/`failureCount` from `_harness`; the two SKIP branches now call `skip()` (no assertion recorded).
+- A load-bearing `let provedOccluded = false` is set true ONLY right after the line-177 headline assertion runs on a
+  non-null occluded frame. Final accounting mirrors `finish()` exactly: `failureCount() > 0` → FAILED exit 1;
+  `!provedOccluded` → INCONCLUSIVE exit 2; else PASS exit 0. The visible-baseline assert (which always runs once Notepad
+  launched) can no longer green a run that proved no occlusion. Verified: driving the all-skipped path prints
+  `INCONCLUSIVE …` and exits 2, never PASS.
+- The Calculator companion is OFF by default (`WGC_OCCLUDED_CALC=1` to run); when run, `uia.uninitialize()` is called
+  BEFORE the taskkill so no live COM references the killed process at exit. Default path: 5/5 consecutive clean exit-0
+  PASS, occluded PNG SEEN (2550×1387 full-res Notepad behind a maximized Explorer), zero leaked windows.

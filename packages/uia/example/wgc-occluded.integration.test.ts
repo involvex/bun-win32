@@ -35,6 +35,7 @@
  */
 import User32 from '@bun-win32/user32';
 import { captureWindowLive, captureWindowRGB, closeWindow, encodePNG, foregroundWindow, isMinimized, maximizeWindow, uia, wgcAvailable, windowProcessId } from '@bun-win32/uia';
+import { assert, failureCount, skip } from './_harness';
 
 const HWND_BOTTOM = 0x1n; // SetWindowPos: place below all non-topmost windows
 const HWND_TOP = 0x0n; // SetWindowPos: place above all non-topmost windows in z-order
@@ -43,14 +44,11 @@ const SWP_NOMOVE = 0x0002;
 const SWP_NOACTIVATE = 0x0010;
 const SWP_SHOWWINDOW = 0x0040;
 
-let failures = 0;
-function assert(condition: boolean, message: string): void {
-  if (condition) console.log(`  ok: ${message}`);
-  else {
-    console.error(`  FAIL: ${message}`);
-    failures += 1;
-  }
-}
+/** Load-bearing: set true ONLY after the line-177 occluded-capture assertion actually runs on a non-null frame.
+ *  A run that never reached it (Notepad unavailable, or OS foreground-locked Notepad on top this run) proved
+ *  NOTHING about occlusion, so the final accounting reports INCONCLUSIVE (exit 2) instead of a vacuous green PASS —
+ *  mirroring `_harness.finish()` (fail=1, vacuous=2, real-pass=0). */
+let provedOccluded = false;
 
 /** True when an RGB grab is blank/flat (PrintWindow returns this on a locked or GPU-composited surface). The
  *  same near-uniform test the MCP `screenshot` tool uses to decide PrintWindow came back blank → fall back to WGC. */
@@ -150,7 +148,7 @@ try {
   if (notepadHwnd === 0n) {
     // The Notepad app model is wedged/unavailable (e.g. a prior session's force-kill left it un-launchable).
     // Degrade gracefully: SKIP rather than assert-fail, so a poisoned session does not brick this proof.
-    console.log('SKIP — Notepad did not appear (app model wedged/unavailable); cannot prove background capture this run.');
+    skip('Notepad did not appear (app model wedged/unavailable); cannot prove background capture this run.');
   } else {
     Bun.sleepSync(700); // let Notepad compose its first frames before WGC drains the pool
 
@@ -168,13 +166,14 @@ try {
     // anyway, SKIP rather than FAIL: the differentiating capability is already SEEN/asserted on the visible baseline,
     // so a non-deterministic SETUP must not red the proof (finding/35).
     if (foregroundWindow() === notepadHwnd) {
-      console.log('SKIP — Notepad stayed the foreground window despite the z-order push (OS foreground lock this run); occluded capture not provable here, but the capability is unchanged.');
+      skip('Notepad stayed the foreground window despite the z-order push (OS foreground lock this run); occluded capture not provable here, but the capability is unchanged.');
     } else {
       assert(!isMinimized(notepadHwnd), 'Notepad is NOT minimized (it has a live composed surface, just hidden behind the occluder)');
 
       // 3. THE HEADLINE — WGC reads the live, occluded, background pixels with content.
       const occluded = await captureLiveWarm(notepadHwnd);
       assert(occluded !== null, 'captureWindowLive returns a non-blank LIVE frame of the FULLY-OCCLUDED background window (the README headline)');
+      provedOccluded = occluded !== null; // the headline ran on a real non-null occluded frame — exit status may now be a true PASS
       if (occluded !== null) {
         await Bun.write(`${scratch}/wgc-occluded-live.png`, encodePNG(occluded.rgb, occluded.width, occluded.height));
         console.log(`  → SEE it: ${scratch}/wgc-occluded-live.png (${occluded.width}x${occluded.height}, occluded behind a maximized Explorer)`);
@@ -201,37 +200,58 @@ try {
   uia.uninitialize();
 }
 
-// COMPANION (best-effort, SKIP-not-FAIL): prove the same on the GPU-composited WinUI Calculator when its app model
-// is available. A wedged/blank Calculator SKIPs — it must never FAIL the headline nor brick the rest of the suite.
-uia.initialize();
-let calcOccluder = 0n;
-let calcHwnd = 0n;
-Bun.spawn(['cmd', '/c', 'start', 'calc'], { stdout: 'ignore', stderr: 'ignore' });
-for (let attempt = 0; attempt < 30 && calcHwnd === 0n; attempt += 1) {
-  Bun.sleepSync(300);
-  calcHwnd = uia.windows().find((w) => w.title === 'Calculator')?.hWnd ?? 0n;
-}
-try {
-  if (calcHwnd === 0n) {
-    console.log('  (companion) SKIP — WinUI Calculator unavailable/wedged (single-instance app model); headline already proven on Notepad above.');
-  } else {
-    Bun.sleepSync(900); // let the XAML surface compose its first frames before WGC drains the pool
-    calcOccluder = spawnOccluder(calcHwnd);
-    const occludedCalc = await captureLiveWarm(calcHwnd);
-    if (occludedCalc !== null && foregroundWindow() !== calcHwnd && !isMinimized(calcHwnd)) {
-      await Bun.write(`${scratch}/wgc-occluded-calc.png`, encodePNG(occludedCalc.rgb, occludedCalc.width, occludedCalc.height));
-      console.log(`  (companion) ok: WGC also read the OCCLUDED WinUI Calculator surface (${occludedCalc.width}x${occludedCalc.height}) → ${scratch}/wgc-occluded-calc.png`);
-    } else {
-      console.log('  (companion) SKIP — Calculator composed surface returned blank (GPU/DirectComposition; content-dependent); headline already proven on Notepad above.');
-    }
+// COMPANION (best-effort, SKIP-not-FAIL, OPT-IN): prove the same on the GPU-composited WinUI Calculator when its app
+// model is available. A wedged/blank Calculator SKIPs — it must never FAIL the headline nor brick the rest of the
+// suite. It is OFF by default (`WGC_OCCLUDED_CALC=1` to run): the headline is already proven + SEEN on Notepad above,
+// and the companion spins up a SECOND WGC/D3D session then force-kills Calculator — that taskkill of a process whose
+// composed surface WGC just held is the documented exit-crash vector, so the default path does not pay for it.
+if (Bun.env.WGC_OCCLUDED_CALC === '1') {
+  uia.initialize();
+  let calcOccluder = 0n;
+  let calcHwnd = 0n;
+  Bun.spawn(['cmd', '/c', 'start', 'calc'], { stdout: 'ignore', stderr: 'ignore' });
+  for (let attempt = 0; attempt < 30 && calcHwnd === 0n; attempt += 1) {
+    Bun.sleepSync(300);
+    calcHwnd = uia.windows().find((w) => w.title === 'Calculator')?.hWnd ?? 0n;
   }
-} finally {
-  if (calcOccluder !== 0n) closeWindow(calcOccluder);
-  const calcPid = calcHwnd !== 0n ? windowProcessId(calcHwnd) : 0;
-  if (calcPid) Bun.spawnSync(['taskkill', '/F', '/PID', String(calcPid)]);
-  else if (calcHwnd !== 0n) closeWindow(calcHwnd);
-  uia.uninitialize();
+  try {
+    if (calcHwnd === 0n) {
+      console.log('  (companion) SKIP — WinUI Calculator unavailable/wedged (single-instance app model); headline already proven on Notepad above.');
+    } else {
+      Bun.sleepSync(900); // let the XAML surface compose its first frames before WGC drains the pool
+      calcOccluder = spawnOccluder(calcHwnd);
+      const occludedCalc = await captureLiveWarm(calcHwnd);
+      if (occludedCalc !== null && foregroundWindow() !== calcHwnd && !isMinimized(calcHwnd)) {
+        await Bun.write(`${scratch}/wgc-occluded-calc.png`, encodePNG(occludedCalc.rgb, occludedCalc.width, occludedCalc.height));
+        console.log(`  (companion) ok: WGC also read the OCCLUDED WinUI Calculator surface (${occludedCalc.width}x${occludedCalc.height}) → ${scratch}/wgc-occluded-calc.png`);
+      } else {
+        console.log('  (companion) SKIP — Calculator composed surface returned blank (GPU/DirectComposition; content-dependent); headline already proven on Notepad above.');
+      }
+    }
+  } finally {
+    if (calcOccluder !== 0n) closeWindow(calcOccluder);
+    const calcPid = calcHwnd !== 0n ? windowProcessId(calcHwnd) : 0;
+    // Tear down COM/WGC/D3D first, THEN force-kill Calculator: a `taskkill /F /PID` while WGC capture-frame-pool /
+    // D3D objects still reference the killed process's surfaces crashes this process at exit (3× live: vacuous-PASS +
+    // exit 3). uninitialize() before the kill leaves no live COM pointing at the dead process.
+    uia.uninitialize();
+    if (calcPid) Bun.spawnSync(['taskkill', '/F', '/PID', String(calcPid)]);
+    else if (calcHwnd !== 0n) closeWindow(calcHwnd);
+  }
+} else {
+  console.log('  (companion) SKIP — WinUI Calculator companion off by default (set WGC_OCCLUDED_CALC=1 to run); headline proven + SEEN on Notepad above.');
 }
 
-console.log(failures === 0 ? '\nPASS — WGC read the LIVE pixels of a fully-occluded background window (proven + SEEN, not asserted).' : `\nFAILED — ${failures} assertion(s)`);
-process.exit(failures === 0 ? 0 : 1);
+// Final accounting mirrors `_harness.finish()` exactly (fail=1, vacuous=2, real-pass=0): a failed assertion reds the
+// run; a run that never reached the load-bearing occluded-capture assertion is INCONCLUSIVE, never a vacuous PASS —
+// the visible baseline alone (which always asserts when Notepad launched) must not green a run that proved no occlusion.
+if (failureCount() > 0) {
+  console.log(`\nFAILED — ${failureCount()} assertion(s)`);
+  process.exit(1);
+}
+if (!provedOccluded) {
+  console.log('\nINCONCLUSIVE — the occluded-capture headline was skipped (Notepad unavailable or foreground-locked this run); nothing was proven.');
+  process.exit(2);
+}
+console.log('\nPASS — WGC read the LIVE pixels of a fully-occluded background window (proven + SEEN, not asserted).');
+process.exit(0);
