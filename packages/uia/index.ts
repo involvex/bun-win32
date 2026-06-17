@@ -92,6 +92,7 @@ export {
   virtualScreen,
   windowAt,
 } from './coords';
+export { windowDesktopId, windowOnCurrentDesktop } from './desktop';
 export { type DiffNode, diffTrees, refsRenumbered, type RenameChange, renderDiff, type StateChange, type TreeChange, type TreeDiff } from './diff';
 export { attach, Element, focused, fromHandle, fromPoint, launch, root, Window } from './element';
 export { listProcesses, waitForProcess, waitForWindow, waitForWindowGone, watchWindows, type WindowEvent, type WindowEventType, type WindowMatch, type WindowWatcher } from './events';

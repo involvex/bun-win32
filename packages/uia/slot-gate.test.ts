@@ -160,6 +160,9 @@ describe('WGC + MSAA + D3D11 SLOT coverage (wgc.ts / msaa.ts)', () => {
     ['um', 'oleacc.h', 'IAccessible', 'get_accChildCount', 8],
     ['um', 'oleacc.h', 'IAccessible', 'get_accName', 10],
     ['um', 'oleacc.h', 'IAccessible', 'get_accRole', 13],
+    ['um', 'shobjidl_core.h', 'IVirtualDesktopManager', 'IsWindowOnCurrentVirtualDesktop', 3], // desktop.ts
+    ['um', 'shobjidl_core.h', 'IVirtualDesktopManager', 'GetWindowDesktopId', 4], // desktop.ts
+    ['um', 'shobjidl_core.h', 'IVirtualDesktopManager', 'MoveWindowToDesktop', 5], // desktop.ts (move = E_ACCESSDENIED wall)
     // TextRange.Select=16 collides by name with SelectionItem.Select=3, so it lives as a local const in
     // patterns.ts (TEXTRANGE_SELECT) and is verified here by interface, not via the name-keyed SLOT block.
     ['um', 'UIAutomationClient.h', 'IUIAutomationTextRange', 'Select', 16],

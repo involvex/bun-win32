@@ -92,6 +92,7 @@ import {
   undoControl,
   virtualScreen,
   type Window,
+  windowOnCurrentDesktop,
   windowProcessId,
 } from './index';
 
@@ -1686,14 +1687,21 @@ const HANDLERS: Record<string, ToolHandler> = {
       // DWM-cloaked windows are hidden though NOT minimized (so the 'min' state above misses them) and their UIA tree may
       // read empty — flag them so the agent does not mistake an empty snapshot for a cold tree / waste an attach on an overlay.
       const cloaked = cloakReason(window.hWnd);
+      // IVirtualDesktopManager gives the DEFINITIVE answer the DWM cloak bit cannot: false ⇒ genuinely on ANOTHER
+      // virtual desktop (vs merely shell-hidden). null ⇒ unknown (manager unavailable / not a top-level window).
+      const offDesktop = windowOnCurrentDesktop(window.hWnd) === false;
       const cloak =
         cloaked === 2
-          ? ' [cloaked: shell-hidden / on another virtual desktop — its UIA tree may read empty here (NOT a cold tree); there is no cursor-free virtual-desktop switch, a human must bring it over (or try manage_window {action:"raise"})]'
+          ? offDesktop
+            ? " [on ANOTHER virtual desktop (confirmed) — its UIA tree reads empty here (NOT a cold tree); switch to its desktop to use it. There is no cursor-free cross-desktop move: the OS blocks moving another process's window (MoveWindowToDesktop → E_ACCESSDENIED), so a human must switch desktops]"
+            : ' [cloaked: shell-hidden (DWM) — its UIA tree may read empty here (NOT a cold tree); raise/restore it with manage_window {action:"raise"}]'
           : cloaked === 4
-            ? ' [cloaked: inherited — hidden because its OWNER window is hidden (likely on another virtual desktop); surface the OWNER window, not this child]'
+            ? ` [cloaked: inherited — hidden because its OWNER window is hidden${offDesktop ? ' (on another virtual desktop)' : ''}; surface the OWNER window, not this child]`
             : cloaked !== 0
               ? ' [cloaked: app-hidden/suspended (a background UWP or a helper overlay) — likely not a live attach target; raise/restore it (manage_window {action:"raise"}) first if it is your target]'
-              : '';
+              : offDesktop
+                ? " [on ANOTHER virtual desktop (reported off the current desktop) — its UIA tree reads empty here (NOT a cold tree); switch to its desktop to use it; no cursor-free cross-desktop move (the OS blocks moving another process's window)]"
+                : '';
       return `- ${JSON.stringify(window.title)} [class=${window.className}] [pid=${window.processId}${exe ? ` ${exe}` : ''}] [hWnd=0x${window.hWnd.toString(16)}]${state ? ` (${state})` : ''}${wall}${uac}${cloak}`;
     });
     // A UAC consent / secure desktop is invisible and undrivable from this session (no UIA, no capture) — say so, so

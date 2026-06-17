@@ -15,6 +15,7 @@ let pTrueCondition = 0n;
 let comInitialized = false;
 let wgcBundleDisposer: (() => void) | null = null;
 let ocrDisposer: (() => void) | null = null;
+let desktopDisposer: (() => void) | null = null;
 
 /**
  * Register wgc.ts's device-bundle teardown so uninitialize() can free it WITHOUT a static automation→wgc
@@ -29,6 +30,12 @@ export function setWgcBundleDisposer(dispose: () => void): void {
  *  still alive — same lazy-no-static-import pattern as the WGC disposer. */
 export function setOcrDisposer(dispose: () => void): void {
   ocrDisposer = dispose;
+}
+
+/** Register desktop.ts's cached IVirtualDesktopManager teardown so uninitialize() releases it (and resets its state
+ *  for a clean re-init) while the apartment is still alive — same lazy-no-static-import pattern as the WGC disposer. */
+export function setDesktopDisposer(dispose: () => void): void {
+  desktopDisposer = dispose;
 }
 
 /**
@@ -96,6 +103,10 @@ export function uninitialize(): void {
   if (ocrDisposer !== null) {
     ocrDisposer(); // free the cached OCR engine/factories before CoUninitialize
     ocrDisposer = null;
+  }
+  if (desktopDisposer !== null) {
+    desktopDisposer(); // release the cached IVirtualDesktopManager before CoUninitialize
+    desktopDisposer = null;
   }
   if (pControlWalker !== 0n) {
     comRelease(pControlWalker);
