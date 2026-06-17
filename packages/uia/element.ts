@@ -225,10 +225,16 @@ function describeState(element: Element): string {
 }
 
 export class Element {
-  readonly ptr: bigint;
+  #ptr: bigint;
 
   constructor(ptr: bigint) {
-    this.ptr = ptr;
+    this.#ptr = ptr;
+  }
+
+  /** The live IUIAutomationElement pointer, or 0n once released — reading state on 0n throws a catchable error
+   *  (com.ts vcall null-interface guard) instead of vcall-ing a freed, refcount-0 COM proxy and segfaulting. */
+  get ptr(): bigint {
+    return this.#ptr;
   }
 
   get automationId(): string {
@@ -604,9 +610,13 @@ export class Element {
     return getBstr(this.ptr, SLOT.get_CachedName);
   }
 
-  /** Release the underlying COM pointer. */
+  /** Release the underlying COM pointer, idempotently — zeroes the owned pointer so a second release()/dispose()
+   *  is a no-op (comRelease(0n)), not a double IUnknown::Release on a refcount-0 freed proxy that SEGFAULTS the
+   *  host process uncatchably. Any post-release accessor then hits the com.ts null-interface guard and throws
+   *  catchably. Window.dispose() routes through here, so it inherits idempotency for free. */
   release(): void {
-    comRelease(this.ptr);
+    comRelease(this.#ptr);
+    this.#ptr = 0n;
   }
 
   // control-pattern actions — each proven against a real control in Phase 5

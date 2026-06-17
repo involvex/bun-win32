@@ -10,7 +10,7 @@ import { describe, expect, test } from 'bun:test';
 import { FFIType } from 'bun:ffi';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 
-import { automation, compileCondition, trueCondition, uninitialize } from './index';
+import { automation, compileCondition, root, trueCondition, uninitialize, Window } from './index';
 import { comRelease, invokerCacheSize, vcall } from './com';
 import { SLOT } from './constants';
 
@@ -110,6 +110,7 @@ const path = sdkHeader('um', 'UIAutomationClient.h');
 const AMBIGUOUS_OWNER: Record<string, string> = {
   AddToSelection: 'IUIAutomationSelectionItemPattern',
   GetCurrentSelection: 'IUIAutomationSelectionPattern',
+  Move: 'IUIAutomationTransformPattern', // TransformPattern.Move=3 collides by name with TextRange.Move=13
   RemoveFromSelection: 'IUIAutomationSelectionItemPattern',
   ScrollIntoView: 'IUIAutomationScrollItemPattern',
   Select: 'IUIAutomationSelectionItemPattern',
@@ -466,6 +467,46 @@ describe('perf-regression: TrueCondition memoization (no window)', () => {
       expect(vcall(client, SLOT.CreateFalseCondition, [FFIType.ptr], [out.ptr!])).toBe(0);
       comRelease(out.readBigUInt64LE(0));
       expect(invokerCacheSize()).toBe(afterFirst + 1);
+    } finally {
+      uninitialize();
+    }
+  });
+});
+
+// Native-memory safety guard. Element owns a raw COM interface pointer; before the #ptr-zeroing fix, release()
+// was `comRelease(this.ptr)` on a never-zeroed readonly ptr, so a SECOND release()/dispose() vcalled IUnknown::
+// Release (slot 2) on a refcount-0, freed proxy and SEGFAULTED the host Bun process UNCATCHABLY (panic, exit 3).
+// Window.dispose() routes through release(), so a `using app` + an explicit dispose, or a careless re-release in
+// a catch/finally, took the long-lived MCP server down. This pins release() idempotency: a second release is a
+// no-op (ptr stays 0n), and any post-release accessor hits the com.ts null-interface guard and throws CATCHABLY
+// instead of UAF-crashing. Uses only the in-process CUIAutomation client (root() → a real owned IUIAutomation-
+// Element*, NO window, NO app launch), so it runs under `bun test`.
+describe('native-memory safety: Element.release() / Window.dispose() idempotency (no window)', () => {
+  test('a double release() is a no-op (ptr→0n) and a post-release accessor throws catchably, not UAF-segfaults', () => {
+    try {
+      const element = root(); // a real owned IUIAutomationElement* from the in-process COM server — no window
+      expect(element.ptr).not.toBe(0n);
+      element.release();
+      expect(element.ptr).toBe(0n); // the owner zeroed its raw pointer — the precondition for release-once
+      expect(() => element.release()).not.toThrow(); // a SECOND release is a harmless no-op (comRelease(0n)), not a double-Release segfault
+      expect(element.ptr).toBe(0n);
+      expect(() => element.name).toThrow('null interface pointer'); // a post-release accessor throws catchably (com.ts), never a UAF crash
+    } finally {
+      uninitialize();
+    }
+  });
+
+  test('Window.dispose() inherits release() idempotency — a double dispose (and a using+explicit-dispose) is a no-op, not a segfault', () => {
+    try {
+      const out = Buffer.alloc(8);
+      expect(vcall(automation(), SLOT.GetRootElement, [FFIType.ptr], [out.ptr!])).toBe(0); // a real owned IUIAutomationElement*, no window
+      const window = new Window(out.readBigUInt64LE(0), 0n); // the SOLE owner of that pointer (dummy hWnd — dispose only touches the COM ptr)
+      expect(window.ptr).not.toBe(0n);
+      window.dispose();
+      expect(window.ptr).toBe(0n); // dispose() → release() zeroed the owned pointer
+      expect(() => window.dispose()).not.toThrow(); // a SECOND dispose is a no-op (the `using` + explicit-dispose double-dispose path), not a double-Release segfault
+      expect(() => window[Symbol.dispose]()).not.toThrow(); // and the `using` teardown is equally safe after an explicit dispose
+      expect(window.ptr).toBe(0n);
     } finally {
       uninitialize();
     }
