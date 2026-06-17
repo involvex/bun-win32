@@ -2039,6 +2039,10 @@ const HANDLERS: Record<string, ToolHandler> = {
     if (clickable !== null) lines.push(`clickablePoint: ${clickable.x},${clickable.y}`);
     const handle = element.nativeWindowHandle;
     if (handle !== 0n) lines.push(`nativeWindowHandle: 0x${handle.toString(16)}`);
+    const acceleratorKey = element.getProperty(PropertyId.AcceleratorKey); // e.g. "Ctrl+S" — the agent can press_key it directly instead of menu-diving
+    if (typeof acceleratorKey === 'string' && acceleratorKey.length > 0) lines.push(`acceleratorKey: ${acceleratorKey}`);
+    const accessKey = element.getProperty(PropertyId.AccessKey); // e.g. "Alt, F" — the mnemonic to reach this control via the keyboard
+    if (typeof accessKey === 'string' && accessKey.length > 0) lines.push(`accessKey: ${accessKey}`);
     const helpText = element.getProperty(PropertyId.HelpText);
     if (typeof helpText === 'string' && helpText.length > 0) lines.push(`helpText: ${JSON.stringify(helpText)}`);
     const itemStatus = element.getProperty(PropertyId.ItemStatus);
