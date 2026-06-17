@@ -10,6 +10,7 @@ packages/*/.scratch/
 cloc-2.08.exe
 DISCORD_POST.md
 MISSING_APIS.md
+scripts/chatgpt-imagegen.ts
 
 # dependencies (bun install)
 node_modules
