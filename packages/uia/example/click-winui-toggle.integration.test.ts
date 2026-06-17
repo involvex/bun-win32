@@ -137,7 +137,9 @@ try {
           assert(disp.ok && /toggled .*cursor-free/.test(disp.output ?? ''), `uia.dispatch left_click reports a cursor-free TOGGLE (got: ${JSON.stringify(disp.output ?? disp.error)})`);
           if (toggle.toggleState !== baseline) toggle.toggle(); // restore
         } else {
-          console.log(`  note: uia.dispatch at the toggle pixel resolved a non-togglable element (${JSON.stringify(disp.output ?? disp.error)}) — fromPoint did not land on the TogglePattern node; the semanticClick chain is still correct where the pixel resolves a togglable/selectable control`);
+          console.log(
+            `  note: uia.dispatch at the toggle pixel resolved a non-togglable element (${JSON.stringify(disp.output ?? disp.error)}) — fromPoint did not land on the TogglePattern node; the semanticClick chain is still correct where the pixel resolves a togglable/selectable control`,
+          );
         }
       }
     }

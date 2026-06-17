@@ -79,7 +79,10 @@ try {
       console.log(`  inspect: ${JSON.stringify(out.split('\n').find((line) => line.startsWith('rangeValue')) ?? out.slice(0, 80))}`);
       assert(/rangeValue: .* \(min \d+(?:\.\d+)?, max \d+(?:\.\d+)?[,)]/.test(out), 'inspect_element reports rangeValue WITH its min/max range (and small/large step when present)');
       // the Volume slider is WRITABLE → can: advertises set_value(numeric), NOT read-only (the read-only branch's negative path)
-      assert(/can:.*set_value\(numeric\)/.test(out) && !/read-only/.test(out), `a writable slider advertises set_value(numeric) and is not flagged read-only (can: ${JSON.stringify(out.split('\n').find((l) => l.startsWith('can:')) ?? '')})`);
+      assert(
+        /can:.*set_value\(numeric\)/.test(out) && !/read-only/.test(out),
+        `a writable slider advertises set_value(numeric) and is not flagged read-only (can: ${JSON.stringify(out.split('\n').find((l) => l.startsWith('can:')) ?? '')})`,
+      );
     }
   }
 } finally {
