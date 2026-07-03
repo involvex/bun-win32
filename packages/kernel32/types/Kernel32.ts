@@ -32,9 +32,12 @@ export type {
   LPWSTR,
   LRESULT,
   NULL,
+  Nullable as Nullable,
+  Optional as Optional,
   PBYTE,
   PDWORD,
   PHANDLE,
+  PSIZE_T,
   PULONG,
   PVOID,
   SHORT,
@@ -400,7 +403,7 @@ export type LPSRWLOCK = Pointer;
 export type LPSTARTUPINFOA = Pointer;
 export type LPSTARTUPINFOW = Pointer;
 export type LPSYSTEMTIME = Pointer;
-export type LPTHREAD_START_ROUTINE = Pointer;
+export type LPTHREAD_START_ROUTINE<T extends Pointer | bigint = Pointer | bigint> = T;
 export type LPTHREADENTRY32 = Pointer;
 export type LPTHREADENTRY32W = Pointer;
 export type LPTIMERAPCROUTINE = Pointer;

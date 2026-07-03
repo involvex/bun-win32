@@ -1,4 +1,4 @@
-﻿import type { Pointer } from 'bun:ffi';
+import type { Pointer } from 'bun:ffi';
 
 import type { HWND } from '@bun-win32/core';
 export type {
@@ -32,6 +32,8 @@ export type {
   LPWSTR,
   LRESULT,
   NULL,
+  Nullable,
+  Optional,
   PBYTE,
   PDWORD,
   PHANDLE,

@@ -22,6 +22,7 @@ export type {
   LPWSTR,
   LRESULT,
   NULL,
+  Optional,
   PVOID,
   UINT,
   UINT_PTR,

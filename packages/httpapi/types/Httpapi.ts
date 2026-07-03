@@ -17,6 +17,8 @@ export type {
   LPVOID,
   LPWSTR,
   NULL,
+  Nullable,
+  Optional,
   PBYTE,
   PDWORD,
   PHANDLE,

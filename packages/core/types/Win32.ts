@@ -42,21 +42,26 @@ export type WPARAM = UINT_PTR;
 export type LPBOOL = Pointer;
 export type LPBYTE = Pointer;
 export type LPCSTR = Pointer;
-export type LPCVOID = Pointer;
+export type LPCVOID<T extends Pointer | bigint = Pointer> = T;
 export type LPCWSTR = Pointer;
 export type LPDWORD = Pointer;
 export type LPHANDLE = Pointer;
 export type LPSECURITY_ATTRIBUTES = Pointer;
 export type LPSTR = Pointer;
-export type LPVOID = Pointer;
+export type LPVOID<T extends Pointer | bigint = Pointer> = T;
 export type LPWSTR = Pointer;
 export type PBYTE = Pointer;
 export type PDWORD = Pointer;
 export type PHANDLE = Pointer;
+export type PSIZE_T = Pointer;
 export type PULONG = Pointer;
-export type PVOID = Pointer;
+export type PVOID<T extends Pointer | bigint = Pointer> = T;
 
 // ── Special ─────────────────────────────────────────────────────────────────
 
 export type NULL = null;
+// SAL nullability (representation-aware: bigint-based T -> T | 0n, Pointer-based T -> T | null).
+// Optional: SAL _*opt_ / _Reserved_.  Nullable: plain [in]/[out] the docs say "can be NULL". See AGENTS.md.
+export type Nullable<T> = [T] extends [bigint] ? T | 0n : T | null;
+export type Optional<T> = [T] extends [bigint] ? T | 0n : T | null;
 export type VOID = void;
